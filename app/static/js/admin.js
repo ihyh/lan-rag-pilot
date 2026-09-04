@@ -72,9 +72,11 @@
     try {
       var params = new URLSearchParams();
       var filterVersion = qs('#docFilterVersion').value.trim();
+      var filterTag = qs('#docFilterTag').value.trim();
       var filterFrom = qs('#docFilterFrom').value;
       var filterTo = qs('#docFilterTo').value;
       if (filterVersion) { params.set('version', filterVersion); }
+      if (filterTag) { params.set('tag', filterTag); }
       if (filterFrom) { params.set('effective_date_from', filterFrom); }
       if (filterTo) { params.set('effective_date_to', filterTo); }
       var suffix = params.toString() ? '?' + params.toString() : '';
@@ -88,9 +90,9 @@
         var state = d.status === 'ready' ? badge('就绪', 'b-ok') : d.status === 'failed' ? badge('失败', 'b-err') : badge('处理中', 'b-warn');
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
         if (d.error) { name.appendChild(h('div', { class: 'doc-err', title: d.error }, [d.error])); }
-        return h('tr', {}, [name, cell(d.version || '1.0'), cell(d.effective_date || '—'), cell(fmtBytes(d.size_bytes)), cell(d.num_chunks), h('td', {}, [state]), cell(d.knowledge_base_names || '默认知识库'), cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
+        return h('tr', {}, [name, cell(d.version || '1.0'), cell(d.effective_date || '—'), cell((d.tags || []).join('、') || '—'), cell(fmtBytes(d.size_bytes)), cell(d.num_chunks), h('td', {}, [state]), cell(d.knowledge_base_names || '默认知识库'), cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
       });
-      body.appendChild(table(['文件', '版本', '生效日期', '大小', '切片', '状态', '知识库', '上传者', '上传时间', '操作'], rows));
+      body.appendChild(table(['文件', '版本', '生效日期', '标签', '大小', '切片', '状态', '知识库', '上传者', '上传时间', '操作'], rows));
     } catch (e) { body.appendChild(empty(e.message || '文档加载失败')); }
     finally { loading.classList.add('hidden'); }
   }
@@ -106,6 +108,7 @@
         form.append('version', qs('#docVersion').value.trim() || '1.0');
         var effectiveDate = qs('#docEffectiveDate').value;
         if (effectiveDate) { form.append('effective_date', effectiveDate); }
+        form.append('tags', qs('#docTags').value.trim());
         await api('/api/admin/documents', { method: 'POST', body: form });
         chip.className = 'chip chip-ok'; chip.firstChild.innerHTML = icon('check');
       } catch (e) {
@@ -322,7 +325,7 @@
     });
     zone.addEventListener('drop', function (e) { if (e.dataTransfer.files.length) { uploadFiles(e.dataTransfer.files); } });
     qs('#refreshDocsBtn').addEventListener('click', loadDocs);
-    ['docFilterVersion', 'docFilterFrom', 'docFilterTo'].forEach(function (id) {
+    ['docFilterVersion', 'docFilterTag', 'docFilterFrom', 'docFilterTo'].forEach(function (id) {
       qs('#' + id).addEventListener('keydown', function (e) { if (e.key === 'Enter') { loadDocs(); } });
     });
     qs('#refreshUsersBtn').addEventListener('click', loadUsers);

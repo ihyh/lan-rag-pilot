@@ -322,8 +322,8 @@ uvicorn app.main:app --reload --port 8088
 | `GET /api/chats/{chat_id}` | user/root | 详情含 `sources`（含 300 字截断 `excerpt`）。**非本人一律 404**（不暴露他人记录存在性）；root 可见任意用户记录 |
 | `POST /api/chats/{chat_id}/feedback` | user/root | 提交或更新本人问答评价，`rating` 为 `helpful`/`unhelpful`，可选备注最多 1000 字 |
 | `GET /api/knowledge-bases` | user/root | 返回当前账号可访问的知识库；root 返回全部 |
-| `GET /api/admin/documents?version=&effective_date_from=&effective_date_to=` | root | 文档列表（含上传者、版本、生效日期、状态、切片数等全字段）；筛选参数均可选 |
-| `POST /api/admin/documents` | root | multipart `file` + 可选 `version`（默认 `1.0`）和 `effective_date`（`YYYY-MM-DD`）上传入库，201 返回文档 dict。错误：413 超 25MB、409 SHA-256 重复 / 向量维度不一致、400 扩展名/MIME/魔数/内容问题、422 元数据格式错误、503 嵌入未就绪；失败均写审计 `doc_upload_failed` |
+| `GET /api/admin/documents?version=&tag=&effective_date_from=&effective_date_to=` | root | 文档列表（含上传者、版本、生效日期、标签、状态、切片数等全字段）；筛选参数均可选，`tag` 为精确匹配单个标签 |
+| `POST /api/admin/documents` | root | multipart `file` + 可选 `version`（默认 `1.0`）、`effective_date`（`YYYY-MM-DD`）和 `tags`（逗号分隔，最多 10 个）上传入库，201 返回文档 dict。错误：413 超 25MB、409 SHA-256 重复 / 向量维度不一致、400 扩展名/MIME/魔数/内容问题、422 元数据格式错误、503 嵌入未就绪；失败均写审计 `doc_upload_failed` |
 | `DELETE /api/admin/documents/{doc_id}` | root | 删除文档+切片+磁盘文件并重建索引，204；不存在→404；写审计 |
 | `POST /api/admin/documents/{doc_id}/reindex` | root | 按原文件重新解析/切块/向量化（重启中断的文档也可用此恢复），返回文档 dict；写审计 |
 | `GET /api/admin/users` | root | 用户列表（不含密码哈希） |
@@ -367,7 +367,7 @@ uvicorn app.main:app --reload --port 8088
 |---|---|
 | `users` | 账号：用户名(NOCASE 唯一)、Argon2id 密码哈希、角色(`root`/`user`)、启停、登录时间 |
 | `sessions` | 会话：仅存令牌 HMAC 哈希 + 过期时间（用户删除级联清理） |
-| `documents` | 文档元数据：原始文件名、UUID 存储名、SHA-256(唯一)、版本、生效日期、状态(`parsing`/`ready`/`failed`)、切片数、页数、上传者 |
+| `documents` | 文档元数据：原始文件名、UUID 存储名、SHA-256(唯一)、版本、生效日期、标签、状态(`parsing`/`ready`/`failed`)、切片数、页数、上传者 |
 | `chunks` | 切片：页码/段落位置、token 数、正文、512 维向量 BLOB（文档删除级联） |
 | `departments` | 部门目录 |
 | `knowledge_bases` | 知识库目录及所属部门 |

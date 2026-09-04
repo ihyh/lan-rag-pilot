@@ -116,6 +116,10 @@
           <span class="field-label">生效日期（可选）</span>
           <input class="input" id="docEffectiveDate" type="date">
         </label>
+        <label class="field">
+          <span class="field-label">标签（逗号分隔，可选）</span>
+          <input class="input" id="docTags" type="text" maxlength="320" placeholder="例如：研发,制度">
+        </label>
       </div>
       <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="上传文档区域">
         <span id="uploadZoneIcon"></span>
@@ -131,6 +135,7 @@
         <h2 class="panel-title">文档列表</h2>
         <div class="panel-tools">
           <input class="input" id="docFilterVersion" type="text" maxlength="32" placeholder="版本">
+          <input class="input" id="docFilterTag" type="text" maxlength="32" placeholder="标签">
           <input class="input" id="docFilterFrom" type="date" aria-label="生效日期起始">
           <input class="input" id="docFilterTo" type="date" aria-label="生效日期结束">
           <button class="btn btn-outline btn-sm" id="refreshDocsBtn" type="button">刷新列表</button>

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 import sqlite3
 from datetime import date, datetime, timezone
@@ -62,6 +63,29 @@ def _clean_effective_date(raw: str | None) -> str | None:
     return value
 
 
+def _clean_tags(raw: str | None) -> list[str]:
+    values = []
+    for item in re.split(r"[,，]", raw or ""):
+        tag = item.strip()
+        if not tag:
+            continue
+        if len(tag) > 32 or any(ord(char) < 32 for char in tag):
+            raise HTTPException(status_code=422, detail="单个标签须为 1-32 个可见字符")
+        if tag.casefold() not in {existing.casefold() for existing in values}:
+            values.append(tag)
+    if len(values) > 10:
+        raise HTTPException(status_code=422, detail="每个文档最多设置 10 个标签")
+    return values
+
+
+def _decode_tags(raw: str | None) -> list[str]:
+    try:
+        tags = json.loads(raw or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return tags if isinstance(tags, list) else []
+
+
 def _raise_ingest(exc: IngestError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -91,6 +115,7 @@ def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) 
 @router.get("/admin/documents")
 def list_documents(
     version: str | None = Query(default=None, max_length=32),
+    tag: str | None = Query(default=None, max_length=32),
     effective_date_from: str | None = Query(default=None),
     effective_date_to: str | None = Query(default=None),
     db: sqlite3.Connection = Depends(get_db),
@@ -113,6 +138,14 @@ def list_documents(
         raise HTTPException(status_code=422, detail="生效日期起始值不能晚于结束值")
     clause = "WHERE " + " AND ".join(where) if where else ""
     items = _document_rows(db, clause, tuple(params))
+    if tag:
+        clean_filter = _clean_tags(tag)
+        if len(clean_filter) != 1:
+            raise HTTPException(status_code=422, detail="标签筛选只允许填写一个标签")
+        wanted = clean_filter[0].casefold()
+        items = [item for item in items if any(str(value).casefold() == wanted for value in _decode_tags(item.get("tags")))]
+    for item in items:
+        item["tags"] = _decode_tags(item.get("tags"))
     return {"items": items, "total": len(items)}
 
 
@@ -122,12 +155,14 @@ def upload_document(
     file: UploadFile = File(...),
     version: str = Form(default="1.0"),
     effective_date: str | None = Form(default=None),
+    tags: str | None = Form(default=None),
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_root),
 ):
     filename = _clean_filename(file.filename)
     version = _clean_version(version)
     effective_date = _clean_effective_date(effective_date)
+    tags = _clean_tags(tags)
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
         raise HTTPException(
@@ -148,6 +183,7 @@ def upload_document(
                 user_id=user.id,
                 version=version,
                 effective_date=effective_date,
+                tags=tags,
             )
     except IngestError as exc:
         audit.log_audit(
@@ -166,7 +202,7 @@ def upload_document(
         action="doc_upload",
         user_id=user.id,
         username=user.username,
-        detail=f"doc:{doc['id']} 文件:{filename} 版本:{version} 生效:{effective_date or '未设置'} 切片数:{doc['num_chunks']}",
+        detail=f"doc:{doc['id']} 文件:{filename} 版本:{version} 生效:{effective_date or '未设置'} 标签:{','.join(tags) or '无'} 切片数:{doc['num_chunks']}",
         ip=_ip(request),
     )
     _, default_kb_id = ensure_scope_defaults(db)

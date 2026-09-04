@@ -197,7 +197,7 @@ class Smoke:
         r = self.c.post(
             "/api/admin/documents",
             files={"file": ("考勤与报销规定.txt", txt, "text/plain")},
-            data={"version": "2026.1", "effective_date": "2026-09-01"},
+            data={"version": "2026.1", "effective_date": "2026-09-01", "tags": "研发,制度,研发"},
         )
         check(r.status_code == 201 and r.json().get("status") == "ready", "TXT 上传并入库成功")
         self.txt_doc = r.json()
@@ -206,10 +206,17 @@ class Smoke:
             self.txt_doc.get("version") == "2026.1" and self.txt_doc.get("effective_date") == "2026-09-01",
             "文档版本与生效日期写入成功",
         )
-        r = self.c.get("/api/admin/documents", params={"version": "2026.1", "effective_date_from": "2026-09-01", "effective_date_to": "2026-09-01"})
+        check(self.txt_doc.get("tags") == ["研发", "制度"], "文档标签写入并去重成功")
+        r = self.c.get("/api/admin/documents", params={"version": "2026.1", "tag": "制度", "effective_date_from": "2026-09-01", "effective_date_to": "2026-09-01"})
         check(r.status_code == 200 and [d["id"] for d in r.json()["items"]] == [self.txt_doc["id"]], "文档元数据筛选成功")
         r = self.c.get("/api/admin/documents", params={"effective_date_from": "2026-10-01", "effective_date_to": "2026-09-01"})
         check(r.status_code == 422, "非法生效日期范围返回 422")
+        r = self.c.post(
+            "/api/admin/documents",
+            files={"file": ("标签过多.txt", b"tag validation", "text/plain")},
+            data={"tags": "a,b,c,d,e,f,g,h,i,j,k"},
+        )
+        check(r.status_code == 422, "超过 10 个标签返回 422")
 
         docx = self._docx_bytes()
         r = self.c.post(

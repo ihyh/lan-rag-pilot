@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import threading
 import uuid
@@ -35,7 +36,13 @@ def _fetch_doc(db: sqlite3.Connection, doc_id: int):
 
 
 def doc_dict(row) -> dict:
-    return dict(row)
+    item = dict(row)
+    try:
+        tags = json.loads(item.get("tags") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        tags = []
+    item["tags"] = tags if isinstance(tags, list) else []
+    return item
 
 
 def _fail_doc(db: sqlite3.Connection, doc_id: int, message: str) -> None:
@@ -60,6 +67,7 @@ def ingest_bytes(
     user_id: int,
     version: str = "1.0",
     effective_date: str | None = None,
+    tags: list[str] | None = None,
 ) -> dict:
     """校验并入库单个文件，返回入库后的文档 dict。"""
     if not data:
@@ -105,7 +113,7 @@ def ingest_bytes(
     now = now_iso()
     cur = db.execute(
         "INSERT INTO documents (filename, stored_name, content_type, size_bytes, sha256, status,"
-        " version, effective_date, uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?,?,?)",
+        " version, effective_date, tags, uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?,?,?,?)",
         (
             filename,
             stored_name,
@@ -114,6 +122,7 @@ def ingest_bytes(
             sha256,
             version,
             effective_date,
+            json.dumps(tags or [], ensure_ascii=False),
             user_id,
             now,
             now,

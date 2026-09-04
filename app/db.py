@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS documents (
     pages        INTEGER,
     version      TEXT    NOT NULL DEFAULT '1.0',
     effective_date TEXT,
+    tags         TEXT    NOT NULL DEFAULT '[]',
     uploaded_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
@@ -193,6 +194,8 @@ def _ensure_document_metadata_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN version TEXT NOT NULL DEFAULT '1.0'")
     if "effective_date" not in columns:
         conn.execute("ALTER TABLE documents ADD COLUMN effective_date TEXT")
+    if "tags" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
 
 
 def ensure_scope_defaults(conn: sqlite3.Connection) -> tuple[int, int]:
