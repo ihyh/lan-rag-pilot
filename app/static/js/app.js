@@ -1,0 +1,449 @@
+/* ============================================================
+ * app.js — 问答页逻辑
+ *  - 会话校验（未登录跳 /login）
+ *  - 左侧历史列表 + 右侧问答（Enter 发送 / Ctrl+Enter 换行）
+ *  - 发送后拉取完整问答记录渲染「答案 + 引用来源卡」
+ *  - 顶层 try/catch + toast，避免未捕获异常白屏
+ * ============================================================ */
+'use strict';
+
+(function () {
+  var S = {
+    me: null,
+    busy: false,           // 是否正在生成回答
+    currentId: null,       // 当前展开的历史记录 id
+    typingEl: null,        // “正在生成”占位气泡
+    composing: false       // 中文输入法组合中
+  };
+
+  var els = {};
+  function cacheEls() {
+    els.scroll = document.getElementById('chatScroll');
+    els.messages = document.getElementById('messages');
+    els.greeting = document.getElementById('chatGreeting');
+    els.input = document.getElementById('questionInput');
+    els.sendBtn = document.getElementById('sendBtn');
+    els.newChatBtn = document.getElementById('newChatBtn');
+    els.historyList = document.getElementById('historyList');
+    els.historyEmpty = document.getElementById('historyEmpty');
+    els.historyLoading = document.getElementById('historyLoading');
+    els.historyFoot = document.getElementById('historyFoot');
+    els.notice = document.getElementById('meNotice');
+    els.questionCount = document.getElementById('questionCount');
+  }
+
+  function showNotice(text) {
+    if (!els.notice) { return; }
+    if (!text) { els.notice.classList.add('hidden'); return; }
+    els.notice.innerHTML = '';
+    els.notice.appendChild(h('span', { html: icon('alert') }));
+    els.notice.appendChild(h('span', null, [text]));
+    els.notice.classList.remove('hidden');
+  }
+
+  function scrollBottom() {
+    if (els.scroll) { els.scroll.scrollTop = els.scroll.scrollHeight; }
+  }
+
+  /* ---------- 消息渲染 ---------- */
+
+  function askBubble(text) {
+    return h('div', { class: 'msg msg-q' }, [
+      h('div', { class: 'bubble bubble-q' }, [text])
+    ]);
+  }
+
+  function answerBubble(text) {
+    return h('div', { class: 'msg msg-a' }, [
+      h('div', { class: 'bubble bubble-a' }, [text || '（本次没有返回文本）'])
+    ]);
+  }
+
+  function errorBubble(text) {
+    return h('div', { class: 'msg msg-a' }, [
+      h('div', { class: 'bubble bubble-error' }, [text || '出错了，请稍后重试'])
+    ]);
+  }
+
+  function typingBubble() {
+    return h('div', { class: 'msg msg-a' }, [
+      h('div', { class: 'bubble bubble-a bubble-load' }, [
+        h('span', { class: 'spin' }),
+        '正在检索知识库并生成回答…'
+      ])
+    ]);
+  }
+
+  /** 单条来源位置文案 */
+  function sourceLoc(s) {
+    if (s.page !== null && s.page !== undefined && s.page !== '') { return '第 ' + s.page + ' 页'; }
+    if (s.paragraph !== null && s.paragraph !== undefined && s.paragraph !== '') { return '第 ' + s.paragraph + ' 段'; }
+    return '全文检索';
+  }
+
+  function scorePct(score) {
+    if (score === null || score === undefined || score === '') { return '—'; }
+    var n = Number(score);
+    if (isNaN(n)) { return '—'; }
+    return (Math.round(n * 1000) / 10) + '%';
+  }
+
+  function sourcesNode(sources) {
+    var items = sources || [];
+    var wrap = h('div', { class: 'msg-a' }, []);
+    if (!items.length) {
+      var none = h('div', { class: 'no-sources' }, [h('span', { html: icon('search') })]);
+      none.appendChild(h('span', null, ['本次回答没有引用来源']));
+      wrap.appendChild(none);
+      return wrap;
+    }
+    var cards = items.map(function (s) {
+      return h('div', { class: 'source-card' }, [
+        h('div', { class: 'doc-ic', html: icon('doc') }),
+        h('div', { class: 's-main' }, [
+          h('div', { class: 's-top' }, [
+            h('span', { class: 's-name', title: s.filename || '' }, [s.filename || '未知文档']),
+            h('span', { class: 's-score', title: '相似度' }, [scorePct(s.score)])
+          ]),
+          h('div', { class: 's-meta' }, [
+            h('span', { class: 's-loc' }, [sourceLoc(s)]),
+            s.chunk_id ? h('span', { class: 's-chunk' }, ['片段 #' + s.chunk_id]) : null
+          ]),
+          h('div', { class: 's-excerpt' }, [excerpt(s.excerpt, 220) || '（无摘要内容）'])
+        ])
+      ]);
+    });
+    var title = h('div', { class: 'sources-title' }, [h('span', { html: icon('folder') })]);
+    title.appendChild(h('span', null, ['引用来源（' + items.length + '）']));
+    wrap.appendChild(title);
+    var grid = h('div', { class: 'sources' }, cards);
+    wrap.appendChild(grid);
+    return wrap;
+  }
+
+  function feedbackNode(rec) {
+    var current = rec.feedback && rec.feedback.rating;
+    var wrap = h('div', { class: 'feedback-row' });
+    wrap.appendChild(h('span', { class: 'feedback-label' }, ['这条回答有帮助吗？']));
+    var buttons = {};
+    ['helpful', 'unhelpful'].forEach(function (rating) {
+      var label = rating === 'helpful' ? '有帮助' : '没帮助';
+      var btn = h('button', {
+        class: 'feedback-btn' + (current === rating ? ' is-selected' : ''),
+        type: 'button',
+        'aria-label': label
+      }, [label]);
+      btn.addEventListener('click', async function () {
+        if (btn.disabled) { return; }
+        Object.keys(buttons).forEach(function (key) { buttons[key].disabled = true; });
+        try {
+          await api('/api/chats/' + rec.id + '/feedback', {
+            method: 'POST',
+            body: { rating: rating }
+          });
+          current = rating;
+          Object.keys(buttons).forEach(function (key) {
+            buttons[key].classList.toggle('is-selected', key === current);
+            buttons[key].disabled = false;
+          });
+          toast('反馈已保存', 'success');
+        } catch (e) {
+          Object.keys(buttons).forEach(function (key) { buttons[key].disabled = false; });
+          toast('反馈保存失败：' + (e.message || '请稍后重试'), 'error');
+        }
+      });
+      buttons[rating] = btn;
+      wrap.appendChild(btn);
+    });
+    return wrap;
+  }
+
+  /**
+   * 将一条问答记录渲染到消息区（覆盖当前视图）
+   * rec: GET /api/chats/{id} 返回的记录（含 sources）
+   */
+  function renderRecord(rec) {
+    if (!rec) { return; }
+    hideGreeting();
+    clear(els.messages);
+    els.messages.classList.remove('hidden');
+    els.messages.appendChild(askBubble(rec.question));
+    if (rec.status === 'error') {
+      var why = rec.error || '未知错误';
+      els.messages.appendChild(errorBubble('回答失败：' + why + '（记录 #' + rec.id + '）'));
+    } else {
+      els.messages.appendChild(answerBubble(rec.answer));
+      els.messages.appendChild(feedbackNode(rec));
+      els.messages.appendChild(sourcesNode(rec.sources));
+    }
+    scrollBottom();
+  }
+
+  function showGreeting() {
+    clear(els.messages);
+    els.messages.classList.add('hidden');
+    if (els.greeting) { els.greeting.classList.remove('hidden'); }
+    scrollBottom();
+  }
+
+  function hideGreeting() {
+    if (els.greeting) { els.greeting.classList.add('hidden'); }
+  }
+
+  /* ---------- 历史列表 ---------- */
+
+  function renderHistoryList(items, total) {
+    clear(els.historyList);
+    items = items || [];
+    if (!items.length) {
+      els.historyEmpty.classList.remove('hidden');
+      els.historyLoading.classList.add('hidden');
+      els.historyFoot.textContent = '';
+      return;
+    }
+    els.historyEmpty.classList.add('hidden');
+    els.historyLoading.classList.add('hidden');
+
+    items.forEach(function (item) {
+      var btn = h('button', {
+        class: 'history-item' + (item.id === S.currentId ? ' is-active' : ''),
+        type: 'button',
+        title: item.question || ''
+      }, [
+        h('span', { class: 'h-dot' + (item.status === 'error' ? ' err' : '') }),
+        h('span', { class: 'h-body' }, [
+          h('span', { class: 'h-q' }, [excerpt(item.question, 80)]),
+          h('span', { class: 'h-time' }, [
+            fmtTime(item.created_at),
+            item.status === 'error' ? ' · 失败' : ''
+          ])
+        ])
+      ]);
+      btn.dataset.id = String(item.id);
+      btn.addEventListener('click', function () { selectChat(item.id); });
+      els.historyList.appendChild(btn);
+    });
+
+    var footText = '共 ' + (total != null ? total : items.length) + ' 条';
+    if (total > 25) { footText += '（仅显示最近 25 条）'; }
+    els.historyFoot.textContent = footText;
+  }
+
+  function selectChat(id) {
+    if (S.busy) { toast('正在生成回答，请稍候再切换', 'warn'); return; }
+    if (id === S.currentId && !els.messages.classList.contains('hidden')) { return; }
+    S.currentId = id;
+    markActive(id);
+    loadChatDetail(id);
+  }
+
+  function markActive(id) {
+    qsa('.history-item').forEach(function (it) {
+      it.classList.toggle('is-active', it.dataset.id === String(id));
+    });
+  }
+
+  async function loadChatDetail(id) {
+    hideGreeting();
+    clear(els.messages);
+    els.messages.classList.remove('hidden');
+    var loadBox = h('div', { class: 'msg msg-a' }, [
+      h('div', { class: 'bubble bubble-a bubble-load' }, [h('span', { class: 'spin' }), '正在加载对话详情…'])
+    ]);
+    els.messages.appendChild(loadBox);
+    scrollBottom();
+    try {
+      var rec = await api('/api/chats/' + id);
+      renderRecord(rec);
+    } catch (e) {
+      if (e && e.status === 401) { return; }
+      clear(els.messages);
+      els.messages.appendChild(errorBubble('加载对话详情失败：' + (e && e.message ? e.message : '未知错误')));
+    }
+  }
+
+  async function loadHistory() {
+    els.historyLoading.classList.remove('hidden');
+    els.historyList.classList.add('hidden');
+    try {
+      var data = await api('/api/chats?limit=25');
+      els.historyList.classList.remove('hidden');
+      els.historyLoading.classList.add('hidden');
+      S.historyItems = data.items || [];
+      renderHistoryList(S.historyItems, data.total);
+      // 自动展开最新一条
+      if (S.historyItems.length && S.currentId === null) {
+        selectChat(S.historyItems[0].id);
+      }
+      return data;
+    } catch (e) {
+      if (e && e.status === 401) { return null; }
+      els.historyLoading.classList.add('hidden');
+      els.historyList.classList.remove('hidden');
+      toast('加载历史记录失败：' + (e && e.message ? e.message : '未知错误'), 'error');
+      return null;
+    }
+  }
+
+  /* ---------- 发送问答 ---------- */
+
+  function showTyping() {
+    S.typingEl = typingBubble();
+    els.messages.appendChild(S.typingEl);
+    scrollBottom();
+  }
+
+  function removeTyping() {
+    if (S.typingEl && S.typingEl.parentNode) {
+      S.typingEl.parentNode.removeChild(S.typingEl);
+    }
+    S.typingEl = null;
+  }
+
+  async function sendQuestion() {
+    if (S.busy) { return; }
+    var q = els.input.value.trim();
+    if (!q) { toast('请输入问题', 'warn'); els.input.focus(); return; }
+    if (q.length > 2000) {
+      toast('问题过长（最多 2000 字）', 'warn');
+      return;
+    }
+    S.busy = true;
+    hideGreeting();
+    els.messages.classList.remove('hidden');
+    els.input.value = '';
+    autoSize();
+    busy(els.sendBtn, true, '生成中…');
+
+    // 新的提问先清空当前对话视图，立即展示问题气泡
+    clear(els.messages);
+    els.messages.appendChild(askBubble(q));
+    showTyping();
+    scrollBottom();
+
+    try {
+      var res = await api('/api/query', { method: 'POST', body: { question: q } });
+      var rec = await api('/api/chats/' + res.chat_id);
+      renderRecord(rec);
+      S.currentId = rec.id;
+      await loadHistoryOnly();
+    } catch (e) {
+      removeTyping();
+      if (e && e.status === 401) { return; }
+      // 后端 502 时 detail 里带 chat_id，可回拉失败记录展示
+      var cid = e && e.data && e.data.detail && e.data.detail.chat_id;
+      if (cid) {
+        try {
+          var errRec = await api('/api/chats/' + cid);
+          renderRecord(errRec);
+          S.currentId = errRec.id;
+          await loadHistoryOnly();
+        } catch (e2) {
+          clear(els.messages);
+          els.messages.appendChild(askBubble(q));
+          els.messages.appendChild(errorBubble('回答失败：' + (e.message || '未知错误')));
+        }
+      } else {
+        clear(els.messages);
+        els.messages.appendChild(askBubble(q));
+        els.messages.appendChild(errorBubble('回答失败：' + (e.message || '未知错误')));
+      }
+    } finally {
+      busy(els.sendBtn, false);
+      S.busy = false;
+      els.input.focus();
+    }
+  }
+
+  /** 只重拉历史列表（不自动选中，保持当前视图） */
+  async function loadHistoryOnly() {
+    try {
+      var data = await api('/api/chats?limit=25');
+      S.historyItems = data.items || [];
+      renderHistoryList(S.historyItems, data.total);
+      markActive(S.currentId);
+    } catch (e) { /* 静默：下一轮会再拉 */ }
+  }
+
+  function autoSize() {
+    els.input.style.height = 'auto';
+    els.input.style.height = Math.min(els.input.scrollHeight, 180) + 'px';
+    if (els.questionCount) { els.questionCount.textContent = els.input.value.length + ' / 2000'; }
+  }
+
+  /* ---------- 事件绑定 ---------- */
+
+  function bindEvents() {
+    els.sendBtn.innerHTML = '';
+    els.sendBtn.appendChild(h('span', { html: icon('send') }));
+    els.sendBtn.appendChild(document.createTextNode('发送'));
+    var hi = document.getElementById('historyIcon');
+    if (hi) { hi.innerHTML = icon('clock'); }
+    var hei = document.getElementById('historyEmptyIcon');
+    if (hei) { hei.innerHTML = icon('chat'); }
+    var gi = document.getElementById('greetIcon');
+    if (gi) { gi.innerHTML = icon('chat'); }
+
+    els.sendBtn.addEventListener('click', function () { sendQuestion(); });
+    els.newChatBtn.addEventListener('click', function () {
+      if (S.busy) { toast('正在生成回答，请稍候', 'warn'); return; }
+      S.currentId = null;
+      showGreeting();
+      els.input.focus();
+      qsa('.history-item').forEach(function (it) { it.classList.remove('is-active'); });
+    });
+
+    els.input.addEventListener('input', autoSize);
+    qsa('.suggestion').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (S.busy) { return; }
+        els.input.value = btn.dataset.question || '';
+        autoSize();
+        els.input.focus();
+      });
+    });
+    els.input.addEventListener('compositionstart', function () { S.composing = true; });
+    els.input.addEventListener('compositionend', function () {
+      setTimeout(function () { S.composing = false; }, 0);
+    });
+    els.input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && !ev.shiftKey && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        if (ev.isComposing || S.composing) { return; }
+        ev.preventDefault();
+        sendQuestion();
+      }
+    });
+  }
+
+  /* ---------- 启动 ---------- */
+
+  async function boot() {
+    cacheEls();
+    wireGlobalErrors();
+    bindEvents();
+    els.input.focus();
+
+    var me = await initSession();
+    if (!me) { return; }
+    S.me = me;
+
+    // 模型未就绪提示（嵌入模型在后台线程加载中）
+    if (me.model_ready === false) {
+      showNotice(me.model_message || '知识库模型仍在初始化，暂时无法问答与上传文档，请稍候刷新。');
+    }
+
+    registerSW();
+
+    await loadHistory();
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    boot().catch(function (e) {
+      try {
+        if (!(e && e.status === 401)) {
+          toast('问答页初始化失败：' + (e && e.message ? e.message : '未知错误'), 'error');
+        }
+      } catch (x) { /* ignore */ }
+    });
+  });
+})();

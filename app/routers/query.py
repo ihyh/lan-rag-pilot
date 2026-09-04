@@ -1,0 +1,365 @@
+"""问答（检索 + 模型调用）与个人问答历史。"""
+from __future__ import annotations
+
+import json
+import sqlite3
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from .. import audit, runtime as rt
+from ..config import settings
+from ..db import get_db, now_iso
+from ..deps import require_user
+from ..embeddings import EmbeddingUnavailable, embedding_service
+from ..gate import llm_gate
+from ..index import vector_index
+from ..llm import LLMError, chat as llm_chat
+from ..ratelimit import SlidingWindowLimiter
+from ..schemas import FeedbackBody, QueryBody
+
+router = APIRouter()
+
+query_limiter = SlidingWindowLimiter(limit=settings.queries_per_minute, window_seconds=60.0)
+
+EMPTY_KB_ANSWER = "知识库当前为空：还没有任何可检索的文档。请联系管理员上传文档后再提问。"
+
+
+def _ip(request: Request) -> str:
+    return (request.client.host if request.client else "") or ""
+
+
+def _excerpt(text: str, limit: int = 300) -> str:
+    one = " ".join((text or "").split())
+    return one[:limit] + ("…" if len(one) > limit else "")
+
+
+def _sources_for_chat(db: sqlite3.Connection, chat_id: int) -> list[dict]:
+    rows = db.execute(
+        "SELECT s.chunk_id, s.document_id, s.score, s.page, s.paragraph, s.excerpt, d.filename "
+        "FROM chat_sources s JOIN documents d ON d.id = s.document_id "
+        "WHERE s.chat_id=? ORDER BY s.id",
+        (chat_id,),
+    ).fetchall()
+    return [
+        {
+            "chunk_id": r["chunk_id"],
+            "document_id": r["document_id"],
+            "filename": r["filename"],
+            "score": r["score"],
+            "page": r["page"],
+            "paragraph": r["paragraph"],
+            "excerpt": r["excerpt"],
+        }
+        for r in rows
+    ]
+
+
+def _feedback_for_chat(db: sqlite3.Connection, chat_id: int, user_id: int) -> dict | None:
+    row = db.execute(
+        "SELECT rating, comment, created_at FROM feedback WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _allowed_document_ids(db: sqlite3.Connection, user) -> set[int] | None:
+    if user.role == "root":
+        return None
+    rows = db.execute(
+        "SELECT DISTINCT d.id FROM documents d "
+        "JOIN document_knowledge_bases dkb ON dkb.document_id=d.id "
+        "JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id "
+        "JOIN user_departments ud ON ud.department_id=kb.department_id "
+        "WHERE ud.user_id=? AND d.status='ready'",
+        (user.id,),
+    ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
+def _store_chat(
+    db: sqlite3.Connection,
+    user_id: int,
+    question: str,
+    answer: str,
+    status: str,
+    error: str | None,
+    *,
+    model: str | None = None,
+    latency_ms: int | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    sources: list[dict] | None = None,
+) -> int:
+    created = now_iso()
+    cur = db.execute(
+        "INSERT INTO chats (user_id, question, answer, status, error, model, prompt_tokens,"
+        " completion_tokens, latency_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            user_id,
+            question,
+            answer,
+            status,
+            error,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            latency_ms,
+            created,
+        ),
+    )
+    chat_id = int(cur.lastrowid)
+    for s in sources or []:
+        db.execute(
+            "INSERT INTO chat_sources (chat_id, document_id, chunk_id, score, page, paragraph, excerpt)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (
+                chat_id,
+                s["document_id"],
+                s.get("chunk_id"),
+                s["score"],
+                s.get("page"),
+                s.get("paragraph"),
+                _excerpt(s.get("content") or ""),
+            ),
+        )
+    return chat_id
+
+
+@router.post("/query")
+def query(
+    body: QueryBody,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    question = body.question.strip()
+    ip = _ip(request)
+
+    rt_values = rt.get_all(db)
+    ok, retry = query_limiter.allow(
+        key=f"user:{user.id}", limit=rt_values["queries_per_minute"]
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"问答频率超限（每分钟 {rt_values['queries_per_minute']} 次），"
+                f"请约 {int(retry) + 1} 秒后再试"
+            ),
+        )
+
+    if embedding_service.state != "ready":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "embed_not_ready",
+                "message": embedding_service.message or "嵌入模型尚未就绪，请稍后再试",
+            },
+        )
+
+    def refuse(message: str, action: str) -> dict:
+        chat_id = _store_chat(db, user.id, question, message, "ok", None, model=None)
+        audit.log_audit(
+            db,
+            action=action,
+            user_id=user.id,
+            username=user.username,
+            detail=question[:200],
+            ip=ip,
+        )
+        return {"answer": message, "chat_id": chat_id, "sources": [], "status": "ok"}
+
+    allowed_document_ids = _allowed_document_ids(db, user)
+    if allowed_document_ids == set():
+        return refuse("当前账号没有可访问的知识库，请联系管理员分配部门权限。", "query_refused_scope")
+    if vector_index.size() == 0:
+        return refuse(EMPTY_KB_ANSWER, "query_refused_empty")
+
+    try:
+        qvec = embedding_service.embed_query(question)
+        min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
+        hits = vector_index.search(qvec, rt_values["top_k"], allowed_document_ids, min_score)
+    except EmbeddingUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not hits:
+        return refuse("当前账号可访问的知识库没有可用文档，请联系管理员。", "query_no_match")
+
+    ids = [h["chunk_id"] for h in hits]
+    placeholders = ",".join("?" * len(ids))
+    rows = db.execute(
+        f"SELECT c.id AS chunk_id, c.document_id, c.page, c.paragraph, c.content, d.filename "
+        f"FROM chunks c JOIN documents d ON d.id = c.document_id "
+        f"WHERE c.id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    by_id = {r["chunk_id"]: r for r in rows}
+    sources: list[dict] = []
+    for h in hits:
+        r = by_id.get(h["chunk_id"])
+        if r is None:
+            continue
+        sources.append(
+            {
+                "chunk_id": int(r["chunk_id"]),
+                "document_id": int(r["document_id"]),
+                "filename": r["filename"],
+                "page": r["page"],
+                "paragraph": r["paragraph"],
+                "score": round(float(h["score"]), 4),
+                "content": r["content"],
+            }
+        )
+    if not sources:
+        return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
+
+    doc_names = sorted({s["filename"] for s in sources})
+
+    if not llm_gate.acquire(90.0):
+        raise HTTPException(
+            status_code=503,
+            detail="系统繁忙：并发模型请求已达上限，请稍后重试",
+        )
+    try:
+        try:
+            result = llm_chat(question, sources)
+        except LLMError as exc:
+            chat_id = _store_chat(
+                db, user.id, question, "", "error", f"{exc.code}: {exc.message}",
+                model=settings.deepseek_model,
+            )
+            audit.log_audit(
+                db,
+                action="llm_query_failed",
+                user_id=user.id,
+                username=user.username,
+                detail=json.dumps(
+                    {
+                        "question": question[:200],
+                        "documents": doc_names,
+                        "code": exc.code,
+                        "chat_id": chat_id,
+                    },
+                    ensure_ascii=False,
+                ),
+                ip=ip,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={"code": exc.code, "message": exc.message, "chat_id": chat_id},
+            ) from exc
+    finally:
+        llm_gate.release()
+
+    chat_id = _store_chat(
+        db,
+        user.id,
+        question,
+        result["answer"],
+        "ok",
+        None,
+        model=result["model"],
+        latency_ms=result["latency_ms"],
+        prompt_tokens=result["prompt_tokens"],
+        completion_tokens=result["completion_tokens"],
+        sources=sources,
+    )
+    audit.log_audit(
+        db,
+        action="llm_query",
+        user_id=user.id,
+        username=user.username,
+        detail=json.dumps(
+            {
+                "question": question[:200],
+                "documents": doc_names,
+                "model": result["model"],
+                "latency_ms": result["latency_ms"],
+                "prompt_tokens": result["prompt_tokens"],
+                "completion_tokens": result["completion_tokens"],
+            },
+            ensure_ascii=False,
+        ),
+        ip=ip,
+    )
+
+    return {
+        "answer": result["answer"],
+        "chat_id": chat_id,
+        "sources": [
+            {k: s[k] for k in ("chunk_id", "document_id", "filename", "page", "paragraph", "score")}
+            for s in sources
+        ],
+        "status": "ok",
+    }
+
+
+@router.get("/chats")
+def list_chats(
+    limit: int = 25,
+    offset: int = 0,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    total = db.execute(
+        "SELECT COUNT(*) AS n FROM chats WHERE user_id=?", (user.id,)
+    ).fetchone()["n"]
+    rows = db.execute(
+        "SELECT id, question, answer, status, error, model, latency_ms, created_at "
+        "FROM chats WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+        (user.id, limit, offset),
+    ).fetchall()
+    return {"items": [dict(r) for r in rows], "total": total}
+
+
+@router.get("/chats/{chat_id}")
+def get_chat(
+    chat_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    chat = db.execute(
+        "SELECT c.*, u.username AS owner_username FROM chats c "
+        "JOIN users u ON u.id = c.user_id WHERE c.id=?",
+        (chat_id,),
+    ).fetchone()
+    if chat is None or (user.role != "root" and chat["user_id"] != user.id):
+        raise HTTPException(status_code=404, detail="问答记录不存在")
+    item = dict(chat)
+    item["username"] = item.pop("owner_username")
+    item["sources"] = _sources_for_chat(db, chat_id)
+    item["feedback"] = _feedback_for_chat(db, chat_id, user.id)
+    return item
+
+
+@router.post("/chats/{chat_id}/feedback")
+def save_feedback(
+    chat_id: int,
+    body: FeedbackBody,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    chat = db.execute("SELECT id FROM chats WHERE id=? AND user_id=?", (chat_id, user.id)).fetchone()
+    if chat is None:
+        raise HTTPException(status_code=404, detail="问答记录不存在")
+    now = now_iso()
+    db.execute(
+        "INSERT INTO feedback (chat_id, user_id, rating, comment, created_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(chat_id, user_id) DO UPDATE SET rating=excluded.rating, "
+        "comment=excluded.comment, created_at=excluded.created_at",
+        (chat_id, user.id, body.rating, body.comment, now),
+    )
+    audit.log_audit(
+        db,
+        action="feedback_submit",
+        user_id=user.id,
+        username=user.username,
+        detail=f"chat:{chat_id} rating:{body.rating}",
+        ip=_ip(request),
+    )
+    return {"chat_id": chat_id, "rating": body.rating, "comment": body.comment, "created_at": now}

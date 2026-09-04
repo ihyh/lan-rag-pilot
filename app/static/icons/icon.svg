@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="局域网知识库助手">
+  <rect width="512" height="512" rx="112" fill="#101d36"/>
+  <path d="M112 132c0-20 16-36 36-36h216c20 0 36 16 36 36v220c0 20-16 36-36 36H220l-72 54v-54c-20 0-36-16-36-36z" fill="#3b6cf6"/>
+  <path d="M176 180h160M176 244h160M176 308h104" stroke="#fff" stroke-width="28" stroke-linecap="round"/>
+</svg>

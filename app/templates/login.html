@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 局域网知识库助手</title>
+<meta name="theme-color" content="#101d36">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="login-page">
+
+<main class="login-wrap">
+  <div class="card login-card">
+    <div class="login-brand">
+      <img src="/static/icons/icon.svg" alt="局域网知识库助手图标">
+      <h1>局域网知识库助手</h1>
+      <p class="muted">局域网内私有知识问答 · 请使用分配的账号登录</p>
+    </div>
+
+    <div id="loginError" class="form-error hidden" role="alert">
+      <span class="err-ic" id="loginErrorIcon"></span>
+      <span id="loginErrorText"></span>
+    </div>
+
+    <form id="loginForm" novalidate>
+      <label class="field">
+        <span class="field-label">用户名</span>
+        <input class="input" id="loginUsername" name="username" type="text"
+               autocomplete="username" required maxlength="64" placeholder="请输入用户名" autofocus>
+      </label>
+      <label class="field">
+        <span class="field-label">密码</span>
+        <input class="input" id="loginPassword" name="password" type="password"
+               autocomplete="current-password" required maxlength="128" placeholder="请输入密码">
+      </label>
+      <button class="btn btn-primary btn-block" id="loginBtn" type="submit">登 录</button>
+    </form>
+  </div>
+  <p class="login-foot muted">登录即表示您已获得管理员授权 · 账号使用情况会被审计记录</p>
+</main>
+
+<script src="/static/js/common.js"></script>
+<script>
+'use strict';
+(function () {
+  function showLoginError(msg) {
+    var box = document.getElementById('loginError');
+    if (!box) { return; }
+    if (msg) {
+      document.getElementById('loginErrorText').textContent = msg;
+      document.getElementById('loginErrorIcon').innerHTML = window.KB.icon('alert');
+      box.classList.remove('hidden');
+    } else {
+      box.classList.add('hidden');
+    }
+  }
+
+  function afterLogin(role) {
+    // user 与 root 都进问答页（root 的“管理”入口会在导航中出现）
+    location.href = '/app';
+  }
+
+  async function handleLogin(ev) {
+    ev.preventDefault();
+    var form = ev.currentTarget;
+    var username = document.getElementById('loginUsername').value.trim();
+    var password = document.getElementById('loginPassword').value;
+    showLoginError(null);
+    if (!username || !password) {
+      showLoginError('请输入用户名和密码');
+      return;
+    }
+    var btn = document.getElementById('loginBtn');
+    window.KB.busy(btn, true, '登录中…');
+    try {
+      var res = await window.KB.api('/api/login', {
+        method: 'POST',
+        body: { username: username, password: password },
+        redirectOn401: false   // 密码错误的 401 留在本页展示，不跳转
+      });
+      afterLogin(res && res.user ? res.user.role : 'user');
+    } catch (e) {
+      window.KB.busy(btn, false);
+      showLoginError(e && e.message ? e.message : '登录失败，请重试');
+    }
+  }
+
+  async function boot() {
+    try {
+      // 已登录则直接进入问答页（服务端也会 302，此处作双保险）
+      var me = await window.KB.api('/api/me', { redirectOn401: false });
+      if (me && me.username) {
+        location.href = '/app';
+        return;
+      }
+    } catch (e) { /* 401 / 网络异常都留在登录页 */ }
+    document.getElementById('loginForm').addEventListener('submit', handleLogin);
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    try { boot(); } catch (e) {
+      try { window.KB.toast('页面初始化失败：' + (e && e.message ? e.message : '未知错误'), 'error'); } catch (x) { }
+    }
+  });
+})();
+</script>
+</body>
+</html>

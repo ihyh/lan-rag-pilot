@@ -1,0 +1,36 @@
+name: rag-pilot
+
+services:
+  rag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-pilot:local
+    container_name: rag-pilot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RAG_HOST: "0.0.0.0"
+      RAG_PORT: "8088"
+      RAG_DATA_DIR: "/rag/data"
+      RAG_DB_PATH: "/rag/data/rag.db"
+      RAG_UPLOAD_DIR: "/rag/data/uploads"
+      RAG_MODELS_DIR: "/rag/models"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    ports:
+      - "8088:8088"
+    volumes:
+      - rag_data:/rag/data
+      - rag_models:/rag/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8088/api/ready', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  rag_data:
+  rag_models:

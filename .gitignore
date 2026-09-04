@@ -1,0 +1,30 @@
+# 密钥与环境
+.env
+.env.*
+!.env.example
+
+# 运行时数据与模型（本地直接运行时生成）
+data/
+models/
+backups/
+eval/reports/
+.smoke-data/
+.smoke-data*
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.tmp-pip/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

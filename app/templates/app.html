@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问答 · 局域网知识库助手</title>
+<meta name="theme-color" content="#101d36">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="app-body">
+
+<!-- 顶部导航 -->
+<header class="topnav" id="topnav">
+  <div class="nav-inner">
+    <a class="brand" href="/app">
+      <img class="brand-mark" src="/static/icons/icon.svg" alt="局域网知识库助手">
+      <span class="brand-name">局域网知识库助手</span>
+    </a>
+    <button class="btn btn-icon nav-toggle" id="navToggle" type="button"
+            aria-label="展开菜单" aria-expanded="false" aria-controls="navMenu"></button>
+    <div class="nav-menu" id="navMenu">
+      <nav class="nav-links">
+        <a class="nav-link is-active" href="/app" id="appLink">问答</a>
+        <a class="nav-link" href="/admin" id="adminLink" hidden>管理</a>
+      </nav>
+      <div class="nav-user">
+        <span class="user-chip" id="userChip"></span>
+        <button class="btn btn-ghost-light" id="chgPwdBtn" type="button">修改密码</button>
+        <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- 模型未就绪提示 -->
+<div class="banner warn hidden" id="meNotice" role="alert"></div>
+
+<!-- 主体：左历史 / 右问答 -->
+<main class="layout-app" id="appLayout">
+
+  <aside class="history-pane" aria-label="历史记录">
+    <div class="pane-head">
+      <h2 class="pane-title"><span id="historyIcon"></span>历史记录</h2>
+      <button class="btn btn-outline btn-sm" id="newChatBtn" type="button">新建对话</button>
+    </div>
+    <div class="history-scroll" id="historyScroll">
+      <div class="history-list" id="historyList"></div>
+      <div class="empty hidden" id="historyEmpty">
+        <span id="historyEmptyIcon"></span>
+        <p>还没有问答记录</p>
+        <p class="empty-tip">在右侧输入框提出第一个问题吧</p>
+      </div>
+      <div class="list-loading" id="historyLoading">
+        <span class="spin spin-lg"></span>
+      </div>
+    </div>
+    <div class="pane-foot" id="historyFoot"></div>
+  </aside>
+
+  <section class="chat-pane" aria-label="问答区">
+    <div class="chat-scroll" id="chatScroll">
+      <div class="chat-greeting" id="chatGreeting">
+        <span id="greetIcon"></span>
+        <h2>开始提问</h2>
+        <p>输入您的问题，助手将检索知识库文档并结合大模型作答</p>
+        <p class="small">回答下方会展示引用来源，便于核对原文</p>
+        <div class="suggestions" aria-label="示例问题">
+          <button class="suggestion" type="button" data-question="这份文档主要介绍什么内容？">文档主要介绍什么？</button>
+          <button class="suggestion" type="button" data-question="请列出这份文档中的关键流程和注意事项。">关键流程和注意事项</button>
+        </div>
+      </div>
+      <div class="messages hidden" id="messages"></div>
+    </div>
+
+    <div class="composer card">
+      <textarea id="questionInput" rows="2" maxlength="2000"
+                placeholder="请输入问题（Enter 发送，Ctrl+Enter 换行）"></textarea>
+      <div class="composer-bar">
+        <span class="composer-hint">Enter 发送 · Ctrl+Enter 换行 · <span id="questionCount">0 / 2000</span></span>
+        <button class="btn btn-primary btn-send" id="sendBtn" type="button">发送</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "局域网知识库助手",
+  "short_name": "知识库助手",
+  "description": "面向企业局域网的 RAG 知识问答试点",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6fa",
+  "theme_color": "#101d36",
+  "icons": [
+    {
+      "src": "/static/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

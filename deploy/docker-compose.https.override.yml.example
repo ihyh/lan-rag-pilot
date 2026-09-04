@@ -1,0 +1,5 @@
+# 启用 Nginx HTTPS 后，复制为工程根目录 docker-compose.override.yml。
+services:
+  rag:
+    ports:
+      - "127.0.0.1:8088:8088"

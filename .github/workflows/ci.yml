@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-smoke.txt
+
+      - name: Install smoke dependencies
+        run: python -m pip install -r requirements-smoke.txt
+
+      - name: Static checks
+        shell: bash
+        run: |
+          python -m py_compile $(find app scripts tests -name '*.py' -print)
+          node --check app/static/js/app.js
+          node --check app/static/js/admin.js
+          node --check app/static/js/common.js
+          bash -n scripts/backup_data.sh scripts/restore_check.sh scripts/install_backup_cron.sh tests/smoke_runner.sh
+          python tests/eval_runner_check.py
+
+      - name: Compose syntax
+        shell: bash
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+      - name: End-to-end smoke
+        shell: bash
+        run: bash tests/smoke_runner.sh

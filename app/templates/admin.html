@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理 · 局域网知识库助手</title>
+<meta name="theme-color" content="#101d36">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<!-- 顶部导航 -->
+<header class="topnav" id="topnav">
+  <div class="nav-inner">
+    <a class="brand" href="/app">
+      <img class="brand-mark" src="/static/icons/icon.svg" alt="局域网知识库助手">
+      <span class="brand-name">局域网知识库助手</span>
+    </a>
+    <button class="btn btn-icon nav-toggle" id="navToggle" type="button"
+            aria-label="展开菜单" aria-expanded="false" aria-controls="navMenu"></button>
+    <div class="nav-menu" id="navMenu">
+      <nav class="nav-links">
+        <a class="nav-link" href="/app" id="appLink">问答</a>
+        <a class="nav-link is-active" href="/admin" id="adminLink">管理</a>
+      </nav>
+      <div class="nav-user">
+        <span class="user-chip" id="userChip"></span>
+        <button class="btn btn-ghost-light" id="chgPwdBtn" type="button">修改密码</button>
+        <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="banner warn hidden" id="meNotice" role="alert"></div>
+
+<main class="page-shell">
+
+  <!-- 一级标签 -->
+  <div class="tabbar" role="tablist" aria-label="管理功能">
+    <button class="tab is-active" id="tabBtn-overview" data-tab="overview" type="button" role="tab">
+      概览
+    </button>
+    <button class="tab" id="tabBtn-docs" data-tab="docs" type="button" role="tab">
+      文档
+    </button>
+    <button class="tab" id="tabBtn-users" data-tab="users" type="button" role="tab">
+      用户
+    </button>
+    <button class="tab" id="tabBtn-audit" data-tab="audit" type="button" role="tab">
+      审计
+    </button>
+    <button class="tab" id="tabBtn-scope" data-tab="scope" type="button" role="tab">
+      部门 / 知识库
+    </button>
+  </div>
+
+  <!-- ============ 概览 ============ -->
+  <section class="tab-panel is-active" id="panel-overview" data-panel="overview">
+    <div class="list-loading" id="overviewLoading"><span class="spin spin-lg"></span></div>
+    <div id="overviewContent" class="hidden">
+      <div class="cards-grid" id="statCards"></div>
+      <div class="grid-2">
+        <div class="card panel-card">
+          <div class="panel-head">
+            <h2 class="panel-title">模型状态</h2>
+          </div>
+          <div id="modelCard"></div>
+        </div>
+        <div class="card panel-card">
+          <div class="panel-head">
+            <h2 class="panel-title">运行参数</h2>
+          </div>
+          <form id="settingsForm">
+            <div class="settings-grid">
+              <label class="field">
+                <span class="field-label">检索返回条数 top_k（1–20）</span>
+                <input class="input" type="number" id="cfg-top_k" name="top_k" min="1" max="20" step="1" required>
+              </label>
+              <label class="field">
+                <span class="field-label">每分钟问答上限（1–120）</span>
+                <input class="input" type="number" id="cfg-queries_per_minute" name="queries_per_minute" min="1" max="120" step="1" required>
+              </label>
+              <label class="field">
+                <span class="field-label">模型最大并发数（1–32）</span>
+                <input class="input" type="number" id="cfg-max_concurrent_llm" name="max_concurrent_llm" min="1" max="32" step="1" required>
+              </label>
+            </div>
+            <div class="panel-tools" style="margin-top:14px">
+              <button class="btn btn-primary" type="submit" id="saveSettingsBtn">保存运行参数</button>
+              <span class="small muted" id="settingsHint"></span>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    <div class="card panel-card hidden" id="overviewError"></div>
+  </section>
+
+  <!-- ============ 文档 ============ -->
+  <section class="tab-panel" id="panel-docs" data-panel="docs">
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">上传文档</h2>
+        <span class="small muted" id="uploadMeta"></span>
+      </div>
+      <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="上传文档区域">
+        <span id="uploadZoneIcon"></span>
+        <p class="uz-title">点击选择或拖拽文件到此处上传</p>
+        <p class="uz-tip">支持 PDF / DOCX / TXT / Markdown，单个文件不超过 <span id="maxUploadMB">25</span> MB</p>
+      </div>
+      <input type="file" id="fileInput" multiple accept=".pdf,.docx,.txt,.md" class="hidden">
+      <div class="file-chips" id="fileChips"></div>
+    </div>
+
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">文档列表</h2>
+        <div class="panel-tools">
+          <button class="btn btn-outline btn-sm" id="refreshDocsBtn" type="button">刷新列表</button>
+        </div>
+      </div>
+      <div class="list-loading" id="docsLoading"><span class="spin spin-lg"></span></div>
+      <div id="docsBody"></div>
+    </div>
+  </section>
+
+  <!-- ============ 用户 ============ -->
+  <section class="tab-panel" id="panel-users" data-panel="users">
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">新建用户</h2>
+      </div>
+      <form id="createUserForm" autocomplete="off">
+        <div class="user-create-grid">
+          <label class="field">
+            <span class="field-label">用户名（2–32 位，字母/数字/_.-）</span>
+            <input class="input" id="nu-username" name="username" type="text"
+                   pattern="[A-Za-z0-9_.\-]{2,32}" minlength="2" maxlength="32" required autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">初始密码（至少 6 位）</span>
+            <input class="input" id="nu-password" name="password" type="password"
+                   minlength="6" maxlength="128" required autocomplete="new-password">
+          </label>
+          <label class="field">
+            <span class="field-label">角色</span>
+            <select class="select" id="nu-role" name="role">
+              <option value="user">普通用户（user）</option>
+              <option value="root">管理员（root）</option>
+            </select>
+          </label>
+          <button class="btn btn-primary" type="submit" id="createUserBtn">创建用户</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">用户列表</h2>
+        <div class="panel-tools">
+          <button class="btn btn-outline btn-sm" id="refreshUsersBtn" type="button">刷新列表</button>
+        </div>
+      </div>
+      <div class="list-loading" id="usersLoading"><span class="spin spin-lg"></span></div>
+      <div id="usersBody"></div>
+    </div>
+  </section>
+
+  <!-- ============ 审计 ============ -->
+  <section class="tab-panel" id="panel-audit" data-panel="audit">
+    <div class="tabbar muted-tabs" role="tablist" aria-label="审计内容">
+      <button class="subtab is-active" data-subtab="chats" type="button" role="tab">问答记录</button>
+      <button class="subtab" data-subtab="feedback" type="button" role="tab">用户反馈</button>
+      <button class="subtab" data-subtab="logs" type="button" role="tab">审计日志</button>
+    </div>
+
+    <div class="subtab-panel is-active" id="subpanel-chats">
+      <div class="card panel-card">
+        <div class="panel-head">
+          <h2 class="panel-title">全部问答记录</h2>
+          <div class="panel-tools">
+            <span class="small muted" id="chatsHint"></span>
+            <button class="btn btn-outline btn-sm" id="refreshChatsBtn" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="list-loading" id="chatsLoading"><span class="spin spin-lg"></span></div>
+        <div id="chatsBody"></div>
+      </div>
+    </div>
+
+    <div class="subtab-panel" id="subpanel-feedback">
+      <div class="card panel-card">
+        <div class="panel-head">
+          <h2 class="panel-title">用户反馈</h2>
+          <div class="panel-tools">
+            <span class="small muted" id="feedbackHint"></span>
+            <a class="btn btn-outline btn-sm" href="/api/admin/feedback.csv">导出 CSV</a>
+            <button class="btn btn-outline btn-sm" id="refreshFeedbackBtn" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="list-loading" id="feedbackLoading"><span class="spin spin-lg"></span></div>
+        <div id="feedbackBody"></div>
+      </div>
+    </div>
+
+    <div class="subtab-panel" id="subpanel-logs">
+      <div class="card panel-card">
+        <div class="panel-head">
+          <h2 class="panel-title">审计日志</h2>
+          <div class="panel-tools">
+            <span class="small muted" id="logsHint"></span>
+            <button class="btn btn-outline btn-sm" id="refreshLogsBtn" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="list-loading" id="logsLoading"><span class="spin spin-lg"></span></div>
+        <div id="logsBody"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 部门 / 知识库 ============ -->
+  <section class="tab-panel" id="panel-scope" data-panel="scope">
+    <div class="grid-2">
+      <div class="card panel-card">
+        <div class="panel-head"><h2 class="panel-title">新建部门</h2></div>
+        <form id="createDepartmentForm" class="scope-form">
+          <label class="field"><span class="field-label">部门名称</span>
+            <input class="input" id="newDepartmentName" type="text" maxlength="80" required placeholder="例如：研发部">
+          </label>
+          <button class="btn btn-primary" id="createDepartmentBtn" type="submit">创建部门</button>
+        </form>
+      </div>
+      <div class="card panel-card">
+        <div class="panel-head"><h2 class="panel-title">新建知识库</h2></div>
+        <form id="createKnowledgeBaseForm" class="scope-form">
+          <label class="field"><span class="field-label">知识库名称</span>
+            <input class="input" id="newKnowledgeBaseName" type="text" maxlength="80" required placeholder="例如：研发规范">
+          </label>
+          <label class="field"><span class="field-label">所属部门</span>
+            <select class="select" id="newKnowledgeBaseDepartment" required></select>
+          </label>
+          <button class="btn btn-primary" id="createKnowledgeBaseBtn" type="submit">创建知识库</button>
+        </form>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="card panel-card">
+        <div class="panel-head"><h2 class="panel-title">部门列表</h2></div>
+        <div id="departmentsBody"></div>
+      </div>
+      <div class="card panel-card">
+        <div class="panel-head"><h2 class="panel-title">知识库列表</h2></div>
+        <div id="knowledgeBasesBody"></div>
+      </div>
+    </div>
+    <p class="small muted scope-help">用户和文档的分配操作在“用户”和“文档”列表中进行；新建用户和文档会自动进入“默认部门 / 默认知识库”。</p>
+  </section>
+
+</main>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/admin.js"></script>
+</body>
+</html>
