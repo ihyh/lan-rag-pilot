@@ -1,8 +1,25 @@
 # RAG Ubuntu Docker 部署交接记录
 
-更新时间：2026-09-04（Asia/Shanghai）
+更新时间：2026-09-05（Asia/Shanghai）
 
 > 说明：本文第 1–4 节记录的是此前 Ubuntu 已验证的部署快照；本轮新增的 `/api/ready`、低相似度拒答、反馈 CSV 导出及部门/知识库权限等源码变更尚未在 Ubuntu 实机重新构建验证。同步最新源码后，请按第 8 节重建并重新验收。
+
+## 0. 2026-09-05 本地离线模型进展
+
+- Windows 已安装 Ollama `0.33.3`，模型目录为 `D:\Ollama\models`，只监听 `192.168.136.1:11434`。
+- 已把安装器的托盘自启动项改为隐藏运行纯 `ollama serve`，启动命令固定 `OLLAMA_NO_CLOUD=1`、`OLLAMA_CONTEXT_LENGTH=8192`，且不继承 HTTP(S) 代理。
+- `qwen3:4b` 已下载并记录摘要，但 8192 上下文加载后宿主机内存连续为 94.6%–95.2%，按验收规则已判定不适合这台主机。详情见 `deploy/MODEL_MANIFEST.md`。
+- 目标已降为 `qwen3:1.7b` 并完成官方权重校验。一次预热后，3 次模拟 Top-5 非敏感问答分别耗时 12.04s、17.69s、15.06s，宿主机内存稳定为 84.7%–85.0%；连通与性能门槛通过。
+- 正式质量尚未通过：30 条以上人工核对问题/答案/页码仍未提供，且模拟测试发现一条回答含片段之外的泛化说明，必须依赖真实评测逐条复核忠实度。
+- Windows WLAN 地址 `172.16.3.50:11434` 已实测无法连接；但安装器生成的两条 `ollama.exe` Public 入站规则过宽，当前非管理员会话无法修改。管理员 PowerShell 应执行：
+
+```powershell
+Get-NetFirewallRule -DisplayName 'ollama.exe' | Disable-NetFirewallRule
+Get-NetFirewallRule -DisplayName 'RAG Ollama from Ubuntu VM' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName 'RAG Ollama from Ubuntu VM' -Direction Inbound -Action Allow -Protocol TCP -LocalAddress 192.168.136.1 -LocalPort 11434 -RemoteAddress 192.168.136.128 -Profile Any
+```
+
+- Ubuntu 的当前 Windows SSH 公钥仍未获授权，因此升级前备份、02:30 cron、源码重建和 Ollama `.env` 切换尚未执行。不得在缺少这些证据时导入公司机密文档。
 
 ## 1. 当前结论
 
@@ -214,7 +231,7 @@ bash scripts/restore_check.sh /home/ihyh/rag-pilot/backups/rag_data_*.tgz
 
 ## 9. 密钥与安全事项
 
-- DeepSeek API Key、会话密钥和 root 初始密码只保存在 `.env`；本文不记录明文。
+- 当前目标 `.env` 使用非秘密占位值 `DEEPSEEK_API_KEY=ollama`，服务器不得保留有效公网模型 Key；会话密钥和 root 初始密码只保存在 `.env`，本文不记录明文。
 - 服务器 `.env` 权限为 `600`。
 - 当前为 HTTP，只适用于隔离局域网试点；敏感资料和扩大使用人数前必须启用 HTTPS，并更换初始弱密码。
 - 临时 SSH 公钥 `rag-deploy-temporary` 已从 `/home/ihyh/.ssh/authorized_keys` 撤销并验证不存在。
