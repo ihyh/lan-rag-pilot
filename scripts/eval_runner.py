@@ -77,13 +77,24 @@ def _same_location(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     return True
 
 
+def _same_document(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    return str(expected.get("filename", "")).casefold() == str(actual.get("filename", "")).casefold()
+
+
 def evaluate_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
     answer = str(response.get("answer") or "")
     actual_sources = response.get("sources") or []
     expected_sources = case["expected_sources"]
     refusal_observed = len(actual_sources) == 0
     expected_refusal = bool(case["should_refuse"])
-    citation_hit = (
+    retrieval_hit = (
+        refusal_observed if expected_refusal else any(
+            _same_document(expected, actual)
+            for expected in expected_sources
+            for actual in actual_sources
+        )
+    )
+    citation_location_hit = (
         refusal_observed if expected_refusal else any(
             _same_location(expected, actual)
             for expected in expected_sources
@@ -103,10 +114,12 @@ def evaluate_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, A
         "expected_refusal": expected_refusal,
         "refusal_observed": refusal_observed,
         "refusal_match": expected_refusal == refusal_observed,
-        "citation_hit": citation_hit,
+        "retrieval_hit": retrieval_hit,
+        "citation_location_hit": citation_location_hit,
+        "citation_hit": citation_location_hit,
         "answer_keywords_hit": answer_keywords_hit,
         "answer_check": answer_check,
-        "auto_pass": bool(answer) and (expected_refusal == refusal_observed) and citation_hit and answer_check != "fail",
+        "auto_pass": bool(answer) and (expected_refusal == refusal_observed) and citation_location_hit and answer_check != "fail",
     }
 
 
@@ -163,11 +176,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "answer_manual_review": sum(1 for x in results if x.get("answer_check") == "manual"),
     }
     total = max(1, summary["cases"])
+    answerable = [x for x in results if not x.get("expected_refusal")]
+    answerable_total = max(1, len(answerable))
     summary.update(
         {
             "retrieval_or_refusal_rate": round(summary["retrieval_or_refusal_pass"] / total, 4),
             "refusal_accuracy": round(summary["refusal_match"] / total, 4),
             "auto_pass_rate": round(summary["auto_pass"] / total, 4),
+            "answerable_cases": len(answerable),
+            "top5_hit_rate": round(sum(1 for x in answerable if x.get("retrieval_hit")) / answerable_total, 4),
+            "citation_location_accuracy": round(
+                sum(1 for x in answerable if x.get("citation_location_hit")) / answerable_total, 4
+            ),
         }
     )
     return {"generated_at": _now(), "base_url": args.base_url.rstrip("/"), "summary": summary, "cases": results}
@@ -175,12 +195,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="运行 RAG 真实问题评测")
-    parser.add_argument("--cases", default="eval/questions.jsonl")
-    parser.add_argument("--out", default="eval/reports/latest.json")
+    parser.add_argument("--cases", default="data/eval/questions.jsonl")
+    parser.add_argument("--out", default="data/eval/reports/latest.json")
     parser.add_argument("--base-url", default="http://127.0.0.1:8088")
-    parser.add_argument("--username", default="root")
+    parser.add_argument("--username", default="eval_user")
     parser.add_argument("--password-env", default="")
-    parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--min-cases", type=int, default=30)
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()

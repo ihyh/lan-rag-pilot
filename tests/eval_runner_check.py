@@ -32,6 +32,9 @@ def main() -> None:
             raise AssertionError("少于最小样本数时必须失败")
     result = evaluate_case(case, {"answer": "支持 PDF。", "sources": [{"filename": "guide.pdf", "page": 2}]})
     assert result["auto_pass"] is True
+    wrong_page = evaluate_case(case, {"answer": "支持 PDF。", "sources": [{"filename": "guide.pdf", "page": 3}]})
+    assert wrong_page["retrieval_hit"] is True
+    assert wrong_page["citation_location_hit"] is False
     print("eval runner check ok")
 
 

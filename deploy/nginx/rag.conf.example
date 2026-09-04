@@ -24,6 +24,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 120s;
+        # 应覆盖应用的 DEEPSEEK_TIMEOUT_S=180，避免代理先于应用截断错误响应。
+        proxy_read_timeout 190s;
     }
 }

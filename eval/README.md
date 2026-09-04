@@ -20,10 +20,10 @@
 
 ```bash
 cd /home/ihyh/rag-pilot
-python3 scripts/eval_runner.py --validate-only --cases eval/questions.jsonl
-python3 scripts/eval_runner.py --cases eval/questions.jsonl --username <评测账号> --out eval/reports/$(date -u +%Y%m%dT%H%M%SZ).json
+python3 scripts/eval_runner.py --validate-only
+python3 scripts/eval_runner.py --username eval_user --out data/eval/reports/$(date -u +%Y%m%dT%H%M%SZ).json
 ```
 
 密码会交互式输入，不会写入报告。评测会真实产生问答历史和审计记录，建议使用单独的 `user` 账号，不要使用 root。
 
-报告 `summary` 会同时给出数量和比例：`retrieval_or_refusal_rate`（检索/拒答是否匹配）、`refusal_accuracy`、`auto_pass_rate`。比例只用于定位回归，答案忠实度和引用位置仍需人工复核。
+默认评测集为 `data/eval/questions.jsonl`，报告写入 `data/eval/reports/`；整个 `data/` 目录已被 Git 忽略。报告 `summary` 会同时给出 `top5_hit_rate`、`citation_location_accuracy`、`refusal_accuracy` 和 `auto_pass_rate`。正式门槛是 Top-5 命中率至少 90%、引用位置正确率至少 95%，答案忠实度仍需人工逐条复核。

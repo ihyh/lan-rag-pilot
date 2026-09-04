@@ -11,7 +11,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 形态 | 单体 FastAPI 应用 + SQLite（WAL）+ 本地 BGE 嵌入检索 + DeepSeek API 生成（仅外发问题与 Top-5 检索片段，完整文件永不出内网） |
+| 形态 | 单体 FastAPI 应用 + SQLite（WAL）+ 本地 BGE 嵌入检索 + 内网 Ollama `qwen3:1.7b` 生成；问题和 Top-5 片段只发往内网模型主机 |
 | 技术栈 | Python 3.12（镜像 `python:3.12-slim`）、CPU 版 PyTorch、`sentence-transformers`、嵌入模型 `BAAI/bge-small-zh-v1.5`（512 维）、Argon2id、pypdf/python-docx |
 | 容器 | compose 项目名/容器名 **`rag-pilot`**，服务键 `rag`，镜像 `rag-pilot:local`，`restart: unless-stopped` |
 | 端口 | 宿主机 **8088** → 容器 8088（映射可改，见 §4 FAQ 类说明） |
@@ -28,14 +28,16 @@
 - □ 宿主机端口 **8088** 空闲（`netstat -ano | findstr 8088`），或已按 §4.3 改用其它映射。
 - □ 磁盘：系统盘 ≥ 10GB（镜像含 CPU PyTorch，体积较大）；数据卷所在盘为长期存储预留空间，SQLite+上传文件按文档量增长（单文件上限 25MB）。
 - □ 内存：建议 **≥ 4GB 可用**（嵌入模型加载 + 5 万切片索引约 100MB + 应用）。
-- □ 出网策略（试点网络 → 外网）按需放行：
+- □ 网络策略按最小范围放行：
 
 | 目标 | 端口 | 用途 | 首次部署后可否收紧 |
 |---|---|---|---|
-| `api.deepseek.com` | 443/TCP | 问答时调用 LLM（每次问答都会出网） | 保持放行（功能必需） |
+| 内网 Ollama 主机 | 11434/TCP | RAG 服务调用本地 LLM | 只允许 RAG 服务器访问；当前实验地址为 `192.168.136.1` |
 | `huggingface.co` 或 `hf-mirror.com` | 443/TCP | 首次启动自动下载嵌入模型 | 可收紧：完成 §4 离线模型预下载后断网也可运行 |
 | `download.pytorch.org` | 443/TCP | 仅 `docker compose build` 时安装 CPU PyTorch | 构建完成后可断 |
 | 局域网入站 | 8088/TCP | 员工浏览器访问 | 仅放行目标网段（如 172.16.0.0/16），勿暴露公网 |
+
+运行阶段不需要访问公网模型服务；镜像、Python 依赖和模型权重应在受控准备阶段下载并核对，正式运行网络可断开公网出口。
 
 - □ 明确**服务不会暴露到公网**，也不在不可信无线网上直接开放（HTTP 明文）。
 
@@ -277,7 +279,7 @@ docker compose logs -f rag    # 确认启动横幅与模型就绪
 - □ **HTTPS**：前置反向代理/网关终结 TLS（如内网 CA 或公司证书），并把 `RAG_COOKIE_SECURE=true` 写入 `.env`；入口地址与 `RAG_PUBLIC_ORIGIN` 一致。
 - □ **更换初始弱口令**（root 及所有账号，示例值 `fcd123` 仅用于测试环境）；启用最小可用账号集，长期不用的账号停用（`is_active=false`）。
 - □ **配置强 `RAG_SECRET_KEY`**（§4.2），确认启动日志不再出现开发密钥告警。
-- □ 复核出网白名单（§2）：除 `api.deepseek.com` 外无多余外联；模型已离线化时可整体断外网。
+- □ 复核网络白名单（§2）：RAG 只能访问指定内网 Ollama 地址，服务器不保存有效公网模型 Key，运行网络无多余公网外联。
 - □ 端口 8088 仅对需要访问的网段开放。
 
 **日常管理**
@@ -303,7 +305,7 @@ docker compose logs -f rag    # 确认启动横幅与模型就绪
 
 - □ §2 前置条件全部满足（Docker、8088、磁盘/内存、出网策略）
 - □ §3 DHCP 保留 172.16.3.50 生效；DNS A 记录可解析；`.env` 已填 `RAG_PUBLIC_ORIGIN`
-- □ §4 `.env` 三件套（`DEEPSEEK_API_KEY`/`RAG_ROOT_PASSWORD`/`RAG_SECRET_KEY`）就位；`docker compose up -d` 后 healthy；root 可登录；模型就绪
+- □ §4 `.env` 中 Ollama 内网地址、`RAG_ROOT_PASSWORD`、`RAG_SECRET_KEY` 就位；不存在有效公网模型 Key；`docker compose up -d` 后 healthy
 - □ 无法访问 HF 时已完成 §4.4 离线模型挂载并验证日志
 - □ §8 门禁：是否已 HTTPS / 已更换弱口令 / 已配强密钥 / 出网白名单核对（未完成则系统仅限隔离试点用途并书面知会）
 - □ §7 备份任务已配置并演练过一次恢复
