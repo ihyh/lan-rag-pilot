@@ -106,6 +106,17 @@
         <h2 class="panel-title">上传文档</h2>
         <span class="small muted" id="uploadMeta"></span>
       </div>
+      <div class="user-create-grid" style="margin-bottom:14px">
+        <label class="field">
+          <span class="field-label">文档版本</span>
+          <input class="input" id="docVersion" type="text" value="1.0" maxlength="32"
+                 pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,31}" required>
+        </label>
+        <label class="field">
+          <span class="field-label">生效日期（可选）</span>
+          <input class="input" id="docEffectiveDate" type="date">
+        </label>
+      </div>
       <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="上传文档区域">
         <span id="uploadZoneIcon"></span>
         <p class="uz-title">点击选择或拖拽文件到此处上传</p>
@@ -119,6 +130,9 @@
       <div class="panel-head">
         <h2 class="panel-title">文档列表</h2>
         <div class="panel-tools">
+          <input class="input" id="docFilterVersion" type="text" maxlength="32" placeholder="版本">
+          <input class="input" id="docFilterFrom" type="date" aria-label="生效日期起始">
+          <input class="input" id="docFilterTo" type="date" aria-label="生效日期结束">
           <button class="btn btn-outline btn-sm" id="refreshDocsBtn" type="button">刷新列表</button>
         </div>
       </div>

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 
 from .. import audit, ingest, runtime as rt
@@ -43,6 +44,24 @@ def _clean_filename(raw: str | None) -> str:
     return name
 
 
+def _clean_version(raw: str | None) -> str:
+    value = (raw or "1.0").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}", value):
+        raise HTTPException(status_code=422, detail="版本号须为 1-32 位字母、数字、点、下划线或连字符")
+    return value
+
+
+def _clean_effective_date(raw: str | None) -> str | None:
+    value = (raw or "").strip()
+    if not value:
+        return None
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="生效日期须为 YYYY-MM-DD") from None
+    return value
+
+
 def _raise_ingest(exc: IngestError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -70,8 +89,30 @@ def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) 
 # ---------------- 文档管理 ----------------
 
 @router.get("/admin/documents")
-def list_documents(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)):
-    items = _document_rows(db)
+def list_documents(
+    version: str | None = Query(default=None, max_length=32),
+    effective_date_from: str | None = Query(default=None),
+    effective_date_to: str | None = Query(default=None),
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(require_root),
+):
+    where: list[str] = []
+    params: list[str] = []
+    if version:
+        where.append("d.version=?")
+        params.append(_clean_version(version))
+    date_from = _clean_effective_date(effective_date_from)
+    date_to = _clean_effective_date(effective_date_to)
+    if date_from:
+        where.append("d.effective_date>=?")
+        params.append(date_from)
+    if date_to:
+        where.append("d.effective_date<=?")
+        params.append(date_to)
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="生效日期起始值不能晚于结束值")
+    clause = "WHERE " + " AND ".join(where) if where else ""
+    items = _document_rows(db, clause, tuple(params))
     return {"items": items, "total": len(items)}
 
 
@@ -79,10 +120,14 @@ def list_documents(db: sqlite3.Connection = Depends(get_db), _=Depends(require_r
 def upload_document(
     request: Request,
     file: UploadFile = File(...),
+    version: str = Form(default="1.0"),
+    effective_date: str | None = Form(default=None),
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_root),
 ):
     filename = _clean_filename(file.filename)
+    version = _clean_version(version)
+    effective_date = _clean_effective_date(effective_date)
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
         raise HTTPException(
@@ -101,6 +146,8 @@ def upload_document(
                 content_type=file.content_type or "",
                 data=data,
                 user_id=user.id,
+                version=version,
+                effective_date=effective_date,
             )
     except IngestError as exc:
         audit.log_audit(
@@ -119,7 +166,7 @@ def upload_document(
         action="doc_upload",
         user_id=user.id,
         username=user.username,
-        detail=f"doc:{doc['id']} 文件:{filename} 切片数:{doc['num_chunks']}",
+        detail=f"doc:{doc['id']} 文件:{filename} 版本:{version} 生效:{effective_date or '未设置'} 切片数:{doc['num_chunks']}",
         ip=_ip(request),
     )
     _, default_kb_id = ensure_scope_defaults(db)

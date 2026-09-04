@@ -197,10 +197,19 @@ class Smoke:
         r = self.c.post(
             "/api/admin/documents",
             files={"file": ("考勤与报销规定.txt", txt, "text/plain")},
+            data={"version": "2026.1", "effective_date": "2026-09-01"},
         )
         check(r.status_code == 201 and r.json().get("status") == "ready", "TXT 上传并入库成功")
         self.txt_doc = r.json()
         check(int(self.txt_doc["num_chunks"]) >= 1, f"TXT 切片数 {self.txt_doc['num_chunks']} >= 1")
+        check(
+            self.txt_doc.get("version") == "2026.1" and self.txt_doc.get("effective_date") == "2026-09-01",
+            "文档版本与生效日期写入成功",
+        )
+        r = self.c.get("/api/admin/documents", params={"version": "2026.1", "effective_date_from": "2026-09-01", "effective_date_to": "2026-09-01"})
+        check(r.status_code == 200 and [d["id"] for d in r.json()["items"]] == [self.txt_doc["id"]], "文档元数据筛选成功")
+        r = self.c.get("/api/admin/documents", params={"effective_date_from": "2026-10-01", "effective_date_to": "2026-09-01"})
+        check(r.status_code == 422, "非法生效日期范围返回 422")
 
         docx = self._docx_bytes()
         r = self.c.post(

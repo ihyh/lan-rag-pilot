@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS documents (
     error        TEXT,
     num_chunks   INTEGER NOT NULL DEFAULT 0,
     pages        INTEGER,
+    version      TEXT    NOT NULL DEFAULT '1.0',
+    effective_date TEXT,
     uploaded_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
@@ -179,8 +181,18 @@ def init_db() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        _ensure_document_metadata_columns(conn)
     finally:
         conn.close()
+
+
+def _ensure_document_metadata_columns(conn: sqlite3.Connection) -> None:
+    """为旧版数据库补齐新增文档元数据列，迁移可重复执行。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "version" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN version TEXT NOT NULL DEFAULT '1.0'")
+    if "effective_date" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN effective_date TEXT")
 
 
 def ensure_scope_defaults(conn: sqlite3.Connection) -> tuple[int, int]:

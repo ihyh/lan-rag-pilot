@@ -58,6 +58,8 @@ def ingest_bytes(
     content_type: str,
     data: bytes,
     user_id: int,
+    version: str = "1.0",
+    effective_date: str | None = None,
 ) -> dict:
     """校验并入库单个文件，返回入库后的文档 dict。"""
     if not data:
@@ -103,13 +105,15 @@ def ingest_bytes(
     now = now_iso()
     cur = db.execute(
         "INSERT INTO documents (filename, stored_name, content_type, size_bytes, sha256, status,"
-        " uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?)",
+        " version, effective_date, uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?,?,?)",
         (
             filename,
             stored_name,
             content_type or "application/octet-stream",
             len(data),
             sha256,
+            version,
+            effective_date,
             user_id,
             now,
             now,

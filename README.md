@@ -322,8 +322,8 @@ uvicorn app.main:app --reload --port 8088
 | `GET /api/chats/{chat_id}` | user/root | 详情含 `sources`（含 300 字截断 `excerpt`）。**非本人一律 404**（不暴露他人记录存在性）；root 可见任意用户记录 |
 | `POST /api/chats/{chat_id}/feedback` | user/root | 提交或更新本人问答评价，`rating` 为 `helpful`/`unhelpful`，可选备注最多 1000 字 |
 | `GET /api/knowledge-bases` | user/root | 返回当前账号可访问的知识库；root 返回全部 |
-| `GET /api/admin/documents` | root | 文档列表（含上传者用户名、状态、切片数等全字段） |
-| `POST /api/admin/documents` | root | multipart `file` 上传入库，201 返回文档 dict。错误：413 超 25MB、409 SHA-256 重复 / 向量维度不一致、400 扩展名/MIME/魔数/内容问题、503 嵌入未就绪；失败均写审计 `doc_upload_failed` |
+| `GET /api/admin/documents?version=&effective_date_from=&effective_date_to=` | root | 文档列表（含上传者、版本、生效日期、状态、切片数等全字段）；筛选参数均可选 |
+| `POST /api/admin/documents` | root | multipart `file` + 可选 `version`（默认 `1.0`）和 `effective_date`（`YYYY-MM-DD`）上传入库，201 返回文档 dict。错误：413 超 25MB、409 SHA-256 重复 / 向量维度不一致、400 扩展名/MIME/魔数/内容问题、422 元数据格式错误、503 嵌入未就绪；失败均写审计 `doc_upload_failed` |
 | `DELETE /api/admin/documents/{doc_id}` | root | 删除文档+切片+磁盘文件并重建索引，204；不存在→404；写审计 |
 | `POST /api/admin/documents/{doc_id}/reindex` | root | 按原文件重新解析/切块/向量化（重启中断的文档也可用此恢复），返回文档 dict；写审计 |
 | `GET /api/admin/users` | root | 用户列表（不含密码哈希） |
@@ -563,7 +563,7 @@ mock 支持在问题文本内嵌触发指令（会被忽略、不进入答案，
 - 试点规模上限：约 **20 人 / 1000 文档 / 5 万切片**（5 万切片内存向量约 100MB，`index.py` 注释）。
 - 超限后迁移路线：**PostgreSQL + pgvector**（向量与 Top-K 检索外置），同时需做**多进程改造**：进程内限流/闸门/索引/`ingest_lock` 需换为 Redis 等共享组件与分布式锁（`ratelimit.py`/`config.py` 注释明示的设计前提）。
 - 正式环境安全改造：HTTPS + `RAG_COOKIE_SECURE=true` + 强 `RAG_SECRET_KEY` + 强口令；如需 SSO/机器人接入属新功能开发，本版本未含。
-- 数据库无迁移框架（`CREATE TABLE IF NOT EXISTS` 建表），跨版本升级前先备份数据卷（见交接文档《IT_handover.md》运维清单）。
+- 数据库无迁移框架；启动时会幂等补齐文档元数据列，跨版本升级前仍需先备份数据卷（见交接文档《IT_handover.md》运维清单）。
 
 ## 14. 真实问题评测
 
