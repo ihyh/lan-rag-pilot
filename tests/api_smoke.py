@@ -211,6 +211,11 @@ class Smoke:
         check(r.status_code == 200 and [d["id"] for d in r.json()["items"]] == [self.txt_doc["id"]], "文档元数据筛选成功")
         r = self.c.get("/api/admin/documents", params={"effective_date_from": "2026-10-01", "effective_date_to": "2026-09-01"})
         check(r.status_code == 422, "非法生效日期范围返回 422")
+        r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
+        check(
+            r.status_code == 200 and r.content == txt and "inline" in r.headers.get("content-disposition", ""),
+            "root 可内联打开原文",
+        )
         r = self.c.post(
             "/api/admin/documents",
             files={"file": ("标签过多.txt", b"tag validation", "text/plain")},
@@ -326,6 +331,8 @@ class Smoke:
         r = self.login("alice", "alice123")
         r = self.c.post("/api/query", json={"question": "尝试访问无权限知识库"})
         check(r.status_code == 200 and not r.json().get("sources") and "没有可访问" in r.json().get("answer", ""), "无部门权限时只返回明确拒答")
+        r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
+        check(r.status_code == 404, "user 无权打开其它部门原文")
         r = self.login("root", ROOT_PW)
         r = self.c.patch(f"/api/admin/users/{alice_id}", json={"department_ids": [default_dep["id"]] if default_dep else []})
         check(r.status_code == 200, "恢复 alice 默认部门权限")
@@ -333,6 +340,8 @@ class Smoke:
         # user 也可问答
         r = self.login("alice", "alice123")
         check(r.status_code == 200, "问答前切换为 alice(user)")
+        r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
+        check(r.status_code == 200 and r.content == self._txt_bytes(), "user 可打开授权知识库原文")
         r = self.c.post("/api/query", json={"question": "打卡时间是几点？"})
         check(r.status_code == 200, "alice(user) 问答成功")
         self.alice_chat_id = r.json()["chat_id"]
@@ -357,6 +366,8 @@ class Smoke:
         check(r.status_code == 200, "注销成功")
         r = self.c.get("/api/me")
         check(r.status_code == 401, "注销后会话立即失效")
+        r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
+        check(r.status_code == 401, "未登录不能打开原文")
 
     # ---------- 5. root 审计与全局可见 ----------
     def test_admin_views(self) -> None:
@@ -367,7 +378,7 @@ class Smoke:
         check(r.status_code == 200 and any(c["id"] == self.root_chat_id for c in r.json()["items"]), "root 可见全部问答")
         r = self.c.get("/api/admin/audit")
         acts = [a["action"] for a in r.json()["items"]]
-        check("llm_query" in acts and "doc_upload" in acts and "feedback_submit" in acts and "login" in acts, "审计含 llm_query/doc_upload/feedback/login")
+        check("llm_query" in acts and "doc_upload" in acts and "document_open" in acts and "feedback_submit" in acts and "login" in acts, "审计含 llm_query/doc_upload/document_open/feedback/login")
         r = self.c.get("/api/admin/feedback")
         check(r.status_code == 200 and any(f["chat_id"] == self.alice_chat_id for f in r.json()["items"]), "root 可查看用户反馈")
         r = self.c.get("/api/admin/feedback.csv")

@@ -320,6 +320,7 @@ uvicorn app.main:app --reload --port 8088
 | `POST /api/query` | user | 问答。体 `{question}`（1–2000 字符，去除首尾空白）。错误：429 每用户限流（提示约 N 秒后重试）；503 `{code:"embed_not_ready"}`；502 `{code,message,chat_id}`（LLM 失败）。**成功响应 `sources` 仅含元信息**（`chunk_id/document_id/filename/page/paragraph/score`，不含全文）；`answer` 为空知识库/无命中时返回固定提示文案且 `status:"ok"`（知识库空提示见 `query.py` 常量）。写审计 `llm_query`/`llm_query_failed` 等 |
 | `GET /api/chats?limit=&offset=` | user | 本人问答历史（`limit` 1–100，默认 25；返回 items+total） |
 | `GET /api/chats/{chat_id}` | user/root | 详情含 `sources`（含 300 字截断 `excerpt`）。**非本人一律 404**（不暴露他人记录存在性）；root 可见任意用户记录 |
+| `GET /api/documents/{document_id}/file` | user/root | 内联打开原文；root 可访问全部 ready 文档，user 仅可访问所属部门知识库文档；不存在或无权限统一 404，并写审计 `document_open` |
 | `POST /api/chats/{chat_id}/feedback` | user/root | 提交或更新本人问答评价，`rating` 为 `helpful`/`unhelpful`，可选备注最多 1000 字 |
 | `GET /api/knowledge-bases` | user/root | 返回当前账号可访问的知识库；root 返回全部 |
 | `GET /api/admin/documents?version=&tag=&effective_date_from=&effective_date_to=` | root | 文档列表（含上传者、版本、生效日期、标签、状态、切片数等全字段）；筛选参数均可选，`tag` 为精确匹配单个标签 |
@@ -353,6 +354,7 @@ uvicorn app.main:app --reload --port 8088
 | 运行时参数调整（settings） | ✔ | ✖ |
 | 提交本人回答反馈 | ✔ | ✔ |
 | 查询范围 | 全部知识库 | 所属部门下的知识库 |
+| 打开引用原文 | 全部 ready 文档 | 仅所属部门知识库文档 |
 | 部门 / 知识库管理 | ✔ | ✖ |
 | 查看 `/admin` 管理页 | ✔ | 被跳回 `/app` |
 
@@ -387,7 +389,7 @@ uvicorn app.main:app --reload --port 8088
 - **单文件 25MB** 上限（`RAG_MAX_UPLOAD_MB`，Content-Length 与实读双复核）。
 - **模型**：容器 `/rag/models`（卷 `rag-pilot_rag_models`），本地默认 `<工程根>/models`。
 - **启动自愈**（`main.py _bootstrap`，幂等）：清过期会话；把上次中断遗留 `status='parsing'` 的文档标记为 `failed`（提示重新索引）；从 SQLite 全量重建内存索引；库空时用 `RAG_ROOT_PASSWORD` 建 root 并写 `system_init` 审计。
-- **审计动作**（`audit.py` 调用点）：`login / login_failed / login_blocked / logout / password_change / user_create / user_update / department_create / knowledge_base_create / document_scope_update / doc_upload / doc_upload_failed / doc_delete / doc_reindex / doc_reindex_failed / llm_query / llm_query_failed / query_refused_empty / query_refused_scope / query_no_match / feedback_submit / settings_update / system_init`。
+- **审计动作**（`audit.py` 调用点）：`login / login_failed / login_blocked / logout / password_change / user_create / user_update / department_create / knowledge_base_create / document_scope_update / doc_upload / doc_upload_failed / doc_delete / doc_reindex / doc_reindex_failed / document_open / llm_query / llm_query_failed / query_refused_empty / query_refused_scope / query_no_match / feedback_submit / settings_update / system_init`。
 
 ## 11. 安全边界与限制（如实声明）
 

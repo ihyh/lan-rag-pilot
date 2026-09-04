@@ -88,6 +88,14 @@
     return (Math.round(n * 1000) / 10) + '%';
   }
 
+  function sourceUrl(s) {
+    var url = '/api/documents/' + encodeURIComponent(s.document_id) + '/file';
+    if (s.page !== null && s.page !== undefined && s.page !== '') {
+      url += '#page=' + encodeURIComponent(s.page);
+    }
+    return url;
+  }
+
   function sourcesNode(sources) {
     var items = sources || [];
     var wrap = h('div', { class: 'msg-a' }, []);
@@ -107,7 +115,8 @@
           ]),
           h('div', { class: 's-meta' }, [
             h('span', { class: 's-loc' }, [sourceLoc(s)]),
-            s.chunk_id ? h('span', { class: 's-chunk' }, ['片段 #' + s.chunk_id]) : null
+            s.chunk_id ? h('span', { class: 's-chunk' }, ['片段 #' + s.chunk_id]) : null,
+            h('a', { class: 's-open', href: sourceUrl(s), target: '_blank', rel: 'noopener noreferrer' }, ['打开原文'])
           ]),
           h('div', { class: 's-excerpt' }, [excerpt(s.excerpt, 220) || '（无摘要内容）'])
         ])

@@ -5,6 +5,7 @@ import json
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from .. import audit, runtime as rt
 from ..config import settings
@@ -74,6 +75,44 @@ def _allowed_document_ids(db: sqlite3.Connection, user) -> set[int] | None:
         (user.id,),
     ).fetchall()
     return {int(row[0]) for row in rows}
+
+
+@router.get("/documents/{document_id}/file", response_class=FileResponse)
+def open_document(
+    document_id: int,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    row = db.execute(
+        "SELECT id, filename, stored_name, content_type FROM documents "
+        "WHERE id=? AND status='ready'",
+        (document_id,),
+    ).fetchone()
+    allowed = _allowed_document_ids(db, user)
+    if row is None or (allowed is not None and document_id not in allowed):
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    upload_root = settings.upload_dir.resolve()
+    path = (upload_root / row["stored_name"]).resolve()
+    if path.parent != upload_root or not path.is_file():
+        raise HTTPException(status_code=404, detail="文档文件不存在")
+
+    audit.log_audit(
+        db,
+        action="document_open",
+        user_id=user.id,
+        username=user.username,
+        detail=f"doc:{document_id} 文件:{row['filename']}",
+        ip=_ip(request),
+    )
+    return FileResponse(
+        path,
+        media_type=row["content_type"] or "application/octet-stream",
+        filename=row["filename"],
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 def _store_chat(
