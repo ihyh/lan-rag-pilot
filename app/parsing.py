@@ -1,7 +1,7 @@
-"""文档解析：PDF / DOCX / TXT / MD -> (页码|段落, 文本) 单元列表。
+"""文档解析：PDF / DOCX / XLSX / TXT / MD -> (页码|段落, 文本) 单元列表。
 
 - PDF 保留页码；扫描件/无文本层直接报错（本试点不含 OCR）。
-- DOCX/TXT/MD 以“段落号”作为位置引用。
+- DOCX/TXT/MD 以“段落号”作为位置引用；XLSX 以工作表行作为文本单元。
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 EXTENSIONS = {
     ".pdf": "pdf",
     ".docx": "docx",
+    ".xlsx": "xlsx",
     ".txt": "txt",
     ".md": "md",
 }
@@ -22,6 +23,7 @@ EXTENSIONS = {
 MIME_MAP: dict[str, set[str]] = {
     "pdf": {"application/pdf", "application/x-pdf"},
     "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
     "txt": {"text/plain"},
     "md": {"text/markdown", "text/x-markdown", "text/plain"},
 }
@@ -48,7 +50,7 @@ def detect_ext(filename: str) -> str:
     ext = Path(filename or "").suffix.lower()
     if ext not in EXTENSIONS:
         raise ParseError(
-            f"不支持的文件类型 {ext or '(无扩展名)'}：仅支持 PDF / DOCX / TXT / MD",
+            f"不支持的文件类型 {ext or '(无扩展名)'}：仅支持 PDF / DOCX / XLSX / TXT / MD",
             code="unsupported_ext",
         )
     return ext
@@ -73,6 +75,15 @@ def check_magic(kind: str, data: bytes) -> None:
             raise ParseError(f"文件内容不是有效 DOCX（ZIP 损坏）：{exc}", code="bad_magic") from exc
         if "word/document.xml" not in names:
             raise ParseError("文件内容不是有效 DOCX（缺少 word/document.xml）", code="bad_magic")
+    elif kind == "xlsx":
+        if data[:4] != b"PK\x03\x04":
+            raise ParseError("文件内容不是有效 XLSX（缺少 ZIP/OOXML 头）", code="bad_magic")
+        try:
+            names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+        except zipfile.BadZipFile as exc:
+            raise ParseError(f"文件内容不是有效 XLSX（ZIP 损坏）：{exc}", code="bad_magic") from exc
+        if "xl/workbook.xml" not in names:
+            raise ParseError("文件内容不是有效 XLSX（缺少 xl/workbook.xml）", code="bad_magic")
 
 
 def _clean(text: str) -> str:
@@ -156,6 +167,42 @@ def parse_docx(path: Path) -> list[Unit]:
     return units
 
 
+# ---------------- XLSX ----------------
+
+def parse_xlsx(path: Path) -> list[Unit]:
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+
+    try:
+        workbook = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ParseError(f"XLSX 读取失败：{exc}", code="xlsx_extract") from exc
+
+    units: list[Unit] = []
+    try:
+        for sheet in workbook.worksheets:
+            for row_no, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                cells = []
+                for col_no, value in enumerate(row, start=1):
+                    if value is None:
+                        continue
+                    text = _clean(str(value))
+                    if text:
+                        cells.append(f"{get_column_letter(col_no)}{row_no}={text}")
+                if cells:
+                    units.append(
+                        Unit(
+                            text=f"工作表《{sheet.title}》第 {row_no} 行：" + "；".join(cells),
+                            paragraph=row_no,
+                        )
+                    )
+    finally:
+        workbook.close()
+    if not units:
+        raise ParseError("XLSX 中没有可索引的单元格内容", code="empty_doc")
+    return units
+
+
 # ---------------- TXT / MD ----------------
 
 def _read_text_bytes(path: Path) -> str:
@@ -186,6 +233,7 @@ def parse_text(path: Path) -> list[Unit]:
 PARSERS: dict[str, object] = {
     "pdf": parse_pdf,
     "docx": parse_docx,
+    "xlsx": parse_xlsx,
     "txt": parse_text,
     "md": parse_text,
 }
