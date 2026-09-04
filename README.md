@@ -367,7 +367,7 @@ uvicorn app.main:app --reload --port 8088
 |---|---|
 | `users` | 账号：用户名(NOCASE 唯一)、Argon2id 密码哈希、角色(`root`/`user`)、启停、登录时间 |
 | `sessions` | 会话：仅存令牌 HMAC 哈希 + 过期时间（用户删除级联清理） |
-| `documents` | 文档元数据：原始文件名、UUID 存储名、SHA-256(唯一)、状态(`parsing`/`ready`/`failed`)、切片数、页数、上传者 |
+| `documents` | 文档元数据：原始文件名、UUID 存储名、SHA-256(唯一)、版本、生效日期、状态(`parsing`/`ready`/`failed`)、切片数、页数、上传者 |
 | `chunks` | 切片：页码/段落位置、token 数、正文、512 维向量 BLOB（文档删除级联） |
 | `departments` | 部门目录 |
 | `knowledge_bases` | 知识库目录及所属部门 |
