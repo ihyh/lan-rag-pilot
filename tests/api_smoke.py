@@ -122,6 +122,12 @@ class Smoke:
         check(r.status_code == 403, "user 删除文档返回 403")
         r = self.c.get("/api/admin/users")
         check(r.status_code == 403, "user 管理用户返回 403")
+        r = self.c.get("/api/admin/documents")
+        check(r.status_code == 403, "user 查看管理文档返回 403")
+        r = self.c.get("/api/admin/departments")
+        check(r.status_code == 403, "user 查看管理部门返回 403")
+        r = self.c.get("/api/admin/knowledge-bases")
+        check(r.status_code == 403, "user 查看管理知识库返回 403")
         r = self.c.get("/api/knowledge-bases")
         check(r.status_code == 200 and r.json().get("total", 0) >= 1, "user 可查看自己的知识库范围")
         r = self.c.post("/api/admin/departments", json={"name": "不应创建"})
@@ -304,6 +310,112 @@ class Smoke:
         doc2 = r.json()
         r = self.c.post(f"/api/admin/documents/{doc2['id']}/reindex")
         check(r.status_code == 200 and r.json().get("status") == "ready", "重新索引成功")
+
+    def test_kb_admin_permissions(self) -> None:
+        print("\n== 知识库管理员权限 ==")
+        departments = self.c.get("/api/admin/departments").json()["items"]
+        check(any(d["name"] == "默认部门" for d in departments), "知识库管理员测试前默认部门存在")
+        default_kb = next(
+            k for k in self.c.get("/api/admin/knowledge-bases").json()["items"]
+            if k["name"] == "默认知识库"
+        )
+        own_dep = self.c.post("/api/admin/departments", json={"name": "知识库管理测试部"}).json()
+        other_dep = self.c.post("/api/admin/departments", json={"name": "知识库越权测试部"}).json()
+        own_kb = self.c.post(
+            "/api/admin/knowledge-bases",
+            json={"name": "知识库管理员测试库", "department_id": own_dep["id"]},
+        ).json()
+        other_kb = self.c.post(
+            "/api/admin/knowledge-bases",
+            json={"name": "知识库管理员禁区", "department_id": other_dep["id"]},
+        ).json()
+        keeper = self.c.post(
+            "/api/admin/users",
+            json={"username": "keeper", "password": "keeper123", "role": "kb_admin"},
+        ).json()
+        r = self.c.patch(
+            f"/api/admin/users/{keeper['id']}", json={"department_ids": [own_dep["id"]]}
+        )
+        check(r.status_code == 200 and r.json().get("role") == "kb_admin", "root 创建并分配知识库管理员")
+        with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
+            stored = db.execute(
+                "SELECT role, is_kb_admin FROM users WHERE id=?", (keeper["id"],)
+            ).fetchone()
+        check(stored == ("user", 1), "知识库管理员兼容存储为 user + 标记")
+
+        keeper_client = httpx.Client(base_url=BASE_URL, timeout=60.0)
+        r = keeper_client.post("/api/login", json={"username": "keeper", "password": "keeper123"})
+        check(r.status_code == 200 and r.json()["user"]["role"] == "kb_admin", "知识库管理员登录角色正确")
+        check(keeper_client.get("/admin").status_code == 200, "知识库管理员可进入管理页")
+        for path, label in [
+            ("/api/admin/users", "用户管理"),
+            ("/api/admin/audit", "全局审计"),
+            ("/api/admin/overview", "系统概览"),
+            ("/api/admin/settings", "系统设置"),
+        ]:
+            check(keeper_client.get(path).status_code == 403, f"知识库管理员不能访问{label}")
+        check(
+            keeper_client.post("/api/admin/departments", json={"name": "越权新部门"}).status_code == 403,
+            "知识库管理员不能创建部门",
+        )
+        visible_deps = keeper_client.get("/api/admin/departments").json()["items"]
+        check([d["id"] for d in visible_deps] == [own_dep["id"]], "知识库管理员只看到所属部门")
+        visible_kbs = keeper_client.get("/api/admin/knowledge-bases").json()["items"]
+        check([k["id"] for k in visible_kbs] == [own_kb["id"]], "知识库管理员只看到所属知识库")
+        r = keeper_client.post(
+            "/api/admin/knowledge-bases",
+            json={"name": "知识库管理员新建库", "department_id": own_dep["id"]},
+        )
+        check(r.status_code == 201, "知识库管理员可在所属部门创建知识库")
+        second_own_kb = r.json()
+        r = keeper_client.post(
+            "/api/admin/knowledge-bases",
+            json={"name": "越权知识库", "department_id": other_dep["id"]},
+        )
+        check(r.status_code == 403, "知识库管理员不能在其它部门创建知识库")
+        check(keeper_client.get("/api/admin/documents").json()["total"] == 0, "知识库管理员看不到其它部门文档")
+
+        own_content = "知识库管理员可维护本部门资料，跨部门资料必须由系统管理员处理。".encode("utf-8")
+        r = keeper_client.post(
+            "/api/admin/documents",
+            files={"file": ("知识库管理员资料.txt", own_content, "text/plain")},
+            data={"knowledge_base_id": str(own_kb["id"])},
+        )
+        check(r.status_code == 201, "知识库管理员可上传到所属知识库")
+        own_doc = r.json()
+        r = keeper_client.post(
+            "/api/admin/documents",
+            files={"file": ("越权资料.txt", b"forbidden unique text", "text/plain")},
+            data={"knowledge_base_id": str(other_kb["id"])},
+        )
+        check(r.status_code == 403, "知识库管理员不能上传到其它部门知识库")
+        r = keeper_client.post(f"/api/admin/documents/{own_doc['id']}/reindex")
+        check(r.status_code == 200, "知识库管理员可重建所属文档")
+        r = keeper_client.patch(
+            f"/api/admin/documents/{own_doc['id']}/knowledge-bases",
+            json={"knowledge_base_ids": [own_kb["id"], second_own_kb["id"]]},
+        )
+        check(r.status_code == 200, "知识库管理员可调整所属部门内文档范围")
+
+        r = self.c.patch(
+            f"/api/admin/documents/{own_doc['id']}/knowledge-bases",
+            json={"knowledge_base_ids": [own_kb["id"], default_kb["id"]]},
+        )
+        check(r.status_code == 200, "root 可把文档共享到跨部门知识库")
+        check(
+            all(d["id"] != own_doc["id"] for d in keeper_client.get("/api/admin/documents").json()["items"]),
+            "跨部门共享文档不出现在知识库管理员管理列表",
+        )
+        check(keeper_client.delete(f"/api/admin/documents/{own_doc['id']}").status_code == 404,
+              "知识库管理员不能删除跨部门共享文档")
+        check(
+            keeper_client.patch(
+                f"/api/admin/documents/{self.txt_doc['id']}/knowledge-bases",
+                json={"knowledge_base_ids": [own_kb["id"]]},
+            ).status_code == 404,
+            "知识库管理员不能接管其它部门文档",
+        )
+        keeper_client.close()
 
     # ---------- 4. 问答 ----------
     def test_query(self) -> None:
@@ -506,6 +618,7 @@ def main() -> None:
     s.test_auth()
     s.test_user_permissions()
     s.test_documents()
+    s.test_kb_admin_permissions()
     s.test_query()
     s.test_history()
     s.test_admin_views()

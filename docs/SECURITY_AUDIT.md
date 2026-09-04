@@ -4,7 +4,8 @@
 
 ## 已核对并已落地
 
-- 所有管理接口和反馈导出接口均要求 root；普通 user 的越权请求返回 403。
+- 用户、审计、反馈导出、概览和系统设置仅允许 root；普通 user 的管理请求返回 403。
+- `kb_admin` 只能管理所属部门的知识库和文档；跨部门共享文档不允许其删除、重建或重新分配。
 - 问答详情只允许本人或 root 查看；不存在/他人记录统一返回 404。
 - 密码使用 Argon2id；会话 Cookie 为 HttpOnly、SameSite=Lax；数据库只保存会话令牌 HMAC 哈希。
 - API 写请求有 Origin/Referer 同源校验；API 响应设置 no-store，避免问答、审计和反馈被浏览器缓存。
@@ -16,7 +17,7 @@
 
 ## 本轮本机复核证据
 
-- 在隔离临时目录、mock 嵌入和 mock DeepSeek 下运行 `tests/smoke_runner.ps1`：92 项通过、0 项失败；包含无部门权限拒答、反馈、CSV、5 用户并发、LLM 异常和重启持久化。
+- 在隔离临时目录、mock 嵌入和 mock DeepSeek 下运行 `tests/smoke_runner.ps1`：127 项通过、0 项失败；包含三角色越权、跨部门共享保护、无部门权限拒答、反馈、CSV、5 用户并发、LLM 异常和重启持久化。
 - `.venv` 已补齐 smoke 所需最小依赖；`pip check`、Python/JavaScript 语法检查、Shell 语法检查、`docker compose config --quiet` 和评测脚本检查均通过。
 - 管理页的部门/知识库分配提示现在同时展示 ID 与名称，仍保留按 ID 提交的简单流程。
 - GitHub Actions CI 已加入 push/PR 门禁：使用轻量 smoke 依赖，执行 Python/JavaScript/Shell/Compose 检查和 Linux/Docker 等价 smoke，不读取生产密钥或数据。
@@ -33,7 +34,7 @@
 ## 有意保留的试点边界
 
 - 单进程、SQLite、内存向量索引；超过约 5 万切片或出现并发瓶颈再迁移 PostgreSQL + pgvector。
-- 角色仍为 root/user；知识库管理员、只读角色、SSO、机器人、OCR、Excel/PPT 未实现，避免在权限模型未定稿前扩大攻击面。
+- 逻辑角色为 root/kb_admin/user；为兼容旧 SQLite CHECK，`kb_admin` 在库内存为 `role='user'` 加 `is_kb_admin=1`。SSO、机器人、OCR、Excel/PPT 未实现。
 - 部门权限当前是“部门→知识库→文档”；管理员在页面中按 ID 分配，后续可换成多选控件。
 - 用户自己的历史问答保留可见；若公司要求“撤销部门后连历史引用也不可见”，需要先确定历史访问策略，再增加访问快照或历史脱敏，不能简单删除记录。
 

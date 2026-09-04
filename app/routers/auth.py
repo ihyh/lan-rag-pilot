@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from .. import audit
 from ..config import settings
 from ..db import get_db, now_iso
-from ..deps import CurrentUser, current_user_or_none, require_user
+from ..deps import CurrentUser, current_user_or_none, logical_role, require_user
 from ..embeddings import embedding_service
 from ..ratelimit import SlidingWindowLimiter
 from ..schemas import LoginBody, PasswordBody
@@ -93,7 +93,13 @@ def login(
         username=row["username"],
         ip=ip,
     )
-    return {"ok": True, "user": {"username": row["username"], "role": row["role"]}}
+    return {
+        "ok": True,
+        "user": {
+            "username": row["username"],
+            "role": logical_role(row["role"], bool(row["is_kb_admin"])),
+        },
+    }
 
 
 @router.post("/logout")

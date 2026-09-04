@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 def _landing(user) -> str:
-    return "/admin" if user is not None and user.role == "root" else "/app"
+    return "/admin" if user is not None and user.role in ("root", "kb_admin") else "/app"
 
 
 @router.get("/")
@@ -42,6 +42,6 @@ def app_page(request: Request, user=Depends(current_user_or_none)):
 def admin_page(request: Request, user=Depends(current_user_or_none)):
     if user is None:
         return RedirectResponse("/login")
-    if user.role != "root":
+    if user.role not in ("root", "kb_admin"):
         return RedirectResponse("/app")
     return templates.TemplateResponse(request, "admin.html")

@@ -38,8 +38,8 @@ class UserCreate(BaseModel):
     @field_validator("role")
     @classmethod
     def _check_role(cls, v: str) -> str:
-        if v not in ("root", "user"):
-            raise ValueError("角色只能是 root 或 user")
+        if v not in ("root", "kb_admin", "user"):
+            raise ValueError("角色只能是 root、kb_admin 或 user")
         return v
 
 
@@ -53,8 +53,8 @@ class UserPatch(BaseModel):
     @field_validator("role")
     @classmethod
     def _check_role(cls, v: str | None) -> str | None:
-        if v is not None and v not in ("root", "user"):
-            raise ValueError("角色只能是 root 或 user")
+        if v is not None and v not in ("root", "kb_admin", "user"):
+            raise ValueError("角色只能是 root、kb_admin 或 user")
         return v
 
 

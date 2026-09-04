@@ -18,7 +18,7 @@
 | 数据卷 | `rag-pilot_rag_data` → `/rag/data`（含 `rag.db` 与 `uploads/`）；`rag-pilot_rag_models` → `/rag/models`（模型缓存） |
 | 健康检查 | 存活 `/api/health`；Compose readiness 每 30s 请求 `http://127.0.0.1:8088/api/ready`（10s 超时、3 次重试、30s 启动宽限）；模型未就绪时 readiness 为 503 |
 | 支持文档格式 | PDF / DOCX / TXT / MD；**无 OCR、无 Excel**；扫描件 PDF 明确报错拒收 |
-| 认证 | 账号密码（root/user 两级）+ HttpOnly Cookie 会话（`rag_session`，SameSite=Lax）；**无 SSO** |
+| 认证 | 账号密码（root/kb_admin/user 三级）+ HttpOnly Cookie 会话（`rag_session`，SameSite=Lax）；**无 SSO** |
 | 规模上限 | 试点约 20 人 / 1000 文档 / 5 万切片；之后须迁移 PostgreSQL+pgvector（见 §9） |
 | 界面状态 | 服务端页面 `/login /app /admin` 已提供登录、问答、引用、反馈和 root 管理功能 |
 
@@ -198,9 +198,9 @@ crontab -l | grep 'rag-pilot daily backup'
 
 - 问答页每条本人回答下方可点“有帮助 / 没帮助”；root 在管理页“问答与审计 → 用户反馈”查看。
 - 用户反馈面板提供 CSV 导出，可直接整理为后续评测集候选；导出接口仍受 root 会话保护。
-- 管理页“部门 / 知识库”可新建部门和知识库；在“用户”列表按部门 ID 分配用户，在“文档”列表按知识库 ID 分配文档。
-- 旧数据启动时会自动归入“默认部门 / 默认知识库”；新建用户和上传文档也会先进入默认范围，再由 root 调整。
-- user 只会检索自己所属部门下知识库的 ready 文档；root 不受范围限制。
+- root 可新建部门、管理用户和全部知识库；`kb_admin` 只能新建和维护本人所属部门内的知识库与文档。
+- 旧数据启动时会自动归入“默认部门 / 默认知识库”；root 上传未指定知识库时进入默认知识库，`kb_admin` 上传必须选择所属知识库。
+- user 与 kb_admin 只会检索自己所属部门下知识库的 ready 文档；root 不受范围限制。
 
 恢复演练只解包到临时目录，并执行 SQLite 完整性检查，不会改动现有 Docker 卷：
 

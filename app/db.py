@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT    NOT NULL,
     role          TEXT    NOT NULL CHECK (role IN ('root','user')),
+    is_kb_admin   INTEGER NOT NULL DEFAULT 0,
     is_active     INTEGER NOT NULL DEFAULT 1,
     last_login_at TEXT,
     created_at    TEXT    NOT NULL,
@@ -183,6 +184,7 @@ def init_db() -> None:
     try:
         conn.executescript(SCHEMA)
         _ensure_document_metadata_columns(conn)
+        _ensure_user_permission_columns(conn)
     finally:
         conn.close()
 
@@ -196,6 +198,13 @@ def _ensure_document_metadata_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN effective_date TEXT")
     if "tags" not in columns:
         conn.execute("ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+
+
+def _ensure_user_permission_columns(conn: sqlite3.Connection) -> None:
+    """为旧版数据库补齐知识库管理员兼容字段。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "is_kb_admin" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN is_kb_admin INTEGER NOT NULL DEFAULT 0")
 
 
 def ensure_scope_defaults(conn: sqlite3.Connection) -> tuple[int, int]:

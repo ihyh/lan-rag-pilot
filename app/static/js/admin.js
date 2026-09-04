@@ -2,6 +2,11 @@
 'use strict';
 
 (function () {
+  var currentUser = null;
+
+  function refreshOverview() {
+    return currentUser && currentUser.role === 'root' ? loadOverview() : Promise.resolve();
+  }
   function cell(text, cls) { return h('td', { class: cls || '' }, [text == null ? '—' : String(text)]); }
   function badge(text, cls) {
     return h('span', { class: 'badge ' + cls }, [h('span', { class: 'dot' }), text]);
@@ -97,6 +102,22 @@
     finally { loading.classList.add('hidden'); }
   }
 
+  async function loadUploadKnowledgeBases() {
+    var data = await api('/api/knowledge-bases');
+    var select = qs('#docKnowledgeBase');
+    var selected = select.value;
+    clear(select);
+    if (currentUser.role === 'root') {
+      select.appendChild(h('option', { value: '' }, ['默认知识库']));
+    }
+    data.items.forEach(function (k) {
+      select.appendChild(h('option', { value: k.id }, [k.name + '（' + k.department_name + '）']));
+    });
+    if (selected && data.items.some(function (k) { return String(k.id) === selected; })) {
+      select.value = selected;
+    }
+  }
+
   async function uploadFiles(files) {
     var chips = qs('#fileChips'); clear(chips);
     for (var i = 0; i < files.length; i++) {
@@ -109,26 +130,28 @@
         var effectiveDate = qs('#docEffectiveDate').value;
         if (effectiveDate) { form.append('effective_date', effectiveDate); }
         form.append('tags', qs('#docTags').value.trim());
+        var knowledgeBaseId = qs('#docKnowledgeBase').value;
+        if (knowledgeBaseId) { form.append('knowledge_base_id', knowledgeBaseId); }
         await api('/api/admin/documents', { method: 'POST', body: form });
         chip.className = 'chip chip-ok'; chip.firstChild.innerHTML = icon('check');
       } catch (e) {
         chip.className = 'chip chip-err'; chip.firstChild.innerHTML = icon('alert'); chip.title = e.message;
       }
     }
-    qs('#fileInput').value = ''; await loadDocs(); await loadOverview();
+    qs('#fileInput').value = ''; await loadDocs(); await refreshOverview();
   }
   async function reindexDoc(id, name) {
     if (!window.confirm('重新索引《' + name + '》？')) { return; }
     try {
       await api('/api/admin/documents/' + id + '/reindex', { method: 'POST', body: {} });
-      toast('重新索引完成', 'success'); await loadDocs(); await loadOverview();
+      toast('重新索引完成', 'success'); await loadDocs(); await refreshOverview();
     } catch (e) { toast(e.message || '重新索引失败', 'error'); }
   }
   async function removeDoc(id, name) {
     if (!window.confirm('确认删除《' + name + '》及全部切片？此操作不可撤销。')) { return; }
     try {
       await api('/api/admin/documents/' + id, { method: 'DELETE' });
-      toast('文档已删除', 'success'); await loadDocs(); await loadOverview();
+      toast('文档已删除', 'success'); await loadDocs(); await refreshOverview();
     } catch (e) { toast(e.message || '删除失败', 'error'); }
   }
 
@@ -142,7 +165,7 @@
         actions.appendChild(actionButton('设置部门', 'btn-outline', function () { setUserDepartments(u); }));
         actions.appendChild(actionButton('重置密码', 'btn-outline', function () { resetPassword(u); }));
         actions.appendChild(actionButton(u.is_active ? '停用' : '启用', u.is_active ? 'btn-danger' : 'btn-outline', function () { patchUser(u.id, { is_active: !u.is_active }); }));
-        actions.appendChild(actionButton(u.role === 'root' ? '设为 user' : '设为 root', 'btn-outline', function () { patchUser(u.id, { role: u.role === 'root' ? 'user' : 'root' }); }));
+        actions.appendChild(actionButton('设置角色', 'btn-outline', function () { setUserRole(u); }));
         return h('tr', {}, [
           cell(u.username, 'cell-main'), h('td', {}, [h('span', { class: 'tag-role tag-' + u.role }, [u.role])]),
           h('td', {}, [badge(u.is_active ? '启用' : '停用', u.is_active ? 'b-ok' : 'b-muted')]),
@@ -156,8 +179,20 @@
   async function patchUser(id, patch) {
     try {
       await api('/api/admin/users/' + id, { method: 'PATCH', body: patch });
-      toast('用户已更新', 'success'); await loadUsers(); await loadOverview();
+      toast('用户已更新', 'success'); await loadUsers(); await refreshOverview();
     } catch (e) { toast(e.message || '用户更新失败', 'error'); }
+  }
+
+  function setUserRole(user) {
+    return formModal({
+      title: '设置 ' + user.username + ' 的角色', submitText: '保存角色',
+      fields: [{ name: 'role', label: '角色', type: 'select', value: user.role, options: [
+        { value: 'user', label: '普通用户（user）' },
+        { value: 'kb_admin', label: '知识库管理员（kb_admin）' },
+        { value: 'root', label: '系统管理员（root）' }
+      ]}],
+      onSubmit: async function (values) { await patchUser(user.id, { role: values.role }); }
+    });
   }
   function parseIdList(raw, label) {
     var parts = String(raw || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
@@ -208,6 +243,7 @@
       var select = qs('#newKnowledgeBaseDepartment');
       clear(select);
       deps.items.forEach(function (d) { select.appendChild(h('option', { value: d.id }, [d.id + ' · ' + d.name])); });
+      await loadUploadKnowledgeBases();
     } catch (e) {
       toast('权限列表加载失败：' + (e.message || '未知错误'), 'error');
     }
@@ -290,7 +326,7 @@
       ev.preventDefault(); var btn = qs('#createUserBtn'); busy(btn, true, '创建中…');
       try {
         await api('/api/admin/users', { method: 'POST', body: { username: qs('#nu-username').value, password: qs('#nu-password').value, role: qs('#nu-role').value } });
-        ev.target.reset(); toast('用户已创建', 'success'); await loadUsers(); await loadOverview();
+        ev.target.reset(); toast('用户已创建', 'success'); await loadUsers(); await refreshOverview();
       } catch (e) { toast(e.message || '创建失败', 'error'); }
       finally { busy(btn, false); }
     });
@@ -337,8 +373,15 @@
   async function boot() {
     wireGlobalErrors();
     var me = await initSession(); if (!me) { return; }
-    if (me.role !== 'root') { location.href = '/app'; return; }
-    bindTabs(); bindForms(); registerSW(); await loadOverview();
+    if (me.role !== 'root' && me.role !== 'kb_admin') { location.href = '/app'; return; }
+    currentUser = me;
+    if (me.role !== 'root') {
+      qsa('.root-only').forEach(function (el) { el.hidden = true; el.classList.remove('is-active'); });
+      qs('#tabBtn-docs').classList.add('is-active');
+      qs('#panel-docs').classList.add('is-active');
+    }
+    bindTabs(); bindForms(); registerSW(); await loadUploadKnowledgeBases();
+    if (me.role === 'root') { await loadOverview(); } else { await loadDocs(); }
   }
   document.addEventListener('DOMContentLoaded', function () {
     boot().catch(function (e) { toast(e.message || '管理页启动失败', 'error'); });

@@ -18,6 +18,18 @@ class CurrentUser:
     is_active: bool
 
 
+def logical_role(stored_role: str, is_kb_admin: bool = False) -> str:
+    if stored_role == "root":
+        return "root"
+    return "kb_admin" if is_kb_admin else "user"
+
+
+def stored_role_fields(role: str) -> tuple[str, int]:
+    if role == "root":
+        return "root", 0
+    return "user", int(role == "kb_admin")
+
+
 def current_user_or_none(
     request: Request,
     db: sqlite3.Connection = Depends(get_db),
@@ -28,7 +40,7 @@ def current_user_or_none(
         return None
     token_hash = hash_session_token(token)
     row = db.execute(
-        "SELECT u.id, u.username, u.role, u.is_active FROM sessions s "
+        "SELECT u.id, u.username, u.role, u.is_kb_admin, u.is_active FROM sessions s "
         "JOIN users u ON u.id = s.user_id "
         "WHERE s.token_hash=? AND s.expires_at > ?",
         (token_hash, now_iso()),
@@ -38,7 +50,7 @@ def current_user_or_none(
     return CurrentUser(
         id=int(row["id"]),
         username=row["username"],
-        role=row["role"],
+        role=logical_role(row["role"], bool(row["is_kb_admin"])),
         is_active=bool(row["is_active"]),
     )
 
@@ -54,4 +66,10 @@ def require_user(user=Depends(current_user_or_none)) -> CurrentUser:
 def require_root(user: CurrentUser = Depends(require_user)) -> CurrentUser:
     if user.role != "root":
         raise HTTPException(status_code=403, detail="需要 root 权限")
+    return user
+
+
+def require_kb_admin(user: CurrentUser = Depends(require_user)) -> CurrentUser:
+    if user.role not in ("root", "kb_admin"):
+        raise HTTPException(status_code=403, detail="需要知识库管理员权限")
     return user

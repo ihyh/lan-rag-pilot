@@ -138,6 +138,7 @@ svg.ic {
 .b-muted { background: #eef1f6; color: var(--muted); }
 
 .tag-role { display: inline-block; padding: 0 8px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 20px; }
+.tag-kb_admin { background: #e0f2fe; color: #075985; }
 .tag-root { background: var(--primary-soft); color: var(--primary-600); }
 .tag-user { background: #eef1f6; color: var(--muted); }
 
