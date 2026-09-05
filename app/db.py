@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(document_id);
 
+-- 兼容旧数据库的历史分类表；不再参与文档权限判定。
 CREATE TABLE IF NOT EXISTS departments (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -205,36 +206,3 @@ def _ensure_user_permission_columns(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "is_kb_admin" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN is_kb_admin INTEGER NOT NULL DEFAULT 0")
-
-
-def ensure_scope_defaults(conn: sqlite3.Connection) -> tuple[int, int]:
-    """为旧数据建立默认部门/知识库，并补齐未分配的用户和文档。"""
-    now = now_iso()
-    conn.execute(
-        "INSERT OR IGNORE INTO departments (name, created_at, updated_at) VALUES ('默认部门', ?, ?)",
-        (now, now),
-    )
-    department_id = conn.execute(
-        "SELECT id FROM departments WHERE name='默认部门' COLLATE NOCASE"
-    ).fetchone()[0]
-    conn.execute(
-        "INSERT OR IGNORE INTO knowledge_bases (name, department_id, created_at, updated_at) "
-        "VALUES ('默认知识库', ?, ?, ?)",
-        (department_id, now, now),
-    )
-    knowledge_base_id = conn.execute(
-        "SELECT id FROM knowledge_bases WHERE name='默认知识库' COLLATE NOCASE"
-    ).fetchone()[0]
-    conn.execute(
-        "INSERT OR IGNORE INTO user_departments (user_id, department_id) "
-        "SELECT u.id, ? FROM users u "
-        "WHERE NOT EXISTS (SELECT 1 FROM user_departments ud WHERE ud.user_id=u.id)",
-        (department_id,),
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO document_knowledge_bases (document_id, knowledge_base_id) "
-        "SELECT d.id, ? FROM documents d "
-        "WHERE NOT EXISTS (SELECT 1 FROM document_knowledge_bases x WHERE x.document_id=d.id)",
-        (knowledge_base_id,),
-    )
-    return int(department_id), int(knowledge_base_id)

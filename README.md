@@ -323,19 +323,16 @@ uvicorn app.main:app --reload --port 8088
 | `POST /api/query` | user | 问答。体 `{question}`（1–2000 字符，去除首尾空白）。错误：429 每用户限流（提示约 N 秒后重试）；503 `{code:"embed_not_ready"}`；502 `{code,message,chat_id}`（LLM 失败）。**成功响应 `sources` 仅含元信息**（`chunk_id/document_id/filename/page/paragraph/score`，不含全文）；`answer` 为空知识库/无命中时返回固定提示文案且 `status:"ok"`（知识库空提示见 `query.py` 常量）。写审计 `llm_query`/`llm_query_failed` 等 |
 | `GET /api/chats?limit=&offset=` | user | 本人问答历史（`limit` 1–100，默认 25；返回 items+total） |
 | `GET /api/chats/{chat_id}` | user/root | 详情含 `sources`（含 300 字截断 `excerpt`）。**非本人一律 404**（不暴露他人记录存在性）；root 可见任意用户记录 |
-| `GET /api/documents/{document_id}/file` | user/root | 内联打开原文；root 可访问全部 ready 文档，user 仅可访问所属部门知识库文档；不存在或无权限统一 404，并写审计 `document_open` |
+| `DELETE /api/chats/{chat_id}` | user/root | 删除问答及关联来源、反馈并写审计 `chat_delete`；普通用户仅限本人，root 可删除任意用户问答；无权限统一 404 |
+| `GET /api/documents/{document_id}/file` | user/root | 内联打开原文；所有已登录用户可访问全部 ready 文档；不存在或未就绪返回 404，并写审计 `document_open` |
 | `POST /api/chats/{chat_id}/feedback` | user/root | 提交或更新本人问答评价，`rating` 为 `helpful`/`unhelpful`，可选备注最多 1000 字 |
-| `GET /api/knowledge-bases` | user/root | 返回当前账号可访问的知识库；root 返回全部 |
-| `GET /api/admin/documents?version=&tag=&effective_date_from=&effective_date_to=` | root/kb_admin | 文档列表；kb_admin 只返回完全位于本人所属部门内、可安全管理的文档 |
-| `POST /api/admin/documents` | root/kb_admin | multipart `file` + 可选 `version`、`effective_date`、`tags`、`knowledge_base_id`；kb_admin 必须选择所属知识库，root 未选时进入默认知识库 |
-| `DELETE /api/admin/documents/{doc_id}` | root/kb_admin | 删除文档+切片+磁盘文件并重建索引；kb_admin 仅限所属部门且禁止处理跨部门共享文档 |
+| `GET /api/admin/documents?version=&uploaded_date_from=&uploaded_date_to=` | root/kb_admin | 全部文档列表，可按版本和上传日期筛选；文档管理员与 root 的文档管理范围相同 |
+| `POST /api/admin/documents` | root/kb_admin | multipart `file` + 可选 `version`；上传日期由系统自动记录，无需填写标签、日期、部门或知识库 |
+| `DELETE /api/admin/documents/{doc_id}` | root/kb_admin | 删除文档+切片+磁盘文件并重建索引；root 和文档管理员均可管理全部文档 |
 | `POST /api/admin/documents/{doc_id}/reindex` | root/kb_admin | 按原文件重新解析/切块/向量化；范围限制同删除 |
 | `GET /api/admin/users` | root | 用户列表（不含密码哈希） |
 | `POST /api/admin/users` | root | 建用户：`username`（2–32，`^[A-Za-z0-9_.\-]+$`）、`password`（6–128）、`role`（`user`/`kb_admin`/`root`，默认 `user`）；重名→409 |
-| `PATCH /api/admin/users/{user_id}` | root | 改密码/角色/启停/部门（`department_ids`）；约束（`admin.py`）：不能停用/降级自己；系统至少保留一个启用 root。无字段→400 |
-| `GET/POST /api/admin/departments` | root/kb_admin（GET）/root（POST） | kb_admin 只能查看所属部门；仅 root 可创建部门 |
-| `GET/POST /api/admin/knowledge-bases` | root/kb_admin | kb_admin 只能查看或在所属部门创建知识库 |
-| `PATCH /api/admin/documents/{doc_id}/knowledge-bases` | root/kb_admin | 替换文档可见知识库列表；kb_admin 的文档和目标知识库都必须完全在所属部门内 |
+| `PATCH /api/admin/users/{user_id}` | root | 改密码/角色/启停；已移除 `department_ids`，提交该字段返回 422；约束（`admin.py`）：不能停用/降级自己；系统至少保留一个启用 root。无字段→400 |
 | `GET /api/admin/audit?action=&limit=&offset=` | root | 审计日志（limit≤200，默认 50；可按 action 过滤） |
 | `GET /api/admin/feedback?limit=&offset=` | root | 查看全体用户反馈，含问题、评价和备注 |
 | `GET /api/admin/feedback.csv` | root | 下载全体反馈 CSV（UTF-8 BOM，便于 Excel 打开） |
@@ -346,15 +343,16 @@ uvicorn app.main:app --reload --port 8088
 
 ## 9. 权限模型（root / kb_admin / user）
 
+统一文档库：所有已登录且启用的用户都能检索和打开全部文档，`kb_admin` 作为文档管理员可维护全部文档；个人问答仍仅本人及 root 可访问。部门/知识库分类接口已移除（404）；旧分类表保留数据但不再初始化或参与授权。
+
 | 能力 | root | kb_admin | user |
 |---|---|---|---|
 | 登录 / 自己信息 / 自己密码 / 本人问答 | ✔ | ✔ | ✔ |
 | 查看他人问答、审计、反馈、概览、系统设置 | ✔ | ✖ | ✖ |
-| 用户和部门管理 | ✔ | ✖ | ✖ |
-| 知识库管理 | 全部 | 仅所属部门 | ✖ |
-| 文档上传 / 删除 / 重建 / 分配 | 全部 | 仅所属部门，跨部门共享文档除外 | ✖（403） |
-| 查询和打开引用原文 | 全部知识库 | 所属部门下的知识库 | 所属部门下的知识库 |
-| 查看 `/admin` 管理页 | ✔ | ✔（仅文档和知识库功能） | 被跳回 `/app` |
+| 用户管理 | ✔ | ✖ | ✖ |
+| 文档上传 / 删除 / 重新处理 | 全部 | 全部 | ✖（403） |
+| 查询和打开引用原文 | 全部文档 | 全部文档 | 全部文档 |
+| 查看 `/admin` 管理页 | ✔ | ✔（仅文档功能） | 被跳回 `/app` |
 
 - 会话校验链路（`app/deps.py`）：Cookie 令牌 → HMAC 哈希比对 `sessions` 表 → 校验未过期 → `require_user` → `require_kb_admin` 或 `require_root`。`kb_admin` 在数据库兼容存储为 `role='user'` + `is_kb_admin=1`，对外统一返回逻辑角色。
 - 登录用户名大小写不敏感（`COLLATE NOCASE`，且查询前 strip + lower）；用户名为空/超长/非法字符由 Pydantic 422 拦截。
@@ -367,12 +365,12 @@ uvicorn app.main:app --reload --port 8088
 |---|---|
 | `users` | 账号：用户名(NOCASE 唯一)、Argon2id 密码哈希、存储角色(`root`/`user`)、知识库管理员标记、启停、登录时间 |
 | `sessions` | 会话：仅存令牌 HMAC 哈希 + 过期时间（用户删除级联清理） |
-| `documents` | 文档元数据：原始文件名、UUID 存储名、SHA-256(唯一)、版本、生效日期、标签、状态(`parsing`/`ready`/`failed`)、切片数、页数、上传者 |
+| `documents` | 文档元数据：原始文件名、UUID 存储名、SHA-256(唯一)、版本、状态(`parsing`/`ready`/`failed`)、切片数、页数、上传者、上传日期；旧版生效日期和标签列仅保留历史数据兼容 |
 | `chunks` | 切片：页码/段落位置、token 数、正文、512 维向量 BLOB（文档删除级联） |
-| `departments` | 部门目录 |
-| `knowledge_bases` | 知识库目录及所属部门 |
-| `user_departments` | 用户可访问的部门关联 |
-| `document_knowledge_bases` | 文档与知识库关联 |
+| `departments` | 旧版部门目录，仅保留兼容数据，不参与权限判断 |
+| `knowledge_bases` | 旧版分类目录，仅保留兼容数据 |
+| `user_departments` | 旧版用户部门关联，不再限制访问 |
+| `document_knowledge_bases` | 旧版文档分类关联，不再限制访问 |
 | `chats` | 问答记录：问题/答案/状态(`ok`/`error`)/错误码/模型/耗时可/用量/时间 |
 | `chat_sources` | 引用来源：每次问答命中片段的文档/位置/得分/300 字摘录（随文档删除级联移除） |
 | `feedback` | 用户对本人问答的有帮助/没帮助评价与备注 |
@@ -412,7 +410,7 @@ uvicorn app.main:app --reload --port 8088
 
 - **单进程/单 worker 强制**：限流器、并发闸门、内存向量索引、`ingest_lock` 全部在进程内（`config.py`/`ratelimit.py`/`index.py` 注释明示）。容器默认单 worker；不要用 `--workers N` 或多个副本，否则限流失效、索引各自重建、入库互相竞争。
 - 设计目标规模（`index.py` 注释）：**约 5 万切片**（512 维 float32 ≈ 100MB 内存）以内；整体试点规模经验上限约 **20 人 / 1000 文档 / 5 万切片**，超过后迁移 PostgreSQL + pgvector（索引与检索外置，配合多进程改造，见 §13）。
-- SQLite 单写进程模型 + WAL，入库全程串行（`ingest_lock`），大文件批量上传会排队。
+- SQLite 单写进程模型 + WAL；批量上传先并发登记为 `parsing` 并显示在文档列表，解析与向量化仍由 `ingest_lock` 串行执行。
 
 ## 12. 测试与验收
 
@@ -556,7 +554,7 @@ mock 支持在问题文本内嵌触发指令（会被忽略、不进入答案，
 `docker compose ps` 看状态；healthcheck 每 30s 请求容器内 `http://127.0.0.1:8088/api/ready`（30s 启动宽限 + 3 次重试）。多因模型加载阻塞（仍在下载）或端口未起；看 `docker compose logs rag`。模型下载慢不属于故障——`unhealthy` 后 `restart: unless-stopped` 不会因 healthcheck 失败而重启容器（healthcheck 只上报状态）。
 
 **Q10 页面打开后如何验收？**
-登录后 `/app` 提供历史、问答、引用和反馈；root 登录后 `/admin` 提供文档、用户、审计、反馈及部门/知识库管理。若页面资源异常，先检查浏览器网络面板和 `docker compose logs rag`。
+登录后 `/app` 提供历史、问答、引用和反馈；来源默认折叠，只展示回答编号对应的片段，同文档同页合并，不展示相似度百分比。展开可查看原文摘录和文件位置；缺少有效编号时明确提示无法确认来源。引用编号表示模型标注的依据，不代表已完成事实核验。root 登录后 `/admin` 提供文档、用户、审计、反馈管理。页面不再提供部门或知识库分类、创建和分配入口，上传直接进入统一文档库；切片数量、切块参数、检索条数与阈值由底层维护，不在页面展示。若页面资源异常，先检查浏览器网络面板和 `docker compose logs rag`。
 
 ## 14. 升级与迁移方向（概要）
 

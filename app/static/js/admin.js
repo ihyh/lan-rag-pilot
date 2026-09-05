@@ -36,7 +36,7 @@
       var data = await api('/api/admin/overview');
       var c = data.counts;
       var cards = [
-        ['用户', c.users, 'user'], ['文档', c.documents, 'doc'], ['切片', c.chunks, 'layers'],
+        ['用户', c.users, 'user'], ['文档', c.documents, 'doc'],
         ['问答总数', c.chats, 'chat'], ['今日问答', c.chats_today, 'clock'], ['文件容量', fmtBytes(c.uploads_bytes), 'folder']
       ];
       clear(qs('#statCards'));
@@ -55,8 +55,7 @@
         ]),
         h('div', { class: 'kv-grid' }, [
           kv('应用版本', m.version), kv('嵌入模型', m.embed_model), kv('嵌入后端', m.embed_backend),
-          kv('生成模型', m.llm_model), kv('切块', m.chunk_max_tokens + ' / 重叠 ' + m.chunk_overlap_tokens),
-          kv('最低相似度', m.min_relevance_score),
+          kv('生成模型', m.llm_model),
           kv('对外地址', m.public_origin || '未配置')
         ])
       ]));
@@ -77,78 +76,55 @@
     try {
       var params = new URLSearchParams();
       var filterVersion = qs('#docFilterVersion').value.trim();
-      var filterTag = qs('#docFilterTag').value.trim();
-      var filterFrom = qs('#docFilterFrom').value;
-      var filterTo = qs('#docFilterTo').value;
       if (filterVersion) { params.set('version', filterVersion); }
-      if (filterTag) { params.set('tag', filterTag); }
-      if (filterFrom) { params.set('effective_date_from', filterFrom); }
-      if (filterTo) { params.set('effective_date_to', filterTo); }
       var suffix = params.toString() ? '?' + params.toString() : '';
       var data = await api('/api/admin/documents' + suffix);
       if (!data.items.length) { body.appendChild(empty('尚未上传文档')); return; }
       var rows = data.items.map(function (d) {
         var actions = h('td', { class: 'cell-actions' });
-        actions.appendChild(actionButton('设置知识库', 'btn-outline', function () { setDocumentKnowledgeBases(d); }));
-        actions.appendChild(actionButton('重建索引', 'btn-outline', function () { reindexDoc(d.id, d.filename); }));
+        actions.appendChild(actionButton('重新处理', 'btn-outline', function () { reindexDoc(d.id, d.filename); }));
         actions.appendChild(actionButton('删除', 'btn-danger', function () { removeDoc(d.id, d.filename); }));
         var state = d.status === 'ready' ? badge('就绪', 'b-ok') : d.status === 'failed' ? badge('失败', 'b-err') : badge('处理中', 'b-warn');
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
         if (d.error) { name.appendChild(h('div', { class: 'doc-err', title: d.error }, [d.error])); }
-        return h('tr', {}, [name, cell(d.version || '1.0'), cell(d.effective_date || '—'), cell((d.tags || []).join('、') || '—'), cell(fmtBytes(d.size_bytes)), cell(d.num_chunks), h('td', {}, [state]), cell(d.knowledge_base_names || '默认知识库'), cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
+        return h('tr', {}, [name, cell(d.version || '1.0'), cell(fmtBytes(d.size_bytes)), h('td', {}, [state]), cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
       });
-      body.appendChild(table(['文件', '版本', '生效日期', '标签', '大小', '切片', '状态', '知识库', '上传者', '上传时间', '操作'], rows));
+      body.appendChild(table(['文件', '版本', '大小', '状态', '上传者', '上传日期', '操作'], rows));
     } catch (e) { body.appendChild(empty(e.message || '文档加载失败')); }
     finally { loading.classList.add('hidden'); }
   }
 
-  async function loadUploadKnowledgeBases() {
-    var data = await api('/api/knowledge-bases');
-    var select = qs('#docKnowledgeBase');
-    var selected = select.value;
-    clear(select);
-    if (currentUser.role === 'root') {
-      select.appendChild(h('option', { value: '' }, ['默认知识库']));
-    }
-    data.items.forEach(function (k) {
-      select.appendChild(h('option', { value: k.id }, [k.name + '（' + k.department_name + '）']));
-    });
-    if (selected && data.items.some(function (k) { return String(k.id) === selected; })) {
-      select.value = selected;
-    }
-  }
-
   async function uploadFiles(files) {
     var chips = qs('#fileChips'); clear(chips);
-    for (var i = 0; i < files.length; i++) {
-      var file = files[i];
+    var jobs = Array.from(files).map(async function (file) {
       var chip = h('span', { class: 'chip' }, [h('span', { class: 'spin' }), h('span', { class: 'chip-name', title: file.name }, [file.name])]);
       chips.appendChild(chip);
       try {
         var form = new FormData(); form.append('file', file, file.name);
         form.append('version', qs('#docVersion').value.trim() || '1.0');
-        var effectiveDate = qs('#docEffectiveDate').value;
-        if (effectiveDate) { form.append('effective_date', effectiveDate); }
-        form.append('tags', qs('#docTags').value.trim());
-        var knowledgeBaseId = qs('#docKnowledgeBase').value;
-        if (knowledgeBaseId) { form.append('knowledge_base_id', knowledgeBaseId); }
         await api('/api/admin/documents', { method: 'POST', body: form });
         chip.className = 'chip chip-ok'; chip.firstChild.innerHTML = icon('check');
       } catch (e) {
         chip.className = 'chip chip-err'; chip.firstChild.innerHTML = icon('alert'); chip.title = e.message;
       }
+    });
+    var refreshTimer = setInterval(loadDocs, 1000);
+    setTimeout(loadDocs, 200);
+    try { await Promise.all(jobs); }
+    finally {
+      clearInterval(refreshTimer); qs('#fileInput').value = '';
+      await loadDocs(); await refreshOverview();
     }
-    qs('#fileInput').value = ''; await loadDocs(); await refreshOverview();
   }
   async function reindexDoc(id, name) {
-    if (!window.confirm('重新索引《' + name + '》？')) { return; }
+    if (!window.confirm('重新处理《' + name + '》？')) { return; }
     try {
       await api('/api/admin/documents/' + id + '/reindex', { method: 'POST', body: {} });
-      toast('重新索引完成', 'success'); await loadDocs(); await refreshOverview();
-    } catch (e) { toast(e.message || '重新索引失败', 'error'); }
+      toast('重新处理完成', 'success'); await loadDocs(); await refreshOverview();
+    } catch (e) { toast(e.message || '重新处理失败', 'error'); }
   }
   async function removeDoc(id, name) {
-    if (!window.confirm('确认删除《' + name + '》及全部切片？此操作不可撤销。')) { return; }
+    if (!window.confirm('确认删除《' + name + '》？此操作不可撤销。')) { return; }
     try {
       await api('/api/admin/documents/' + id, { method: 'DELETE' });
       toast('文档已删除', 'success'); await loadDocs(); await refreshOverview();
@@ -162,17 +138,16 @@
       var data = await api('/api/admin/users');
       var rows = data.items.map(function (u) {
         var actions = h('td', { class: 'cell-actions' });
-        actions.appendChild(actionButton('设置部门', 'btn-outline', function () { setUserDepartments(u); }));
         actions.appendChild(actionButton('重置密码', 'btn-outline', function () { resetPassword(u); }));
         actions.appendChild(actionButton(u.is_active ? '停用' : '启用', u.is_active ? 'btn-danger' : 'btn-outline', function () { patchUser(u.id, { is_active: !u.is_active }); }));
         actions.appendChild(actionButton('设置角色', 'btn-outline', function () { setUserRole(u); }));
         return h('tr', {}, [
           cell(u.username, 'cell-main'), h('td', {}, [h('span', { class: 'tag-role tag-' + u.role }, [u.role])]),
           h('td', {}, [badge(u.is_active ? '启用' : '停用', u.is_active ? 'b-ok' : 'b-muted')]),
-          cell(u.department_names || '默认部门'), cell(fmtTime(u.last_login_at)), cell(fmtTime(u.created_at)), actions
+          cell(fmtTime(u.last_login_at)), cell(fmtTime(u.created_at)), actions
         ]);
       });
-      body.appendChild(table(['用户名', '角色', '状态', '部门', '最近登录', '创建时间', '操作'], rows));
+      body.appendChild(table(['用户名', '角色', '状态', '最近登录', '创建时间', '操作'], rows));
     } catch (e) { body.appendChild(empty(e.message || '用户加载失败')); }
     finally { loading.classList.add('hidden'); }
   }
@@ -188,67 +163,12 @@
       title: '设置 ' + user.username + ' 的角色', submitText: '保存角色',
       fields: [{ name: 'role', label: '角色', type: 'select', value: user.role, options: [
         { value: 'user', label: '普通用户（user）' },
-        { value: 'kb_admin', label: '知识库管理员（kb_admin）' },
+        { value: 'kb_admin', label: '文档管理员' },
         { value: 'root', label: '系统管理员（root）' }
       ]}],
       onSubmit: async function (values) { await patchUser(user.id, { role: values.role }); }
     });
   }
-  function parseIdList(raw, label) {
-    var parts = String(raw || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
-    if (!parts.length || parts.some(function (x) { return !/^\d+$/.test(x); })) {
-      throw new Error(label + '必须是逗号分隔的数字 ID');
-    }
-    return Array.from(new Set(parts.map(function (x) { return Number(x); })));
-  }
-
-  async function setUserDepartments(user) {
-    try {
-      var data = await api('/api/admin/departments');
-      var choices = data.items.map(function (d) { return d.id + ' · ' + d.name; }).join('\n');
-      var promptText = '可选部门：\n' + (choices || '暂无部门') + '\n\n输入部门 ID，多个用逗号分隔。当前：' + (user.department_ids || '无');
-      var value = window.prompt(promptText, user.department_ids || '');
-      if (value === null) { return; }
-      await patchUser(user.id, { department_ids: parseIdList(value, '部门 ID') });
-    } catch (e) { toast(e.message || '部门更新失败', 'warn'); }
-  }
-
-  async function setDocumentKnowledgeBases(doc) {
-    try {
-      var data = await api('/api/admin/knowledge-bases');
-      var choices = data.items.map(function (k) { return k.id + ' · ' + k.name + '（' + k.department_name + '）'; }).join('\n');
-      var promptText = '可选知识库：\n' + (choices || '暂无知识库') + '\n\n输入知识库 ID，多个用逗号分隔。当前：' + (doc.knowledge_base_ids || '无');
-      var value = window.prompt(promptText, doc.knowledge_base_ids || '');
-      if (value === null) { return; }
-      await api('/api/admin/documents/' + doc.id + '/knowledge-bases', {
-        method: 'PATCH', body: { knowledge_base_ids: parseIdList(value, '知识库 ID') }
-      });
-      toast('文档权限已更新', 'success');
-      await loadDocs();
-    } catch (e) { toast(e.message, 'warn'); }
-  }
-
-  async function loadScope() {
-    try {
-      var deps = await api('/api/admin/departments');
-      var kbs = await api('/api/admin/knowledge-bases');
-      var depRows = deps.items.map(function (d) {
-        return h('tr', {}, [cell(d.id), cell(d.name, 'cell-main'), cell(d.user_count), cell(d.knowledge_base_count)]);
-      });
-      var kbRows = kbs.items.map(function (k) {
-        return h('tr', {}, [cell(k.id), cell(k.name, 'cell-main'), cell(k.department_name), cell(k.document_count)]);
-      });
-      clear(qs('#departmentsBody')).appendChild(table(['ID', '部门', '用户数', '知识库数'], depRows));
-      clear(qs('#knowledgeBasesBody')).appendChild(table(['ID', '知识库', '所属部门', '文档数'], kbRows));
-      var select = qs('#newKnowledgeBaseDepartment');
-      clear(select);
-      deps.items.forEach(function (d) { select.appendChild(h('option', { value: d.id }, [d.id + ' · ' + d.name])); });
-      await loadUploadKnowledgeBases();
-    } catch (e) {
-      toast('权限列表加载失败：' + (e.message || '未知错误'), 'error');
-    }
-  }
-
   function resetPassword(user) {
     return formModal({
       title: '重置 ' + user.username + ' 的密码', submitText: '重置密码',
@@ -258,6 +178,16 @@
         toast('密码已重置', 'success');
       }
     });
+  }
+
+  async function deleteChat(chat) {
+    if (!window.confirm('确定删除 ' + chat.username + ' 的这条问答记录？删除后无法恢复。')) { return; }
+    try {
+      await api('/api/chats/' + chat.id, { method: 'DELETE' });
+      toast('问答记录已删除', 'success');
+      await loadAudit('chats');
+      await refreshOverview();
+    } catch (e) { toast(e.message || '删除失败', 'error'); }
   }
 
   async function loadAudit(kind) {
@@ -275,15 +205,17 @@
       var rows = data.items.map(function (x) {
         if (isChats) {
           return h('tr', {}, [cell(x.username), cell(excerpt(x.question, 80), 'cell-long'), cell(excerpt(x.answer || x.error, 100), 'cell-long'),
-            h('td', {}, [badge(x.status === 'ok' ? '成功' : '失败', x.status === 'ok' ? 'b-ok' : 'b-err')]), cell(fmtMs(x.latency_ms)), cell(fmtTime(x.created_at))]);
+            h('td', {}, [badge(x.status === 'ok' ? '成功' : '失败', x.status === 'ok' ? 'b-ok' : 'b-err')]), cell(fmtMs(x.latency_ms)), cell(fmtTime(x.created_at)),
+            h('td', { class: 'cell-actions' }, [actionButton('删除', 'btn-danger', function () { deleteChat(x); })])]);
         }
         if (isFeedback) {
           return h('tr', {}, [cell(x.username), cell(x.rating === 'helpful' ? '有帮助' : '没帮助'),
             cell(excerpt(x.question, 90), 'cell-long'), cell(excerpt(x.comment || '—', 90), 'cell-long'), cell(fmtTime(x.created_at))]);
         }
-        return h('tr', {}, [cell(x.username || '系统'), cell(x.action), cell(excerpt(x.detail, 120), 'cell-long'), cell(x.ip), cell(fmtTime(x.created_at))]);
+        var detail = (x.detail || '').replace(/\s*切片数:\d+/g, '');
+        return h('tr', {}, [cell(x.username || '系统'), cell(x.action), cell(excerpt(detail, 120), 'cell-long'), cell(x.ip), cell(fmtTime(x.created_at))]);
       });
-      body.appendChild(table(isChats ? ['用户', '问题', '回答/错误', '状态', '耗时', '时间'] : (isFeedback ? ['用户', '评价', '问题', '备注', '时间'] : ['用户', '动作', '详情', 'IP', '时间']), rows));
+      body.appendChild(table(isChats ? ['用户', '问题', '回答/错误', '状态', '耗时', '时间', '操作'] : (isFeedback ? ['用户', '评价', '问题', '备注', '时间'] : ['用户', '动作', '详情', 'IP', '时间']), rows));
     } catch (e) { body.appendChild(empty(e.message || '记录加载失败')); }
     finally { loading.classList.add('hidden'); }
   }
@@ -297,7 +229,6 @@
         if (btn.dataset.tab === 'docs') { loadDocs(); }
         if (btn.dataset.tab === 'users') { loadUsers(); }
         if (btn.dataset.tab === 'audit') { loadAudit('chats'); }
-        if (btn.dataset.tab === 'scope') { loadScope(); }
       });
     });
     qsa('[data-subtab]').forEach(function (btn) {
@@ -313,7 +244,6 @@
       ev.preventDefault(); var btn = qs('#saveSettingsBtn'); busy(btn, true, '保存中…');
       try {
         var body = {
-          top_k: Number(qs('#cfg-top_k').value),
           queries_per_minute: Number(qs('#cfg-queries_per_minute').value),
           max_concurrent_llm: Number(qs('#cfg-max_concurrent_llm').value)
         };
@@ -330,25 +260,6 @@
       } catch (e) { toast(e.message || '创建失败', 'error'); }
       finally { busy(btn, false); }
     });
-    qs('#createDepartmentForm').addEventListener('submit', async function (ev) {
-      ev.preventDefault(); var btn = qs('#createDepartmentBtn'); busy(btn, true, '创建中…');
-      try {
-        await api('/api/admin/departments', { method: 'POST', body: { name: qs('#newDepartmentName').value } });
-        ev.target.reset(); toast('部门已创建', 'success'); await loadScope();
-      } catch (e) { toast(e.message || '部门创建失败', 'error'); }
-      finally { busy(btn, false); }
-    });
-    qs('#createKnowledgeBaseForm').addEventListener('submit', async function (ev) {
-      ev.preventDefault(); var btn = qs('#createKnowledgeBaseBtn'); busy(btn, true, '创建中…');
-      try {
-        await api('/api/admin/knowledge-bases', { method: 'POST', body: {
-          name: qs('#newKnowledgeBaseName').value,
-          department_id: Number(qs('#newKnowledgeBaseDepartment').value)
-        }});
-        ev.target.reset(); toast('知识库已创建', 'success'); await loadScope();
-      } catch (e) { toast(e.message || '知识库创建失败', 'error'); }
-      finally { busy(btn, false); }
-    });
     var zone = qs('#uploadZone'); var input = qs('#fileInput');
     zone.addEventListener('click', function () { input.click(); });
     zone.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
@@ -361,9 +272,7 @@
     });
     zone.addEventListener('drop', function (e) { if (e.dataTransfer.files.length) { uploadFiles(e.dataTransfer.files); } });
     qs('#refreshDocsBtn').addEventListener('click', loadDocs);
-    ['docFilterVersion', 'docFilterTag', 'docFilterFrom', 'docFilterTo'].forEach(function (id) {
-      qs('#' + id).addEventListener('keydown', function (e) { if (e.key === 'Enter') { loadDocs(); } });
-    });
+    qs('#docFilterVersion').addEventListener('keydown', function (e) { if (e.key === 'Enter') { loadDocs(); } });
     qs('#refreshUsersBtn').addEventListener('click', loadUsers);
     qs('#refreshChatsBtn').addEventListener('click', function () { loadAudit('chats'); });
     qs('#refreshFeedbackBtn').addEventListener('click', function () { loadAudit('feedback'); });
@@ -380,7 +289,8 @@
       qs('#tabBtn-docs').classList.add('is-active');
       qs('#panel-docs').classList.add('is-active');
     }
-    bindTabs(); bindForms(); registerSW(); await loadUploadKnowledgeBases();
+    bindTabs(); bindForms(); registerSW();
+    qs('#docToday').textContent = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
     if (me.role === 'root') { await loadOverview(); } else { await loadDocs(); }
   }
   document.addEventListener('DOMContentLoaded', function () {

@@ -124,16 +124,8 @@ class Smoke:
         check(r.status_code == 403, "user 管理用户返回 403")
         r = self.c.get("/api/admin/documents")
         check(r.status_code == 403, "user 查看管理文档返回 403")
-        r = self.c.get("/api/admin/departments")
-        check(r.status_code == 403, "user 查看管理部门返回 403")
-        r = self.c.get("/api/admin/knowledge-bases")
-        check(r.status_code == 403, "user 查看管理知识库返回 403")
-        r = self.c.get("/api/knowledge-bases")
-        check(r.status_code == 200 and r.json().get("total", 0) >= 1, "user 可查看自己的知识库范围")
-        r = self.c.post("/api/admin/departments", json={"name": "不应创建"})
-        check(r.status_code == 403, "user 创建部门返回 403")
-        r = self.c.patch("/api/admin/documents/1/knowledge-bases", json={"knowledge_base_ids": [1]})
-        check(r.status_code == 403, "user 修改文档知识库权限返回 403")
+        for path in ["/api/admin/departments", "/api/admin/knowledge-bases", "/api/knowledge-bases"]:
+            check(self.c.get(path).status_code == 404, f"分类接口已移除：{path}")
 
     # ---------- 3. 文档入库（格式/重复/伪造/空/超限） ----------
     @staticmethod
@@ -224,26 +216,21 @@ class Smoke:
         self.txt_doc = r.json()
         check(int(self.txt_doc["num_chunks"]) >= 1, f"TXT 切片数 {self.txt_doc['num_chunks']} >= 1")
         check(
-            self.txt_doc.get("version") == "2026.1" and self.txt_doc.get("effective_date") == "2026-09-01",
-            "文档版本与生效日期写入成功",
+            self.txt_doc.get("version") == "2026.1"
+            and self.txt_doc.get("effective_date") is None
+            and self.txt_doc.get("tags") == [],
+            "文档版本写入，客户端提交的生效日期和标签被忽略",
         )
-        check(self.txt_doc.get("tags") == ["研发", "制度"], "文档标签写入并去重成功")
-        r = self.c.get("/api/admin/documents", params={"version": "2026.1", "tag": "制度", "effective_date_from": "2026-09-01", "effective_date_to": "2026-09-01"})
-        check(r.status_code == 200 and [d["id"] for d in r.json()["items"]] == [self.txt_doc["id"]], "文档元数据筛选成功")
-        r = self.c.get("/api/admin/documents", params={"effective_date_from": "2026-10-01", "effective_date_to": "2026-09-01"})
-        check(r.status_code == 422, "非法生效日期范围返回 422")
+        upload_date = self.txt_doc["created_at"][:10]
+        r = self.c.get("/api/admin/documents", params={"version": "2026.1", "uploaded_date_from": upload_date, "uploaded_date_to": upload_date})
+        check(r.status_code == 200 and [d["id"] for d in r.json()["items"]] == [self.txt_doc["id"]], "文档按版本与上传日期筛选成功")
+        r = self.c.get("/api/admin/documents", params={"uploaded_date_from": "2026-10-01", "uploaded_date_to": "2026-09-01"})
+        check(r.status_code == 422, "非法上传日期范围返回 422")
         r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
         check(
             r.status_code == 200 and r.content == txt and "inline" in r.headers.get("content-disposition", ""),
             "root 可内联打开原文",
         )
-        r = self.c.post(
-            "/api/admin/documents",
-            files={"file": ("标签过多.txt", b"tag validation", "text/plain")},
-            data={"tags": "a,b,c,d,e,f,g,h,i,j,k"},
-        )
-        check(r.status_code == 422, "超过 10 个标签返回 422")
-
         docx = self._docx_bytes()
         r = self.c.post(
             "/api/admin/documents",
@@ -345,110 +332,55 @@ class Smoke:
         check(r.status_code == 200 and r.json().get("status") == "ready", "重新索引成功")
 
     def test_kb_admin_permissions(self) -> None:
-        print("\n== 知识库管理员权限 ==")
-        departments = self.c.get("/api/admin/departments").json()["items"]
-        check(any(d["name"] == "默认部门" for d in departments), "知识库管理员测试前默认部门存在")
-        default_kb = next(
-            k for k in self.c.get("/api/admin/knowledge-bases").json()["items"]
-            if k["name"] == "默认知识库"
-        )
-        own_dep = self.c.post("/api/admin/departments", json={"name": "知识库管理测试部"}).json()
-        other_dep = self.c.post("/api/admin/departments", json={"name": "知识库越权测试部"}).json()
-        own_kb = self.c.post(
-            "/api/admin/knowledge-bases",
-            json={"name": "知识库管理员测试库", "department_id": own_dep["id"]},
-        ).json()
-        other_kb = self.c.post(
-            "/api/admin/knowledge-bases",
-            json={"name": "知识库管理员禁区", "department_id": other_dep["id"]},
-        ).json()
-        keeper = self.c.post(
+        print("\n== 统一文档库与文档管理员权限 ==")
+        keeper_response = self.c.post(
             "/api/admin/users",
             json={"username": "keeper", "password": "keeper123", "role": "kb_admin"},
-        ).json()
-        r = self.c.patch(
-            f"/api/admin/users/{keeper['id']}", json={"department_ids": [own_dep["id"]]}
         )
-        check(r.status_code == 200 and r.json().get("role") == "kb_admin", "root 创建并分配知识库管理员")
+        check(keeper_response.status_code == 201, "root 可创建文档管理员")
+        keeper = keeper_response.json()
+        # 模拟旧数据库的跨部门数据：保留旧归属但不再据此限制访问。
         with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
-            stored = db.execute(
-                "SELECT role, is_kb_admin FROM users WHERE id=?", (keeper["id"],)
-            ).fetchone()
-        check(stored == ("user", 1), "知识库管理员兼容存储为 user + 标记")
+            stored = db.execute("SELECT role, is_kb_admin FROM users WHERE id=?", (keeper["id"],)).fetchone()
+            for dep_id in (10, 11):
+                db.execute("INSERT INTO departments (id,name,created_at,updated_at) VALUES (?,?,?,?)",
+                           (dep_id, f"旧部门{dep_id}", "2026-01-01", "2026-01-01"))
+                db.execute("INSERT INTO knowledge_bases (id,name,department_id,created_at,updated_at) VALUES (?,?,?,?,?)",
+                           (dep_id, f"旧分类{dep_id}", dep_id, "2026-01-01", "2026-01-01"))
+            db.execute("INSERT INTO user_departments VALUES (?,?)", (keeper["id"], 10))
+            db.execute("INSERT INTO document_knowledge_bases VALUES (?,?)", (self.txt_doc["id"], 11))
+        check(stored == ("user", 1), "文档管理员兼容旧数据库角色")
 
-        keeper_client = httpx.Client(base_url=BASE_URL, timeout=60.0)
-        r = keeper_client.post("/api/login", json={"username": "keeper", "password": "keeper123"})
-        check(r.status_code == 200 and r.json()["user"]["role"] == "kb_admin", "知识库管理员登录角色正确")
-        check(keeper_client.get("/admin").status_code == 200, "知识库管理员可进入管理页")
-        for path, label in [
-            ("/api/admin/users", "用户管理"),
-            ("/api/admin/audit", "全局审计"),
-            ("/api/admin/overview", "系统概览"),
-            ("/api/admin/settings", "系统设置"),
-        ]:
-            check(keeper_client.get(path).status_code == 403, f"知识库管理员不能访问{label}")
-        check(
-            keeper_client.post("/api/admin/departments", json={"name": "越权新部门"}).status_code == 403,
-            "知识库管理员不能创建部门",
-        )
-        visible_deps = keeper_client.get("/api/admin/departments").json()["items"]
-        check([d["id"] for d in visible_deps] == [own_dep["id"]], "知识库管理员只看到所属部门")
-        visible_kbs = keeper_client.get("/api/admin/knowledge-bases").json()["items"]
-        check([k["id"] for k in visible_kbs] == [own_kb["id"]], "知识库管理员只看到所属知识库")
-        r = keeper_client.post(
-            "/api/admin/knowledge-bases",
-            json={"name": "知识库管理员新建库", "department_id": own_dep["id"]},
-        )
-        check(r.status_code == 201, "知识库管理员可在所属部门创建知识库")
-        second_own_kb = r.json()
-        r = keeper_client.post(
-            "/api/admin/knowledge-bases",
-            json={"name": "越权知识库", "department_id": other_dep["id"]},
-        )
-        check(r.status_code == 403, "知识库管理员不能在其它部门创建知识库")
-        check(keeper_client.get("/api/admin/documents").json()["total"] == 0, "知识库管理员看不到其它部门文档")
-
-        own_content = "知识库管理员可维护本部门资料，跨部门资料必须由系统管理员处理。".encode("utf-8")
-        r = keeper_client.post(
-            "/api/admin/documents",
-            files={"file": ("知识库管理员资料.txt", own_content, "text/plain")},
-            data={"knowledge_base_id": str(own_kb["id"])},
-        )
-        check(r.status_code == 201, "知识库管理员可上传到所属知识库")
-        own_doc = r.json()
-        r = keeper_client.post(
-            "/api/admin/documents",
-            files={"file": ("越权资料.txt", b"forbidden unique text", "text/plain")},
-            data={"knowledge_base_id": str(other_kb["id"])},
-        )
-        check(r.status_code == 403, "知识库管理员不能上传到其它部门知识库")
-        r = keeper_client.post(f"/api/admin/documents/{own_doc['id']}/reindex")
-        check(r.status_code == 200, "知识库管理员可重建所属文档")
-        r = keeper_client.patch(
-            f"/api/admin/documents/{own_doc['id']}/knowledge-bases",
-            json={"knowledge_base_ids": [own_kb["id"], second_own_kb["id"]]},
-        )
-        check(r.status_code == 200, "知识库管理员可调整所属部门内文档范围")
-
-        r = self.c.patch(
-            f"/api/admin/documents/{own_doc['id']}/knowledge-bases",
-            json={"knowledge_base_ids": [own_kb["id"], default_kb["id"]]},
-        )
-        check(r.status_code == 200, "root 可把文档共享到跨部门知识库")
-        check(
-            all(d["id"] != own_doc["id"] for d in keeper_client.get("/api/admin/documents").json()["items"]),
-            "跨部门共享文档不出现在知识库管理员管理列表",
-        )
-        check(keeper_client.delete(f"/api/admin/documents/{own_doc['id']}").status_code == 404,
-              "知识库管理员不能删除跨部门共享文档")
-        check(
-            keeper_client.patch(
-                f"/api/admin/documents/{self.txt_doc['id']}/knowledge-bases",
-                json={"knowledge_base_ids": [own_kb["id"]]},
-            ).status_code == 404,
-            "知识库管理员不能接管其它部门文档",
-        )
-        keeper_client.close()
+        with httpx.Client(base_url=BASE_URL, timeout=60.0) as client:
+            r = client.post("/api/login", json={"username": "keeper", "password": "keeper123"})
+            check(r.status_code == 200 and r.json()["user"]["role"] == "kb_admin", "文档管理员可登录")
+            check(client.get("/admin").status_code == 200, "文档管理员可进入后台")
+            for path in ["/api/admin/users", "/api/admin/audit", "/api/admin/overview", "/api/admin/settings", "/api/admin/chats"]:
+                check(client.get(path).status_code == 403, f"文档管理员仍不可访问 {path}")
+            expected_ids = {d["id"] for d in self.c.get("/api/admin/documents").json()["items"]}
+            actual_ids = {d["id"] for d in client.get("/api/admin/documents").json()["items"]}
+            check(actual_ids == expected_ids, "文档管理员可查看全部文档，不受旧部门归属限制")
+            r = client.get(f"/api/documents/{self.txt_doc['id']}/file")
+            check(r.status_code == 200 and r.content == self._txt_bytes(), "文档管理员可打开原属其它部门的文档")
+            r = client.post(f"/api/admin/documents/{self.txt_doc['id']}/reindex")
+            check(r.status_code == 200, "文档管理员可重新处理原属其它部门文档")
+            r = client.post("/api/admin/documents",
+                            files={"file": ("统一文档.txt", "统一文档库无需选择部门。".encode("utf-8"), "text/plain")})
+            check(r.status_code == 201, "文档管理员可直接上传文档")
+            doc_id = r.json()["id"]
+            with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
+                db.execute("INSERT INTO document_knowledge_bases VALUES (?,?)", (doc_id, 11))
+            r = client.delete(f"/api/admin/documents/{doc_id}")
+            check(r.status_code == 204, "文档管理员可删除原属其它部门文档")
+            check(client.get(f"/api/documents/{doc_id}/file").status_code == 404, "已删除文档不可访问")
+            check(client.post("/api/admin/users", json={"username":"forbidden","password":"pass123","role":"root"}).status_code == 403,
+                  "文档管理员不能创建系统管理员")
+        r = self.c.patch(f"/api/admin/users/{keeper['id']}", json={"department_ids": [11]})
+        check(r.status_code == 422, "已移除的部门分配字段不会被静默接受")
+        for path in ["/api/admin/departments", "/api/admin/knowledge-bases"]:
+            check(self.c.post(path, json={"name":"已停用"}).status_code == 404, "旧分类创建接口已停用")
+        check(self.c.patch(f"/api/admin/documents/{self.txt_doc['id']}/knowledge-bases",
+                           json={"knowledge_base_ids":[10]}).status_code == 404, "旧文档范围分配接口已停用")
 
     # ---------- 4. 问答 ----------
     def test_query(self) -> None:
@@ -462,31 +394,21 @@ class Smoke:
         check(src.get("filename") and ("page" in src or "paragraph" in src), "来源含文件名与位置")
         self.root_chat_id = body["chat_id"]
 
-        # 部门范围隔离：无匹配部门时只能得到明确拒答，不能看到默认知识库文档
-        r = self.login("root", ROOT_PW)
-        default_dep = next(
-            (d for d in self.c.get("/api/admin/departments").json()["items"] if d["name"] == "默认部门"),
-            None,
-        )
-        r = self.c.post("/api/admin/departments", json={"name": "隔离测试部门"})
-        isolated_dep_id = r.json().get("id") if r.status_code == 201 else None
-        alice_id = next(u["id"] for u in self.c.get("/api/admin/users").json()["items"] if u["username"] == "alice")
-        r = self.c.patch(f"/api/admin/users/{alice_id}", json={"department_ids": [isolated_dep_id]}) if isolated_dep_id else r
-        check(r.status_code == 200 if isolated_dep_id else False, "root 可设置隔离测试部门")
+        # 普通用户没有部门记录，仍可检索原属其它部门的文档。
         r = self.login("alice", "alice123")
-        r = self.c.post("/api/query", json={"question": "尝试访问无权限知识库"})
-        check(r.status_code == 200 and not r.json().get("sources") and "没有可访问" in r.json().get("answer", ""), "无部门权限时只返回明确拒答")
+        with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
+            n = db.execute("SELECT COUNT(*) FROM user_departments ud JOIN users u ON u.id=ud.user_id WHERE u.username='alice'").fetchone()[0]
+        check(n == 0, "新用户无需部门分配")
+        r = self.c.post("/api/query", json={"question": "出差住宿上限是多少？"})
+        check(r.status_code == 200 and r.json().get("sources"), "无部门用户可检索统一文档库")
         r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
-        check(r.status_code == 404, "user 无权打开其它部门原文")
-        r = self.login("root", ROOT_PW)
-        r = self.c.patch(f"/api/admin/users/{alice_id}", json={"department_ids": [default_dep["id"]] if default_dep else []})
-        check(r.status_code == 200, "恢复 alice 默认部门权限")
+        check(r.status_code == 200 and r.content == self._txt_bytes(), "普通用户可打开原属其它部门的原文")
 
         # user 也可问答
         r = self.login("alice", "alice123")
         check(r.status_code == 200, "问答前切换为 alice(user)")
         r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
-        check(r.status_code == 200 and r.content == self._txt_bytes(), "user 可打开授权知识库原文")
+        check(r.status_code == 200 and r.content == self._txt_bytes(), "user 可打开统一文档库原文")
         r = self.c.post("/api/query", json={"question": "打卡时间是几点？"})
         check(r.status_code == 200, "alice(user) 问答成功")
         self.alice_chat_id = r.json()["chat_id"]
@@ -504,8 +426,27 @@ class Smoke:
         check(r.status_code == 200 and any(c["id"] == self.alice_chat_id for c in items), "本人历史可见")
         r = self.c.get(f"/api/chats/{self.root_chat_id}")
         check(r.status_code == 404, "user 看不到他人问答记录(404)")
+        r = self.c.delete(f"/api/chats/{self.root_chat_id}")
+        check(r.status_code == 404, "user 不能删除他人问答记录(404)")
         r = self.c.get(f"/api/chats/{self.alice_chat_id}")
         check(r.status_code == 200 and len(r.json().get("sources", [])) > 0, "本人问答详情含来源")
+        r = self.c.post("/api/query", json={"question": "这是一条用于删除测试的问答"})
+        deleted_id = r.json().get("chat_id") if r.status_code == 200 else None
+        check(r.status_code == 200 and deleted_id, "user 创建待删除问答")
+        with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
+            source_count = db.execute(
+                "SELECT COUNT(id) FROM chat_sources WHERE chat_id=?", (deleted_id,)
+            ).fetchone()[0]
+        check(source_count > 0, "待删除问答含关联引用")
+        r = self.c.delete(f"/api/chats/{deleted_id}")
+        check(r.status_code == 204, "user 可删除本人问答")
+        r = self.c.get(f"/api/chats/{deleted_id}")
+        check(r.status_code == 404, "已删除问答不可再读取")
+        with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
+            source_count = db.execute(
+                "SELECT COUNT(id) FROM chat_sources WHERE chat_id=?", (deleted_id,)
+            ).fetchone()[0]
+        check(source_count == 0, "删除问答同时删除关联引用")
         # 登出 alice 后会话失效
         r = self.c.post("/api/logout")
         check(r.status_code == 200, "注销成功")
@@ -528,10 +469,15 @@ class Smoke:
         check(r.status_code == 200 and any(f["chat_id"] == self.alice_chat_id for f in r.json()["items"]), "root 可查看用户反馈")
         r = self.c.get("/api/admin/feedback.csv")
         check(r.status_code == 200 and "feedback_id" in r.text, "root 可导出用户反馈 CSV")
-        r = self.c.get("/api/admin/departments")
-        check(r.status_code == 200 and any(d["name"] == "默认部门" for d in r.json()["items"]), "默认部门已初始化")
-        r = self.c.get("/api/admin/knowledge-bases")
-        check(r.status_code == 200 and any(k["name"] == "默认知识库" for k in r.json()["items"]), "默认知识库已初始化")
+        r = self.c.delete(f"/api/chats/{self.alice_chat_id}")
+        check(r.status_code == 204, "root 可删除其他用户问答")
+        r = self.c.get(f"/api/chats/{self.alice_chat_id}")
+        check(r.status_code == 404, "root 删除后问答不可再读取")
+        r = self.c.get("/api/admin/feedback")
+        check(not any(f["chat_id"] == self.alice_chat_id for f in r.json()["items"]), "删除问答同时删除关联反馈")
+        r = self.c.get("/api/admin/audit?action=chat_delete")
+        check(r.status_code == 200 and r.json()["total"] >= 2, "删除操作保留 chat_delete 审计")
+        check(self.c.get("/api/admin/departments").status_code == 404, "root 后台部门接口已移除")
         r = self.c.get("/api/admin/overview")
         check(r.status_code == 200 and r.json()["counts"]["users"] >= 2, "概览计数正常")
         r = self.c.patch(

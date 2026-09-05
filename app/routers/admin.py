@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import re
 import sqlite3
 from datetime import date, datetime, timezone
@@ -14,15 +13,12 @@ from fastapi.responses import StreamingResponse
 
 from .. import audit, ingest, runtime as rt
 from ..config import settings
-from ..db import ensure_scope_defaults, get_db, now_iso
-from ..deps import require_kb_admin, require_root, require_user, stored_role_fields
+from ..db import get_db, now_iso
+from ..deps import require_kb_admin, require_root, stored_role_fields
 from ..embeddings import EmbeddingUnavailable, embedding_service
 from ..gate import llm_gate
 from ..ingest import IngestError
 from ..schemas import (
-    DepartmentCreate,
-    DocumentScopeBody,
-    KnowledgeBaseCreate,
     SettingsPatch,
     UserCreate,
     UserPatch,
@@ -52,38 +48,15 @@ def _clean_version(raw: str | None) -> str:
     return value
 
 
-def _clean_effective_date(raw: str | None) -> str | None:
+def _clean_date(raw: str | None) -> str | None:
     value = (raw or "").strip()
     if not value:
         return None
     try:
         date.fromisoformat(value)
     except ValueError:
-        raise HTTPException(status_code=422, detail="生效日期须为 YYYY-MM-DD") from None
+        raise HTTPException(status_code=422, detail="日期须为 YYYY-MM-DD") from None
     return value
-
-
-def _clean_tags(raw: str | None) -> list[str]:
-    values = []
-    for item in re.split(r"[,，]", raw or ""):
-        tag = item.strip()
-        if not tag:
-            continue
-        if len(tag) > 32 or any(ord(char) < 32 for char in tag):
-            raise HTTPException(status_code=422, detail="单个标签须为 1-32 个可见字符")
-        if tag.casefold() not in {existing.casefold() for existing in values}:
-            values.append(tag)
-    if len(values) > 10:
-        raise HTTPException(status_code=422, detail="每个文档最多设置 10 个标签")
-    return values
-
-
-def _decode_tags(raw: str | None) -> list[str]:
-    try:
-        tags = json.loads(raw or "[]")
-    except (TypeError, json.JSONDecodeError):
-        return []
-    return tags if isinstance(tags, list) else []
 
 
 def _raise_ingest(exc: IngestError) -> None:
@@ -96,67 +69,15 @@ def _raise_embed(exc: EmbeddingUnavailable) -> None:
     ) from exc
 
 
-def _department_ids(db: sqlite3.Connection, user) -> list[int]:
-    if user.role == "root":
-        return [int(row["id"]) for row in db.execute("SELECT id FROM departments")]
-    return [
-        int(row["department_id"])
-        for row in db.execute(
-            "SELECT department_id FROM user_departments WHERE user_id=?", (user.id,)
-        )
-    ]
-
-
-def _require_accessible_knowledge_bases(
-    db: sqlite3.Connection, user, knowledge_base_ids: list[int]
-) -> None:
-    ids = sorted(set(knowledge_base_ids))
-    placeholders = ",".join("?" for _ in ids)
-    if user.role == "root":
-        valid = db.execute(
-            f"SELECT COUNT(*) AS n FROM knowledge_bases WHERE id IN ({placeholders})", ids
-        ).fetchone()["n"]
-    else:
-        valid = db.execute(
-            f"SELECT COUNT(*) AS n FROM knowledge_bases kb "
-            f"JOIN user_departments ud ON ud.department_id=kb.department_id "
-            f"WHERE ud.user_id=? AND kb.id IN ({placeholders})",
-            (user.id, *ids),
-        ).fetchone()["n"]
-    if valid != len(ids):
-        raise HTTPException(status_code=403 if user.role != "root" else 400,
-                            detail="包含无权访问或不存在的知识库")
-
-
-def _require_manageable_document(db: sqlite3.Connection, user, doc_id: int) -> None:
-    if user.role == "root":
-        if db.execute("SELECT 1 FROM documents WHERE id=?", (doc_id,)).fetchone() is None:
-            raise HTTPException(status_code=404, detail="文档不存在")
-        return
-    row = db.execute(
-        "SELECT 1 FROM documents d WHERE d.id=? "
-        "AND EXISTS (SELECT 1 FROM document_knowledge_bases dkb "
-        "JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id "
-        "JOIN user_departments ud ON ud.department_id=kb.department_id "
-        "WHERE dkb.document_id=d.id AND ud.user_id=?) "
-        "AND NOT EXISTS (SELECT 1 FROM document_knowledge_bases dkb "
-        "JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id "
-        "WHERE dkb.document_id=d.id AND kb.department_id NOT IN "
-        "(SELECT department_id FROM user_departments WHERE user_id=?))",
-        (doc_id, user.id, user.id),
-    ).fetchone()
-    if row is None:
+def _require_manageable_document(db: sqlite3.Connection, doc_id: int) -> None:
+    if db.execute("SELECT 1 FROM documents WHERE id=?", (doc_id,)).fetchone() is None:
         raise HTTPException(status_code=404, detail="文档不存在")
 
 
 def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) -> list[dict]:
     rows = db.execute(
-        f"SELECT d.*, u.username AS uploaded_by_name, "
-        f"COALESCE((SELECT group_concat(kb.name, '、') FROM document_knowledge_bases dkb "
-        f"JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id WHERE dkb.document_id=d.id), '') "
-        f"AS knowledge_base_names, COALESCE((SELECT group_concat(kb.id, ',') FROM document_knowledge_bases dkb "
-        f"JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id WHERE dkb.document_id=d.id), '') "
-        f"AS knowledge_base_ids FROM documents d LEFT JOIN users u ON u.id = d.uploaded_by "
+        f"SELECT d.*, u.username AS uploaded_by_name FROM documents d "
+        f"LEFT JOIN users u ON u.id = d.uploaded_by "
         f"{where} ORDER BY d.id DESC",
         params,
     ).fetchall()
@@ -168,9 +89,8 @@ def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) 
 @router.get("/admin/documents")
 def list_documents(
     version: str | None = Query(default=None, max_length=32),
-    tag: str | None = Query(default=None, max_length=32),
-    effective_date_from: str | None = Query(default=None),
-    effective_date_to: str | None = Query(default=None),
+    uploaded_date_from: str | None = Query(default=None),
+    uploaded_date_to: str | None = Query(default=None),
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_kb_admin),
 ):
@@ -179,38 +99,18 @@ def list_documents(
     if version:
         where.append("d.version=?")
         params.append(_clean_version(version))
-    date_from = _clean_effective_date(effective_date_from)
-    date_to = _clean_effective_date(effective_date_to)
+    date_from = _clean_date(uploaded_date_from)
+    date_to = _clean_date(uploaded_date_to)
     if date_from:
-        where.append("d.effective_date>=?")
+        where.append("substr(d.created_at,1,10)>=?")
         params.append(date_from)
     if date_to:
-        where.append("d.effective_date<=?")
+        where.append("substr(d.created_at,1,10)<=?")
         params.append(date_to)
     if date_from and date_to and date_from > date_to:
-        raise HTTPException(status_code=422, detail="生效日期起始值不能晚于结束值")
-    if user.role != "root":
-        where.append(
-            "EXISTS (SELECT 1 FROM document_knowledge_bases dkb "
-            "JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id "
-            "JOIN user_departments ud ON ud.department_id=kb.department_id "
-            "WHERE dkb.document_id=d.id AND ud.user_id=?) "
-            "AND NOT EXISTS (SELECT 1 FROM document_knowledge_bases dkb "
-            "JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id "
-            "WHERE dkb.document_id=d.id AND kb.department_id NOT IN "
-            "(SELECT department_id FROM user_departments WHERE user_id=?))"
-        )
-        params.extend([user.id, user.id])
+        raise HTTPException(status_code=422, detail="上传日期起始值不能晚于结束值")
     clause = "WHERE " + " AND ".join(where) if where else ""
     items = _document_rows(db, clause, tuple(params))
-    if tag:
-        clean_filter = _clean_tags(tag)
-        if len(clean_filter) != 1:
-            raise HTTPException(status_code=422, detail="标签筛选只允许填写一个标签")
-        wanted = clean_filter[0].casefold()
-        items = [item for item in items if any(str(value).casefold() == wanted for value in _decode_tags(item.get("tags")))]
-    for item in items:
-        item["tags"] = _decode_tags(item.get("tags"))
     return {"items": items, "total": len(items)}
 
 
@@ -219,21 +119,11 @@ def upload_document(
     request: Request,
     file: UploadFile = File(...),
     version: str = Form(default="1.0"),
-    effective_date: str | None = Form(default=None),
-    tags: str | None = Form(default=None),
-    knowledge_base_id: int | None = Form(default=None),
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_kb_admin),
 ):
     filename = _clean_filename(file.filename)
     version = _clean_version(version)
-    effective_date = _clean_effective_date(effective_date)
-    tags = _clean_tags(tags)
-    if knowledge_base_id is None:
-        if user.role != "root":
-            raise HTTPException(status_code=422, detail="知识库管理员上传时必须选择知识库")
-        _, knowledge_base_id = ensure_scope_defaults(db)
-    _require_accessible_knowledge_bases(db, user, [knowledge_base_id])
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
         raise HTTPException(
@@ -245,17 +135,15 @@ def upload_document(
             status_code=413, detail=f"文件超过 {settings.max_upload_mb} MB 上限"
         )
     try:
-        with ingest.ingest_lock:
-            doc = ingest.ingest_bytes(
-                db,
-                filename=filename,
-                content_type=file.content_type or "",
-                data=data,
-                user_id=user.id,
-                version=version,
-                effective_date=effective_date,
-                tags=tags,
-            )
+        doc, kind = ingest.register_bytes(
+            db,
+            filename=filename,
+            content_type=file.content_type or "",
+            data=data,
+            user_id=user.id,
+            version=version,
+        )
+        doc = ingest.index_registered_document(db, doc["id"], kind)
     except IngestError as exc:
         audit.log_audit(
             db,
@@ -273,12 +161,8 @@ def upload_document(
         action="doc_upload",
         user_id=user.id,
         username=user.username,
-        detail=f"doc:{doc['id']} 文件:{filename} 版本:{version} 生效:{effective_date or '未设置'} 标签:{','.join(tags) or '无'} 切片数:{doc['num_chunks']}",
+        detail=f"doc:{doc['id']} 文件:{filename} 版本:{version} 上传日期:{doc['created_at'][:10]} 切片数:{doc['num_chunks']}",
         ip=_ip(request),
-    )
-    db.execute(
-        "INSERT OR IGNORE INTO document_knowledge_bases (document_id, knowledge_base_id) VALUES (?,?)",
-        (doc["id"], knowledge_base_id),
     )
     return doc
 
@@ -290,7 +174,7 @@ def delete_document(
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_kb_admin),
 ):
-    _require_manageable_document(db, user, doc_id)
+    _require_manageable_document(db, doc_id)
     try:
         with ingest.ingest_lock:
             removed = ingest.delete_document(db, doc_id)
@@ -314,7 +198,7 @@ def reindex_document(
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_kb_admin),
 ):
-    _require_manageable_document(db, user, doc_id)
+    _require_manageable_document(db, doc_id)
     try:
         with ingest.ingest_lock:
             doc = ingest.reindex_document(db, doc_id)
@@ -348,11 +232,7 @@ def list_users(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)
     rows = db.execute(
         "SELECT u.id, u.username, CASE WHEN u.role='root' THEN 'root' "
         "WHEN u.is_kb_admin=1 THEN 'kb_admin' ELSE 'user' END AS role, "
-        "u.is_active, u.last_login_at, u.created_at, u.updated_at, "
-        "COALESCE((SELECT group_concat(d.name, '、') FROM user_departments ud "
-        "JOIN departments d ON d.id=ud.department_id WHERE ud.user_id=u.id), '') AS department_names, "
-        "COALESCE((SELECT group_concat(d.id, ',') FROM user_departments ud "
-        "JOIN departments d ON d.id=ud.department_id WHERE ud.user_id=u.id), '') AS department_ids "
+        "u.is_active, u.last_login_at, u.created_at, u.updated_at "
         "FROM users u ORDER BY u.id"
     ).fetchall()
     return {"items": [dict(r) for r in rows], "total": len(rows)}
@@ -375,11 +255,6 @@ def create_user(
         )
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="用户名已存在") from None
-    default_department_id, _ = ensure_scope_defaults(db)
-    db.execute(
-        "INSERT OR IGNORE INTO user_departments (user_id, department_id) VALUES (?,?)",
-        (int(cur.lastrowid), default_department_id),
-    )
     audit.log_audit(
         db,
         action="user_create",
@@ -408,7 +283,7 @@ def update_user(
     target = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
-    if not any([body.password, body.role, body.is_active is not None, body.department_ids is not None]):
+    if not any([body.password, body.role, body.is_active is not None]):
         raise HTTPException(status_code=400, detail="没有需要更新的字段")
 
     if user_id == user.id:
@@ -436,26 +311,10 @@ def update_user(
     if body.is_active is not None:
         updates.append("is_active=?")
         params.append(int(body.is_active))
-    if body.department_ids is not None:
-        if not body.department_ids:
-            raise HTTPException(status_code=400, detail="至少分配一个部门")
-        placeholders = ",".join("?" for _ in body.department_ids)
-        valid = db.execute(
-            f"SELECT COUNT(*) AS n FROM departments WHERE id IN ({placeholders})",
-            body.department_ids,
-        ).fetchone()["n"]
-        if valid != len(set(body.department_ids)):
-            raise HTTPException(status_code=400, detail="包含不存在的部门")
     updates.append("updated_at=?")
     params.append(now_iso())
     params.append(user_id)
     db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
-    if body.department_ids is not None:
-        db.execute("DELETE FROM user_departments WHERE user_id=?", (user_id,))
-        db.executemany(
-            "INSERT INTO user_departments (user_id, department_id) VALUES (?,?)",
-            [(user_id, department_id) for department_id in sorted(set(body.department_ids))],
-        )
     if body.password is not None or body.role is not None or body.is_active is False:
         db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
     audit.log_audit(
@@ -469,7 +328,6 @@ def update_user(
                 ("密码", body.password is not None),
                 ("角色", body.role is not None),
                 ("启停", body.is_active is not None),
-                ("部门", body.department_ids is not None),
             ] if changed
         ),
         ip=_ip(request),
@@ -477,134 +335,11 @@ def update_user(
     fresh = db.execute(
         "SELECT u.id, u.username, CASE WHEN u.role='root' THEN 'root' "
         "WHEN u.is_kb_admin=1 THEN 'kb_admin' ELSE 'user' END AS role, "
-        "u.is_active, u.last_login_at, u.created_at, u.updated_at, "
-        "COALESCE((SELECT group_concat(d.name, '、') FROM user_departments ud "
-        "JOIN departments d ON d.id=ud.department_id WHERE ud.user_id=u.id), '') AS department_names, "
-        "COALESCE((SELECT group_concat(d.id, ',') FROM user_departments ud "
-        "JOIN departments d ON d.id=ud.department_id WHERE ud.user_id=u.id), '') AS department_ids "
+        "u.is_active, u.last_login_at, u.created_at, u.updated_at "
         "FROM users u WHERE u.id=?",
         (user_id,),
     ).fetchone()
     return dict(fresh)
-
-
-# ---------------- 部门 / 知识库权限 ----------------
-
-@router.get("/knowledge-bases")
-def list_accessible_knowledge_bases(
-    db: sqlite3.Connection = Depends(get_db),
-    user=Depends(require_user),
-):
-    if user.role == "root":
-        rows = db.execute(
-            "SELECT kb.id, kb.name, kb.department_id, d.name AS department_name "
-            "FROM knowledge_bases kb JOIN departments d ON d.id=kb.department_id "
-            "ORDER BY d.name, kb.name"
-        ).fetchall()
-    else:
-        rows = db.execute(
-            "SELECT DISTINCT kb.id, kb.name, kb.department_id, d.name AS department_name "
-            "FROM knowledge_bases kb JOIN departments d ON d.id=kb.department_id "
-            "JOIN user_departments ud ON ud.department_id=kb.department_id "
-            "WHERE ud.user_id=? ORDER BY d.name, kb.name",
-            (user.id,),
-        ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": len(rows)}
-
-
-@router.get("/admin/departments")
-def list_departments(db: sqlite3.Connection = Depends(get_db), user=Depends(require_kb_admin)):
-    where = "" if user.role == "root" else "WHERE d.id IN (SELECT department_id FROM user_departments WHERE user_id=?)"
-    params = () if user.role == "root" else (user.id,)
-    rows = db.execute(
-        "SELECT d.id, d.name, d.created_at, d.updated_at, "
-        "(SELECT COUNT(*) FROM user_departments ud WHERE ud.department_id=d.id) AS user_count, "
-        "(SELECT COUNT(*) FROM knowledge_bases kb WHERE kb.department_id=d.id) AS knowledge_base_count "
-        f"FROM departments d {where} ORDER BY d.name",
-        params,
-    ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": len(rows)}
-
-
-@router.post("/admin/departments", status_code=201)
-def create_department(
-    body: DepartmentCreate,
-    request: Request,
-    db: sqlite3.Connection = Depends(get_db),
-    user=Depends(require_root),
-):
-    now = now_iso()
-    try:
-        cur = db.execute(
-            "INSERT INTO departments (name, created_at, updated_at) VALUES (?,?,?)",
-            (body.name, now, now),
-        )
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail="部门名称已存在") from None
-    audit.log_audit(db, action="department_create", user_id=user.id, username=user.username,
-                    detail=f"部门:{body.name}", ip=_ip(request))
-    return {"id": int(cur.lastrowid), "name": body.name, "created_at": now, "updated_at": now}
-
-
-@router.get("/admin/knowledge-bases")
-def list_knowledge_bases(db: sqlite3.Connection = Depends(get_db), user=Depends(require_kb_admin)):
-    where = "" if user.role == "root" else "WHERE kb.department_id IN (SELECT department_id FROM user_departments WHERE user_id=?)"
-    params = () if user.role == "root" else (user.id,)
-    rows = db.execute(
-        "SELECT kb.id, kb.name, kb.department_id, d.name AS department_name, "
-        "kb.created_at, kb.updated_at, "
-        "(SELECT COUNT(*) FROM document_knowledge_bases dkb WHERE dkb.knowledge_base_id=kb.id) AS document_count "
-        "FROM knowledge_bases kb JOIN departments d ON d.id=kb.department_id "
-        f"{where} ORDER BY d.name, kb.name",
-        params,
-    ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": len(rows)}
-
-
-@router.post("/admin/knowledge-bases", status_code=201)
-def create_knowledge_base(
-    body: KnowledgeBaseCreate,
-    request: Request,
-    db: sqlite3.Connection = Depends(get_db),
-    user=Depends(require_kb_admin),
-):
-    if db.execute("SELECT 1 FROM departments WHERE id=?", (body.department_id,)).fetchone() is None:
-        raise HTTPException(status_code=400, detail="部门不存在")
-    if user.role != "root" and body.department_id not in _department_ids(db, user):
-        raise HTTPException(status_code=403, detail="无权在该部门创建知识库")
-    now = now_iso()
-    try:
-        cur = db.execute(
-            "INSERT INTO knowledge_bases (name, department_id, created_at, updated_at) VALUES (?,?,?,?)",
-            (body.name, body.department_id, now, now),
-        )
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail="知识库名称已存在") from None
-    audit.log_audit(db, action="knowledge_base_create", user_id=user.id, username=user.username,
-                    detail=f"知识库:{body.name} 部门:{body.department_id}", ip=_ip(request))
-    return {"id": int(cur.lastrowid), "name": body.name, "department_id": body.department_id,
-            "created_at": now, "updated_at": now}
-
-
-@router.patch("/admin/documents/{doc_id}/knowledge-bases")
-def assign_document_knowledge_bases(
-    doc_id: int,
-    body: DocumentScopeBody,
-    request: Request,
-    db: sqlite3.Connection = Depends(get_db),
-    user=Depends(require_kb_admin),
-):
-    _require_manageable_document(db, user, doc_id)
-    ids = sorted(set(body.knowledge_base_ids))
-    _require_accessible_knowledge_bases(db, user, ids)
-    db.execute("DELETE FROM document_knowledge_bases WHERE document_id=?", (doc_id,))
-    db.executemany(
-        "INSERT INTO document_knowledge_bases (document_id, knowledge_base_id) VALUES (?,?)",
-        [(doc_id, kb_id) for kb_id in ids],
-    )
-    audit.log_audit(db, action="document_scope_update", user_id=user.id, username=user.username,
-                    detail=f"文档:{doc_id} 知识库:{','.join(map(str, ids))}", ip=_ip(request))
-    return {"document_id": doc_id, "knowledge_base_ids": ids}
 
 
 # ---------------- 审计 / 全部问答 ----------------

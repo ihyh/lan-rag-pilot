@@ -34,6 +34,7 @@ jobs:
           node --check app/static/js/app.js
           node --check app/static/js/admin.js
           node --check app/static/js/common.js
+          node tests/citations_check.js
           bash -n scripts/backup_data.sh scripts/restore_check.sh scripts/install_backup_cron.sh tests/smoke_runner.sh
           python tests/eval_runner_check.py
 

@@ -52,9 +52,6 @@
     <button class="tab root-only" id="tabBtn-audit" data-tab="audit" type="button" role="tab">
       审计
     </button>
-    <button class="tab" id="tabBtn-scope" data-tab="scope" type="button" role="tab">
-      部门 / 知识库
-    </button>
   </div>
 
   <!-- ============ 概览 ============ -->
@@ -75,10 +72,6 @@
           </div>
           <form id="settingsForm">
             <div class="settings-grid">
-              <label class="field">
-                <span class="field-label">检索返回条数 top_k（1–20）</span>
-                <input class="input" type="number" id="cfg-top_k" name="top_k" min="1" max="20" step="1" required>
-              </label>
               <label class="field">
                 <span class="field-label">每分钟问答上限（1–120）</span>
                 <input class="input" type="number" id="cfg-queries_per_minute" name="queries_per_minute" min="1" max="120" step="1" required>
@@ -112,18 +105,6 @@
           <input class="input" id="docVersion" type="text" value="1.0" maxlength="32"
                  pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,31}" required>
         </label>
-        <label class="field">
-          <span class="field-label">生效日期（可选）</span>
-          <input class="input" id="docEffectiveDate" type="date">
-        </label>
-        <label class="field">
-          <span class="field-label">标签（逗号分隔，可选）</span>
-          <input class="input" id="docTags" type="text" maxlength="320" placeholder="例如：研发,制度">
-        </label>
-        <label class="field">
-          <span class="field-label">目标知识库</span>
-          <select class="select" id="docKnowledgeBase"></select>
-        </label>
       </div>
       <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="上传文档区域">
         <span id="uploadZoneIcon"></span>
@@ -139,9 +120,7 @@
         <h2 class="panel-title">文档列表</h2>
         <div class="panel-tools">
           <input class="input" id="docFilterVersion" type="text" maxlength="32" placeholder="版本">
-          <input class="input" id="docFilterTag" type="text" maxlength="32" placeholder="标签">
-          <input class="input" id="docFilterFrom" type="date" aria-label="生效日期起始">
-          <input class="input" id="docFilterTo" type="date" aria-label="生效日期结束">
+          <span class="small muted">当日日期：<strong id="docToday"></strong></span>
           <button class="btn btn-outline btn-sm" id="refreshDocsBtn" type="button">刷新列表</button>
         </div>
       </div>
@@ -172,7 +151,7 @@
             <span class="field-label">角色</span>
             <select class="select" id="nu-role" name="role">
               <option value="user">普通用户（user）</option>
-              <option value="kb_admin">知识库管理员（kb_admin）</option>
+              <option value="kb_admin">文档管理员</option>
               <option value="root">管理员（root）</option>
             </select>
           </label>
@@ -243,44 +222,6 @@
         <div id="logsBody"></div>
       </div>
     </div>
-  </section>
-
-  <!-- ============ 部门 / 知识库 ============ -->
-  <section class="tab-panel" id="panel-scope" data-panel="scope">
-    <div class="grid-2">
-      <div class="card panel-card root-only">
-        <div class="panel-head"><h2 class="panel-title">新建部门</h2></div>
-        <form id="createDepartmentForm" class="scope-form">
-          <label class="field"><span class="field-label">部门名称</span>
-            <input class="input" id="newDepartmentName" type="text" maxlength="80" required placeholder="例如：研发部">
-          </label>
-          <button class="btn btn-primary" id="createDepartmentBtn" type="submit">创建部门</button>
-        </form>
-      </div>
-      <div class="card panel-card">
-        <div class="panel-head"><h2 class="panel-title">新建知识库</h2></div>
-        <form id="createKnowledgeBaseForm" class="scope-form">
-          <label class="field"><span class="field-label">知识库名称</span>
-            <input class="input" id="newKnowledgeBaseName" type="text" maxlength="80" required placeholder="例如：研发规范">
-          </label>
-          <label class="field"><span class="field-label">所属部门</span>
-            <select class="select" id="newKnowledgeBaseDepartment" required></select>
-          </label>
-          <button class="btn btn-primary" id="createKnowledgeBaseBtn" type="submit">创建知识库</button>
-        </form>
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="card panel-card">
-        <div class="panel-head"><h2 class="panel-title">部门列表</h2></div>
-        <div id="departmentsBody"></div>
-      </div>
-      <div class="card panel-card">
-        <div class="panel-head"><h2 class="panel-title">知识库列表</h2></div>
-        <div id="knowledgeBasesBody"></div>
-      </div>
-    </div>
-    <p class="small muted scope-help">用户和文档的分配操作在“用户”和“文档”列表中进行；新建用户和文档会自动进入“默认部门 / 默认知识库”。</p>
   </section>
 
 </main>

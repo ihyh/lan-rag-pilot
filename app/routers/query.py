@@ -63,20 +63,6 @@ def _feedback_for_chat(db: sqlite3.Connection, chat_id: int, user_id: int) -> di
     return dict(row) if row else None
 
 
-def _allowed_document_ids(db: sqlite3.Connection, user) -> set[int] | None:
-    if user.role == "root":
-        return None
-    rows = db.execute(
-        "SELECT DISTINCT d.id FROM documents d "
-        "JOIN document_knowledge_bases dkb ON dkb.document_id=d.id "
-        "JOIN knowledge_bases kb ON kb.id=dkb.knowledge_base_id "
-        "JOIN user_departments ud ON ud.department_id=kb.department_id "
-        "WHERE ud.user_id=? AND d.status='ready'",
-        (user.id,),
-    ).fetchall()
-    return {int(row[0]) for row in rows}
-
-
 @router.get("/documents/{document_id}/file", response_class=FileResponse)
 def open_document(
     document_id: int,
@@ -89,8 +75,7 @@ def open_document(
         "WHERE id=? AND status='ready'",
         (document_id,),
     ).fetchone()
-    allowed = _allowed_document_ids(db, user)
-    if row is None or (allowed is not None and document_id not in allowed):
+    if row is None:
         raise HTTPException(status_code=404, detail="文档不存在")
 
     upload_root = settings.upload_dir.resolve()
@@ -208,23 +193,20 @@ def query(
         )
         return {"answer": message, "chat_id": chat_id, "sources": [], "status": "ok"}
 
-    allowed_document_ids = _allowed_document_ids(db, user)
-    if allowed_document_ids == set():
-        return refuse("当前账号没有可访问的知识库，请联系管理员分配部门权限。", "query_refused_scope")
     if vector_index.size() == 0:
         return refuse(EMPTY_KB_ANSWER, "query_refused_empty")
 
     try:
         qvec = embedding_service.embed_query(question)
         min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
-        hits = vector_index.search(qvec, rt_values["top_k"], allowed_document_ids, min_score)
+        hits = vector_index.search(qvec, rt_values["top_k"], min_score=min_score)
     except EmbeddingUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     if not hits:
-        return refuse("当前账号可访问的知识库没有可用文档，请联系管理员。", "query_no_match")
+        return refuse("未找到与问题相关的可用文档，请换个问法或联系管理员。", "query_no_match")
 
     ids = [h["chunk_id"] for h in hits]
     placeholders = ",".join("?" * len(ids))
@@ -373,6 +355,32 @@ def get_chat(
     item["sources"] = _sources_for_chat(db, chat_id)
     item["feedback"] = _feedback_for_chat(db, chat_id, user.id)
     return item
+
+
+@router.delete("/chats/{chat_id}", status_code=204)
+def delete_chat(
+    chat_id: int,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    chat = db.execute(
+        "SELECT c.id, c.user_id, u.username AS owner_username FROM chats c "
+        "JOIN users u ON u.id = c.user_id WHERE c.id=?",
+        (chat_id,),
+    ).fetchone()
+    if chat is None or (user.role != "root" and chat["user_id"] != user.id):
+        raise HTTPException(status_code=404, detail="问答记录不存在")
+
+    db.execute("DELETE FROM chats WHERE id=?", (chat_id,))
+    audit.log_audit(
+        db,
+        action="chat_delete",
+        user_id=user.id,
+        username=user.username,
+        detail=f"chat:{chat_id} 所有者:{chat['owner_username']}",
+        ip=_ip(request),
+    )
 
 
 @router.post("/chats/{chat_id}/feedback")

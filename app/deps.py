@@ -71,5 +71,5 @@ def require_root(user: CurrentUser = Depends(require_user)) -> CurrentUser:
 
 def require_kb_admin(user: CurrentUser = Depends(require_user)) -> CurrentUser:
     if user.role not in ("root", "kb_admin"):
-        raise HTTPException(status_code=403, detail="需要知识库管理员权限")
+        raise HTTPException(status_code=403, detail="需要文档管理员权限")
     return user

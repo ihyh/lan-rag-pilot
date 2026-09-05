@@ -44,11 +44,10 @@ class UserCreate(BaseModel):
 
 
 class UserPatch(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     password: str | None = Field(default=None, min_length=6, max_length=128)
     role: str | None = None
     is_active: bool | None = None
-    department_ids: list[int] | None = Field(default=None, min_length=1, max_length=20)
 
     @field_validator("role")
     @classmethod
@@ -62,18 +61,3 @@ class SettingsPatch(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=20)
     queries_per_minute: int | None = Field(default=None, ge=1, le=120)
     max_concurrent_llm: int | None = Field(default=None, ge=1, le=32)
-
-
-class DepartmentCreate(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-    name: str = Field(min_length=1, max_length=80)
-
-
-class KnowledgeBaseCreate(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-    name: str = Field(min_length=1, max_length=80)
-    department_id: int = Field(gt=0)
-
-
-class DocumentScopeBody(BaseModel):
-    knowledge_base_ids: list[int] = Field(min_length=1, max_length=20)

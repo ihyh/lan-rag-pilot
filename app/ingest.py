@@ -69,7 +69,32 @@ def ingest_bytes(
     effective_date: str | None = None,
     tags: list[str] | None = None,
 ) -> dict:
-    """校验并入库单个文件，返回入库后的文档 dict。"""
+    """校验、登记并索引单个文件，返回入库后的文档 dict。"""
+    doc, kind = register_bytes(
+        db,
+        filename=filename,
+        content_type=content_type,
+        data=data,
+        user_id=user_id,
+        version=version,
+        effective_date=effective_date,
+        tags=tags,
+    )
+    return index_registered_document(db, doc["id"], kind)
+
+
+def register_bytes(
+    db: sqlite3.Connection,
+    *,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    user_id: int,
+    version: str = "1.0",
+    effective_date: str | None = None,
+    tags: list[str] | None = None,
+) -> tuple[dict, str]:
+    """校验并登记文件为 parsing；耗时索引由调用方随后串行执行。"""
     if not data:
         raise IngestError("文件为空，无可索引内容", code="empty_file")
     if len(data) > settings.max_upload_bytes:
@@ -111,26 +136,46 @@ def ingest_bytes(
     upload_path.write_bytes(data)
 
     now = now_iso()
-    cur = db.execute(
-        "INSERT INTO documents (filename, stored_name, content_type, size_bytes, sha256, status,"
-        " version, effective_date, tags, uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?,?,?,?)",
-        (
-            filename,
-            stored_name,
-            content_type or "application/octet-stream",
-            len(data),
-            sha256,
-            version,
-            effective_date,
-            json.dumps(tags or [], ensure_ascii=False),
-            user_id,
-            now,
-            now,
-        ),
-    )
-    doc_id = int(cur.lastrowid)
     try:
-        return _index_document(db, doc_id, kind)
+        cur = db.execute(
+            "INSERT INTO documents (filename, stored_name, content_type, size_bytes, sha256, status,"
+            " version, effective_date, tags, uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?,?,?,?)",
+            (
+                filename,
+                stored_name,
+                content_type or "application/octet-stream",
+                len(data),
+                sha256,
+                version,
+                effective_date,
+                json.dumps(tags or [], ensure_ascii=False),
+                user_id,
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError as exc:
+        upload_path.unlink(missing_ok=True)
+        dup = db.execute(
+            "SELECT id, filename, status FROM documents WHERE sha256=?", (sha256,)
+        ).fetchone()
+        if dup:
+            raise IngestError(
+                f"文件内容重复（SHA-256 相同）：已存在文档 #{dup['id']}《{dup['filename']}》"
+                f"（状态：{dup['status']}），拒绝重复入库",
+                status_code=409,
+                code="duplicate",
+            ) from exc
+        raise
+    doc_id = int(cur.lastrowid)
+    return doc_dict(_fetch_doc(db, doc_id)), kind
+
+
+def index_registered_document(db: sqlite3.Connection, doc_id: int, kind: str) -> dict:
+    """串行索引已登记文档，并把最终状态写回数据库。"""
+    try:
+        with ingest_lock:
+            return _index_document(db, doc_id, kind)
     except parsing.ParseError as exc:
         _fail_doc(db, doc_id, exc.message)
         raise IngestError(exc.message, code=exc.code) from exc

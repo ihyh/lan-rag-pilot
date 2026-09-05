@@ -43,7 +43,10 @@
   <aside class="history-pane" aria-label="历史记录">
     <div class="pane-head">
       <h2 class="pane-title"><span id="historyIcon"></span>历史记录</h2>
-      <button class="btn btn-outline btn-sm" id="newChatBtn" type="button">新建对话</button>
+      <div class="pane-actions">
+        <button class="btn btn-danger-outline btn-sm" id="deleteChatBtn" type="button" disabled>删除选中</button>
+        <button class="btn btn-outline btn-sm" id="newChatBtn" type="button">新建对话</button>
+      </div>
     </div>
     <div class="history-scroll" id="historyScroll">
       <div class="history-list" id="historyList"></div>
