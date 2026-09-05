@@ -2,7 +2,7 @@
 
 安全要点：
 - API Key 只从服务端环境变量读取，绝不进入响应/日志；
-- 只把“问题 + Top-K 检索片段”发给模型，绝不发送完整原文件；
+- 只把“当前问题 + 有界的近期对话 + Top-K 检索片段”发给模型，绝不发送完整原文件；
 - 各类失败映射为稳定的业务码，不把模型服务原始报文直接透传给前端。
 """
 from __future__ import annotations
@@ -33,8 +33,15 @@ class LLMError(Exception):
         self.message = message
 
 
-def _build_user_content(question: str, sources: list[dict]) -> str:
-    lines = [f"问题：{question}", "", "检索片段："]
+def _build_user_content(question: str, sources: list[dict], history: list[dict] | None = None) -> str:
+    lines: list[str] = []
+    if history:
+        lines.extend(["对话历史（只用于理解追问，不是当前回答的事实来源）："])
+        for turn in history:
+            lines.append(f"用户：{turn['question']}")
+            lines.append(f"助手：{turn['answer']}")
+        lines.append("")
+    lines.extend([f"当前问题：{question}", "", "当前检索片段："])
     for i, src in enumerate(sources, start=1):
         loc_parts = []
         if src.get("page"):
@@ -60,7 +67,7 @@ def _map_http_error(status: int) -> tuple[str, str]:
     return "llm_error", f"模型服务返回错误（HTTP {status}）"
 
 
-def chat(question: str, sources: list[dict]) -> dict:
+def chat(question: str, sources: list[dict], history: list[dict] | None = None) -> dict:
     """调用模型并返回 {answer, model, latency_ms, prompt_tokens, completion_tokens}。"""
     if not settings.deepseek_api_key:
         raise LLMError("llm_auth", "服务端未配置 DEEPSEEK_API_KEY，请联系管理员")
@@ -70,7 +77,7 @@ def chat(question: str, sources: list[dict]) -> dict:
         "model": settings.deepseek_model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_content(question, sources)},
+            {"role": "user", "content": _build_user_content(question, sources, history)},
         ],
         "temperature": settings.llm_temperature,
         "max_tokens": settings.llm_max_tokens,

@@ -23,6 +23,8 @@ router = APIRouter()
 query_limiter = SlidingWindowLimiter(limit=settings.queries_per_minute, window_seconds=60.0)
 
 EMPTY_KB_ANSWER = "知识库当前为空：还没有任何可检索的文档。请联系管理员上传文档后再提问。"
+HISTORY_TURNS = 3
+HISTORY_CHAR_LIMIT = 2000
 
 
 def _ip(request: Request) -> str:
@@ -61,6 +63,28 @@ def _feedback_for_chat(db: sqlite3.Connection, chat_id: int, user_id: int) -> di
         (chat_id, user_id),
     ).fetchone()
     return dict(row) if row else None
+
+
+def _conversation_history(db: sqlite3.Connection, conversation_id: int) -> list[dict]:
+    rows = db.execute(
+        "SELECT question, answer FROM chats WHERE conversation_id=? AND status='ok' "
+        "ORDER BY turn_index DESC, id DESC LIMIT ?",
+        (conversation_id, HISTORY_TURNS),
+    ).fetchall()
+    kept: list[dict] = []
+    remaining = HISTORY_CHAR_LIMIT
+    for row in rows:
+        question = (row["question"] or "").strip()
+        answer = (row["answer"] or "").strip()
+        if remaining <= 0:
+            break
+        question = question[:remaining]
+        remaining -= len(question)
+        answer = answer[:remaining]
+        remaining -= len(answer)
+        kept.append({"question": question, "answer": answer})
+    kept.reverse()
+    return kept
 
 
 @router.get("/documents/{document_id}/file", response_class=FileResponse)
@@ -113,13 +137,27 @@ def _store_chat(
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     sources: list[dict] | None = None,
-) -> int:
+    conversation_id: int | None = None,
+) -> tuple[int, int]:
     created = now_iso()
+    if conversation_id is None:
+        cur = db.execute(
+            "INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?,?,?,?)",
+            (user_id, question[:30], created, created),
+        )
+        conversation_id = int(cur.lastrowid)
+    turn_index = db.execute(
+        "SELECT COALESCE(MAX(turn_index),0)+1 AS n FROM chats WHERE conversation_id=?",
+        (conversation_id,),
+    ).fetchone()["n"]
     cur = db.execute(
-        "INSERT INTO chats (user_id, question, answer, status, error, model, prompt_tokens,"
-        " completion_tokens, latency_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO chats (user_id, conversation_id, turn_index, question, answer, status, error,"
+        " model, prompt_tokens, completion_tokens, latency_ms, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             user_id,
+            conversation_id,
+            turn_index,
             question,
             answer,
             status,
@@ -132,6 +170,7 @@ def _store_chat(
         ),
     )
     chat_id = int(cur.lastrowid)
+    db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (created, conversation_id))
     for s in sources or []:
         db.execute(
             "INSERT INTO chat_sources (chat_id, document_id, chunk_id, score, page, paragraph, excerpt)"
@@ -146,7 +185,7 @@ def _store_chat(
                 _excerpt(s.get("content") or ""),
             ),
         )
-    return chat_id
+    return chat_id, conversation_id
 
 
 @router.post("/query")
@@ -158,6 +197,16 @@ def query(
 ):
     question = body.question.strip()
     ip = _ip(request)
+    conversation_id = body.conversation_id
+    history: list[dict] = []
+    if conversation_id is not None:
+        owned = db.execute(
+            "SELECT id FROM conversations WHERE id=? AND user_id=?",
+            (conversation_id, user.id),
+        ).fetchone()
+        if owned is None:
+            raise HTTPException(status_code=404, detail="对话不存在")
+        history = _conversation_history(db, conversation_id)
 
     rt_values = rt.get_all(db)
     ok, retry = query_limiter.allow(
@@ -182,7 +231,10 @@ def query(
         )
 
     def refuse(message: str, action: str) -> dict:
-        chat_id = _store_chat(db, user.id, question, message, "ok", None, model=None)
+        chat_id, stored_conversation_id = _store_chat(
+            db, user.id, question, message, "ok", None,
+            model=None, conversation_id=conversation_id,
+        )
         audit.log_audit(
             db,
             action=action,
@@ -191,13 +243,20 @@ def query(
             detail=question[:200],
             ip=ip,
         )
-        return {"answer": message, "chat_id": chat_id, "sources": [], "status": "ok"}
+        return {
+            "answer": message,
+            "chat_id": chat_id,
+            "conversation_id": stored_conversation_id,
+            "sources": [],
+            "status": "ok",
+        }
 
     if vector_index.size() == 0:
         return refuse(EMPTY_KB_ANSWER, "query_refused_empty")
 
     try:
-        qvec = embedding_service.embed_query(question)
+        retrieval_question = f"{history[-1]['question']}\n{question}" if history else question
+        qvec = embedding_service.embed_query(retrieval_question)
         min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
         hits = vector_index.search(qvec, rt_values["top_k"], min_score=min_score)
     except EmbeddingUnavailable as exc:
@@ -245,11 +304,12 @@ def query(
         )
     try:
         try:
-            result = llm_chat(question, sources)
+            result = llm_chat(question, sources, history)
         except LLMError as exc:
-            chat_id = _store_chat(
+            chat_id, stored_conversation_id = _store_chat(
                 db, user.id, question, "", "error", f"{exc.code}: {exc.message}",
                 model=settings.deepseek_model,
+                conversation_id=conversation_id,
             )
             audit.log_audit(
                 db,
@@ -269,12 +329,17 @@ def query(
             )
             raise HTTPException(
                 status_code=502,
-                detail={"code": exc.code, "message": exc.message, "chat_id": chat_id},
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "chat_id": chat_id,
+                    "conversation_id": stored_conversation_id,
+                },
             ) from exc
     finally:
         llm_gate.release()
 
-    chat_id = _store_chat(
+    chat_id, stored_conversation_id = _store_chat(
         db,
         user.id,
         question,
@@ -286,6 +351,7 @@ def query(
         prompt_tokens=result["prompt_tokens"],
         completion_tokens=result["completion_tokens"],
         sources=sources,
+        conversation_id=conversation_id,
     )
     audit.log_audit(
         db,
@@ -309,12 +375,88 @@ def query(
     return {
         "answer": result["answer"],
         "chat_id": chat_id,
+        "conversation_id": stored_conversation_id,
         "sources": [
             {k: s[k] for k in ("chunk_id", "document_id", "filename", "page", "paragraph", "score")}
             for s in sources
         ],
         "status": "ok",
     }
+
+
+@router.get("/conversations")
+def list_conversations(
+    limit: int = 25,
+    offset: int = 0,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    total = db.execute(
+        "SELECT COUNT(*) AS n FROM conversations WHERE user_id=?", (user.id,)
+    ).fetchone()["n"]
+    rows = db.execute(
+        "SELECT v.id, v.title, v.created_at, v.updated_at, COUNT(c.id) AS turn_count, "
+        "COALESCE(MAX(CASE WHEN c.status='error' THEN 1 ELSE 0 END),0) AS has_error "
+        "FROM conversations v LEFT JOIN chats c ON c.conversation_id=v.id "
+        "WHERE v.user_id=? GROUP BY v.id ORDER BY v.updated_at DESC, v.id DESC LIMIT ? OFFSET ?",
+        (user.id, limit, offset),
+    ).fetchall()
+    return {"items": [dict(row) for row in rows], "total": total}
+
+
+@router.get("/conversations/{conversation_id}")
+def get_conversation(
+    conversation_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    conversation = db.execute(
+        "SELECT v.*, u.username AS owner_username FROM conversations v "
+        "JOIN users u ON u.id=v.user_id WHERE v.id=?",
+        (conversation_id,),
+    ).fetchone()
+    if conversation is None or (user.role != "root" and conversation["user_id"] != user.id):
+        raise HTTPException(status_code=404, detail="对话不存在")
+    turns = db.execute(
+        "SELECT * FROM chats WHERE conversation_id=? ORDER BY turn_index, id",
+        (conversation_id,),
+    ).fetchall()
+    item = dict(conversation)
+    item["username"] = item.pop("owner_username")
+    item["turns"] = []
+    for turn in turns:
+        record = dict(turn)
+        record["sources"] = _sources_for_chat(db, turn["id"])
+        record["feedback"] = _feedback_for_chat(db, turn["id"], user.id)
+        item["turns"].append(record)
+    return item
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(
+    conversation_id: int,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_user),
+):
+    conversation = db.execute(
+        "SELECT v.id, v.user_id, v.title, u.username AS owner_username FROM conversations v "
+        "JOIN users u ON u.id=v.user_id WHERE v.id=?",
+        (conversation_id,),
+    ).fetchone()
+    if conversation is None or (user.role != "root" and conversation["user_id"] != user.id):
+        raise HTTPException(status_code=404, detail="对话不存在")
+    db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+    audit.log_audit(
+        db,
+        action="conversation_delete",
+        user_id=user.id,
+        username=user.username,
+        detail=f"conversation:{conversation_id} 所有者:{conversation['owner_username']} 标题:{conversation['title']}",
+        ip=_ip(request),
+    )
 
 
 @router.get("/chats")
@@ -365,7 +507,7 @@ def delete_chat(
     user=Depends(require_user),
 ):
     chat = db.execute(
-        "SELECT c.id, c.user_id, u.username AS owner_username FROM chats c "
+        "SELECT c.id, c.user_id, c.conversation_id, u.username AS owner_username FROM chats c "
         "JOIN users u ON u.id = c.user_id WHERE c.id=?",
         (chat_id,),
     ).fetchone()
@@ -373,6 +515,17 @@ def delete_chat(
         raise HTTPException(status_code=404, detail="问答记录不存在")
 
     db.execute("DELETE FROM chats WHERE id=?", (chat_id,))
+    latest = db.execute(
+        "SELECT MAX(created_at) AS updated_at FROM chats WHERE conversation_id=?",
+        (chat["conversation_id"],),
+    ).fetchone()["updated_at"]
+    if latest is None:
+        db.execute("DELETE FROM conversations WHERE id=?", (chat["conversation_id"],))
+    else:
+        db.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (latest, chat["conversation_id"]),
+        )
     audit.log_audit(
         db,
         action="chat_delete",

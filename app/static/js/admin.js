@@ -180,11 +180,11 @@
     });
   }
 
-  async function deleteChat(chat) {
-    if (!window.confirm('确定删除 ' + chat.username + ' 的这条问答记录？删除后无法恢复。')) { return; }
+  async function deleteConversation(conversation) {
+    if (!window.confirm('确定删除 ' + conversation.username + ' 的对话“' + conversation.title + '”？其中全部问答将被删除且无法恢复。')) { return; }
     try {
-      await api('/api/chats/' + chat.id, { method: 'DELETE' });
-      toast('问答记录已删除', 'success');
+      await api('/api/conversations/' + conversation.id, { method: 'DELETE' });
+      toast('对话已删除', 'success');
       await loadAudit('chats');
       await refreshOverview();
     } catch (e) { toast(e.message || '删除失败', 'error'); }
@@ -198,15 +198,14 @@
     var body = qs(isChats ? '#chatsBody' : (isFeedback ? '#feedbackBody' : '#logsBody'));
     loading.classList.remove('hidden'); clear(body);
     try {
-      var endpoint = isChats ? '/api/admin/chats?limit=100' : (isFeedback ? '/api/admin/feedback?limit=100' : '/api/admin/audit?limit=100');
+      var endpoint = isChats ? '/api/admin/conversations?limit=100' : (isFeedback ? '/api/admin/feedback?limit=100' : '/api/admin/audit?limit=100');
       var data = await api(endpoint);
       qs(isChats ? '#chatsHint' : (isFeedback ? '#feedbackHint' : '#logsHint')).textContent = '共 ' + data.total + ' 条，显示最近 ' + data.items.length + ' 条';
-      if (!data.items.length) { body.appendChild(empty(isChats ? '暂无问答记录' : (isFeedback ? '暂无用户反馈' : '暂无审计日志'))); return; }
+      if (!data.items.length) { body.appendChild(empty(isChats ? '暂无对话记录' : (isFeedback ? '暂无用户反馈' : '暂无审计日志'))); return; }
       var rows = data.items.map(function (x) {
         if (isChats) {
-          return h('tr', {}, [cell(x.username), cell(excerpt(x.question, 80), 'cell-long'), cell(excerpt(x.answer || x.error, 100), 'cell-long'),
-            h('td', {}, [badge(x.status === 'ok' ? '成功' : '失败', x.status === 'ok' ? 'b-ok' : 'b-err')]), cell(fmtMs(x.latency_ms)), cell(fmtTime(x.created_at)),
-            h('td', { class: 'cell-actions' }, [actionButton('删除', 'btn-danger', function () { deleteChat(x); })])]);
+          return h('tr', {}, [cell(x.username), cell(x.title, 'cell-long'), cell(x.turn_count), cell(fmtTime(x.created_at)), cell(fmtTime(x.updated_at)),
+            h('td', { class: 'cell-actions' }, [actionButton('删除', 'btn-danger', function () { deleteConversation(x); })])]);
         }
         if (isFeedback) {
           return h('tr', {}, [cell(x.username), cell(x.rating === 'helpful' ? '有帮助' : '没帮助'),
@@ -215,7 +214,7 @@
         var detail = (x.detail || '').replace(/\s*切片数:\d+/g, '');
         return h('tr', {}, [cell(x.username || '系统'), cell(x.action), cell(excerpt(detail, 120), 'cell-long'), cell(x.ip), cell(fmtTime(x.created_at))]);
       });
-      body.appendChild(table(isChats ? ['用户', '问题', '回答/错误', '状态', '耗时', '时间', '操作'] : (isFeedback ? ['用户', '评价', '问题', '备注', '时间'] : ['用户', '动作', '详情', 'IP', '时间']), rows));
+      body.appendChild(table(isChats ? ['用户', '对话标题', '问答轮数', '创建时间', '最后更新', '操作'] : (isFeedback ? ['用户', '评价', '问题', '备注', '时间'] : ['用户', '动作', '详情', 'IP', '时间']), rows));
     } catch (e) { body.appendChild(empty(e.message || '记录加载失败')); }
     finally { loading.classList.add('hidden'); }
   }

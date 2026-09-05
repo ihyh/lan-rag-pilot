@@ -91,9 +91,20 @@ CREATE TABLE IF NOT EXISTS document_knowledge_bases (
 );
 CREATE INDEX IF NOT EXISTS idx_doc_kb_kb ON document_knowledge_bases(knowledge_base_id);
 
+CREATE TABLE IF NOT EXISTS conversations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title      TEXT    NOT NULL,
+    created_at TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_user_time ON conversations(user_id, updated_at);
+
 CREATE TABLE IF NOT EXISTS chats (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id   INTEGER REFERENCES conversations(id) ON DELETE CASCADE,
+    turn_index        INTEGER NOT NULL DEFAULT 1,
     question          TEXT    NOT NULL,
     answer            TEXT    NOT NULL DEFAULT '',
     status            TEXT    NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','error')),
@@ -186,6 +197,7 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         _ensure_document_metadata_columns(conn)
         _ensure_user_permission_columns(conn)
+        _ensure_conversation_columns(conn)
     finally:
         conn.close()
 
@@ -206,3 +218,31 @@ def _ensure_user_permission_columns(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "is_kb_admin" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN is_kb_admin INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_conversation_columns(conn: sqlite3.Connection) -> None:
+    """补齐多轮对话字段，并把每条旧问答保留为一个单轮对话。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chats)")}
+    if "conversation_id" not in columns:
+        conn.execute("ALTER TABLE chats ADD COLUMN conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE")
+    if "turn_index" not in columns:
+        conn.execute("ALTER TABLE chats ADD COLUMN turn_index INTEGER NOT NULL DEFAULT 1")
+
+    legacy = conn.execute(
+        "SELECT id, user_id, question, created_at FROM chats "
+        "WHERE conversation_id IS NULL ORDER BY id"
+    ).fetchall()
+    for row in legacy:
+        title = (row["question"] or "新对话").strip()[:30] or "新对话"
+        cur = conn.execute(
+            "INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?,?,?,?)",
+            (row["user_id"], title, row["created_at"], row["created_at"]),
+        )
+        conn.execute(
+            "UPDATE chats SET conversation_id=?, turn_index=1 WHERE id=?",
+            (cur.lastrowid, row["id"]),
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chats_conversation_turn "
+        "ON chats(conversation_id, turn_index)"
+    )

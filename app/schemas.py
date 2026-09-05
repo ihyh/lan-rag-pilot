@@ -21,6 +21,7 @@ class PasswordBody(BaseModel):
 class QueryBody(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     question: str = Field(min_length=1, max_length=2000)
+    conversation_id: int | None = Field(default=None, gt=0)
 
 
 class FeedbackBody(BaseModel):

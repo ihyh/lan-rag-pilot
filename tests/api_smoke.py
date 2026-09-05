@@ -385,7 +385,7 @@ class Smoke:
     # ---------- 4. 问答 ----------
     def test_query(self) -> None:
         print("\n== 问答 ==")
-        r = self.c.post("/api/query", json={"question": "出差住宿上限是多少？"})
+        r = self.c.post("/api/query", json={"question": "历史标记：出差住宿上限是多少？"})
         check(r.status_code == 200, "root 问答成功")
         body = r.json()
         check(body.get("answer") and "Mock 模型" in body["answer"], "返回答案")
@@ -393,6 +393,21 @@ class Smoke:
         src = body["sources"][0]
         check(src.get("filename") and ("page" in src or "paragraph" in src), "来源含文件名与位置")
         self.root_chat_id = body["chat_id"]
+        self.root_conversation_id = body.get("conversation_id")
+        check(bool(self.root_conversation_id), "首次问答自动创建对话")
+        r = self.c.post(
+            "/api/query",
+            json={
+                "question": "[[mock:require-history:历史标记：出差住宿上限是多少？]] 请继续说明。",
+                "conversation_id": self.root_conversation_id,
+            },
+        )
+        check(
+            r.status_code == 200 and r.json().get("conversation_id") == self.root_conversation_id,
+            "追问追加到原对话且模型收到历史",
+        )
+        r = self.c.get(f"/api/conversations/{self.root_conversation_id}")
+        check(r.status_code == 200 and len(r.json().get("turns", [])) == 2, "对话详情按轮返回两次问答")
 
         # 普通用户没有部门记录，仍可检索原属其它部门的文档。
         r = self.login("alice", "alice123")
@@ -412,6 +427,7 @@ class Smoke:
         r = self.c.post("/api/query", json={"question": "打卡时间是几点？"})
         check(r.status_code == 200, "alice(user) 问答成功")
         self.alice_chat_id = r.json()["chat_id"]
+        self.alice_conversation_id = r.json().get("conversation_id")
         r = self.c.post(f"/api/chats/{self.alice_chat_id}/feedback", json={"rating": "helpful"})
         check(r.status_code == 200 and r.json().get("rating") == "helpful", "user 提交回答反馈成功")
         r = self.c.get(f"/api/chats/{self.alice_chat_id}")
@@ -424,6 +440,15 @@ class Smoke:
         r = self.c.get("/api/chats")
         items = r.json()["items"]
         check(r.status_code == 200 and any(c["id"] == self.alice_chat_id for c in items), "本人历史可见")
+        r = self.c.get("/api/conversations")
+        check(
+            r.status_code == 200 and any(c["id"] == self.alice_conversation_id for c in r.json()["items"]),
+            "本人对话列表可见",
+        )
+        r = self.c.get(f"/api/conversations/{self.root_conversation_id}")
+        check(r.status_code == 404, "user 看不到他人对话(404)")
+        r = self.c.delete(f"/api/conversations/{self.root_conversation_id}")
+        check(r.status_code == 404, "user 不能删除他人对话(404)")
         r = self.c.get(f"/api/chats/{self.root_chat_id}")
         check(r.status_code == 404, "user 看不到他人问答记录(404)")
         r = self.c.delete(f"/api/chats/{self.root_chat_id}")
@@ -432,14 +457,15 @@ class Smoke:
         check(r.status_code == 200 and len(r.json().get("sources", [])) > 0, "本人问答详情含来源")
         r = self.c.post("/api/query", json={"question": "这是一条用于删除测试的问答"})
         deleted_id = r.json().get("chat_id") if r.status_code == 200 else None
+        deleted_conversation_id = r.json().get("conversation_id") if r.status_code == 200 else None
         check(r.status_code == 200 and deleted_id, "user 创建待删除问答")
         with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
             source_count = db.execute(
                 "SELECT COUNT(id) FROM chat_sources WHERE chat_id=?", (deleted_id,)
             ).fetchone()[0]
         check(source_count > 0, "待删除问答含关联引用")
-        r = self.c.delete(f"/api/chats/{deleted_id}")
-        check(r.status_code == 204, "user 可删除本人问答")
+        r = self.c.delete(f"/api/conversations/{deleted_conversation_id}")
+        check(r.status_code == 204, "user 可删除本人对话")
         r = self.c.get(f"/api/chats/{deleted_id}")
         check(r.status_code == 404, "已删除问答不可再读取")
         with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
@@ -447,6 +473,7 @@ class Smoke:
                 "SELECT COUNT(id) FROM chat_sources WHERE chat_id=?", (deleted_id,)
             ).fetchone()[0]
         check(source_count == 0, "删除问答同时删除关联引用")
+        check(self.c.get(f"/api/conversations/{deleted_conversation_id}").status_code == 404, "已删除对话不可再读取")
         # 登出 alice 后会话失效
         r = self.c.post("/api/logout")
         check(r.status_code == 200, "注销成功")
@@ -462,6 +489,11 @@ class Smoke:
         check(r.status_code == 200, "重新登录 root")
         r = self.c.get("/api/admin/chats")
         check(r.status_code == 200 and any(c["id"] == self.root_chat_id for c in r.json()["items"]), "root 可见全部问答")
+        r = self.c.get("/api/admin/conversations")
+        check(
+            r.status_code == 200 and any(c["id"] == self.alice_conversation_id for c in r.json()["items"]),
+            "root 后台可见全部对话",
+        )
         r = self.c.get("/api/admin/audit")
         acts = [a["action"] for a in r.json()["items"]]
         check("llm_query" in acts and "doc_upload" in acts and "document_open" in acts and "feedback_submit" in acts and "login" in acts, "审计含 llm_query/doc_upload/document_open/feedback/login")
@@ -469,14 +501,14 @@ class Smoke:
         check(r.status_code == 200 and any(f["chat_id"] == self.alice_chat_id for f in r.json()["items"]), "root 可查看用户反馈")
         r = self.c.get("/api/admin/feedback.csv")
         check(r.status_code == 200 and "feedback_id" in r.text, "root 可导出用户反馈 CSV")
-        r = self.c.delete(f"/api/chats/{self.alice_chat_id}")
-        check(r.status_code == 204, "root 可删除其他用户问答")
+        r = self.c.delete(f"/api/conversations/{self.alice_conversation_id}")
+        check(r.status_code == 204, "root 可删除其他用户对话")
         r = self.c.get(f"/api/chats/{self.alice_chat_id}")
         check(r.status_code == 404, "root 删除后问答不可再读取")
         r = self.c.get("/api/admin/feedback")
         check(not any(f["chat_id"] == self.alice_chat_id for f in r.json()["items"]), "删除问答同时删除关联反馈")
-        r = self.c.get("/api/admin/audit?action=chat_delete")
-        check(r.status_code == 200 and r.json()["total"] >= 2, "删除操作保留 chat_delete 审计")
+        r = self.c.get("/api/admin/audit?action=conversation_delete")
+        check(r.status_code == 200 and r.json()["total"] >= 2, "删除操作保留 conversation_delete 审计")
         check(self.c.get("/api/admin/departments").status_code == 404, "root 后台部门接口已移除")
         r = self.c.get("/api/admin/overview")
         check(r.status_code == 200 and r.json()["counts"]["users"] >= 2, "概览计数正常")

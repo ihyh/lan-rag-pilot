@@ -310,7 +310,7 @@ uvicorn app.main:app --reload --port 8088
 - 会话 Cookie 名 `rag_session`：`HttpOnly` + `SameSite=Lax`；`Secure` 仅当 `RAG_COOKIE_SECURE=true`。
 - **写操作同源校验**：`/api/` 下 POST/PUT/PATCH/DELETE 若带 `Origin` 或 `Referer` 头，其 netloc 必须与请求 `Host` 一致，否则 403“跨站请求被拒绝（同源校验失败）”（无这些头的脚本请求不受影响）。
 - 基础安全响应头：`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: same-origin`。
-- **错误语义**：业务错误 `detail` 可能是**字符串**（如 401/403/404/413/409 与部分 400/429/503），也可能是 **`{code, message}` 对象**（嵌入未就绪 `embed_not_ready`、LLM 异常 `llm_*` 等）；参数校验失败为 FastAPI 默认 422 `detail` 数组。LLM 相关失败 `detail` 对象额外带 `chat_id`，可凭其到历史中查看。
+- **错误语义**：业务错误 `detail` 可能是**字符串**（如 401/403/404/413/409 与部分 400/429/503），也可能是 **`{code, message}` 对象**（嵌入未就绪 `embed_not_ready`、LLM 异常 `llm_*` 等）；参数校验失败为 FastAPI 默认 422 `detail` 数组。LLM 相关失败 `detail` 对象额外带 `chat_id` 和 `conversation_id`，可凭其到对话中查看。
 
 | 方法 & 路径 | 权限 | 说明 |
 |---|---|---|
@@ -320,7 +320,10 @@ uvicorn app.main:app --reload --port 8088
 | `POST /api/logout` | 登录与否均可 | 删除会话行与 Cookie，返回 `{ok:true}` |
 | `GET /api/me` | 匿名→401 | 当前用户 `{username, role, is_active, model_ready, model_message}`（`model_ready` 反映嵌入模型是否就绪） |
 | `POST /api/me/password` | user | 体 `{old_password, new_password}`（新密码 6–128 位）；旧密码错→400；成功后使**其它**会话失效（保留当前）；写审计 `password_change` |
-| `POST /api/query` | user | 问答。体 `{question}`（1–2000 字符，去除首尾空白）。错误：429 每用户限流（提示约 N 秒后重试）；503 `{code:"embed_not_ready"}`；502 `{code,message,chat_id}`（LLM 失败）。**成功响应 `sources` 仅含元信息**（`chunk_id/document_id/filename/page/paragraph/score`，不含全文）；`answer` 为空知识库/无命中时返回固定提示文案且 `status:"ok"`（知识库空提示见 `query.py` 常量）。写审计 `llm_query`/`llm_query_failed` 等 |
+| `POST /api/query` | user | 问答。体 `{question, conversation_id?}`；不传对话 ID 时自动创建，传入本人对话时追加一轮。成功和 LLM 失败均返回 `chat_id`、`conversation_id`；他人或不存在的对话统一 404。模型最多接收最近 3 个成功轮次、2000 字历史，当前引用仍只来自本轮检索片段 |
+| `GET /api/conversations?limit=&offset=` | user | 本人的对话列表，按最后更新时间倒序，含标题、问答轮数和失败标记 |
+| `GET /api/conversations/{conversation_id}` | user/root | 对话及按顺序排列的全部问答，每轮保留各自来源和本人反馈；普通用户访问他人对话统一 404 |
+| `DELETE /api/conversations/{conversation_id}` | user/root | 删除整个对话及其问答、来源和反馈，写审计 `conversation_delete`；普通用户仅限本人，root 可删除任意对话 |
 | `GET /api/chats?limit=&offset=` | user | 本人问答历史（`limit` 1–100，默认 25；返回 items+total） |
 | `GET /api/chats/{chat_id}` | user/root | 详情含 `sources`（含 300 字截断 `excerpt`）。**非本人一律 404**（不暴露他人记录存在性）；root 可见任意用户记录 |
 | `DELETE /api/chats/{chat_id}` | user/root | 删除问答及关联来源、反馈并写审计 `chat_delete`；普通用户仅限本人，root 可删除任意用户问答；无权限统一 404 |
@@ -337,13 +340,14 @@ uvicorn app.main:app --reload --port 8088
 | `GET /api/admin/feedback?limit=&offset=` | root | 查看全体用户反馈，含问题、评价和备注 |
 | `GET /api/admin/feedback.csv` | root | 下载全体反馈 CSV（UTF-8 BOM，便于 Excel 打开） |
 | `GET /api/admin/chats?user_id=&limit=&offset=` | root | 全部用户问答（含用户名、token、耗时） |
+| `GET /api/admin/conversations?limit=&offset=` | root | 全部用户对话，含用户名、标题、问答轮数和更新时间 |
 | `GET /api/admin/overview` | root | 概览：`counts`（users/documents/chunks/chats/uploads_bytes/chats_today）+ 模型/配置信息 + 运行时设置 |
 | `GET /api/admin/settings` | root | 运行时设置现值（settings 表） |
 | `PATCH /api/admin/settings` | root | 运行时调整：`top_k`(1–20)/`queries_per_minute`(1–120)/`max_concurrent_llm`(1–32)。写审计 `settings_update`；重启后以表中留存值为准（`runtime.py`） |
 
 ## 9. 权限模型（root / kb_admin / user）
 
-统一文档库：所有已登录且启用的用户都能检索和打开全部文档，`kb_admin` 作为文档管理员可维护全部文档；个人问答仍仅本人及 root 可访问。部门/知识库分类接口已移除（404）；旧分类表保留数据但不再初始化或参与授权。
+统一文档库：所有已登录且启用的用户都能检索和打开全部文档，`kb_admin` 作为文档管理员可维护全部文档；个人对话及问答仍仅本人及 root 可访问。部门/知识库分类接口已移除（404）；旧分类表保留数据但不再初始化或参与授权。
 
 | 能力 | root | kb_admin | user |
 |---|---|---|---|
@@ -496,7 +500,7 @@ uvicorn app.main:app --port 8090
 .\.venv\Scripts\python.exe tests\api_smoke.py   # 重新跑一遍也会通过（root 已存在，不再触发建号）
 # 或用 curl 验证旧数据仍在：
 curl.exe -s -c c.txt -H "Content-Type: application/json" -d '{"username":"root","password":"fcd123"}' http://127.0.0.1:8090/api/login
-curl.exe -s -b c.txt "http://127.0.0.1:8090/api/chats?limit=5"   # 应能看到重启前的问答
+curl.exe -s -b c.txt "http://127.0.0.1:8090/api/conversations?limit=5"   # 应能看到重启前的对话
 curl.exe -s -b c.txt -H "Content-Type: application/json" -d '{"question":"出差住宿上限是多少？"}' http://127.0.0.1:8090/api/query  # 索引已重建，仍可问答
 ```
 

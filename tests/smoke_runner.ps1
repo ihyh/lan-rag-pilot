@@ -1,5 +1,7 @@
 param(
     [string]$Python = "$env:TEMP\rag-pilot-test-venv\Scripts\python.exe",
+    [int]$AppPort = 8090,
+    [int]$MockPort = 8099,
     [switch]$KeepRunning
 )
 
@@ -22,13 +24,13 @@ $env:RAG_QUERIES_PER_MINUTE = "10"
 $env:RAG_MAX_CONCURRENT_LLM = "3"
 $env:RAG_TOP_K = "5"
 $env:DEEPSEEK_API_KEY = "mock-key"
-$env:DEEPSEEK_BASE_URL = "http://127.0.0.1:8099"
+$env:DEEPSEEK_BASE_URL = "http://127.0.0.1:$MockPort"
 $env:DEEPSEEK_MODEL = "mock-model"
 $env:DEEPSEEK_TIMEOUT_S = "1"
-$env:RAG_SMOKE_URL = "http://127.0.0.1:8090"
+$env:RAG_SMOKE_URL = "http://127.0.0.1:$AppPort"
 
-$mock = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "tests.mock_deepseek:app", "--host", "127.0.0.1", "--port", "8099" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "mock.out.log") -RedirectStandardError (Join-Path $runDir "mock.err.log") -PassThru
-$app = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8090" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "app.out.log") -RedirectStandardError (Join-Path $runDir "app.err.log") -PassThru
+$mock = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "tests.mock_deepseek:app", "--host", "127.0.0.1", "--port", "$MockPort" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "mock.out.log") -RedirectStandardError (Join-Path $runDir "mock.err.log") -PassThru
+$app = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$AppPort" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "app.out.log") -RedirectStandardError (Join-Path $runDir "app.err.log") -PassThru
 $code = 0
 
 try {
@@ -36,8 +38,8 @@ try {
     for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Milliseconds 500
         try {
-            $appHealth = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8090/api/health" -TimeoutSec 2
-            $mockHealth = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8099/healthz" -TimeoutSec 2
+            $appHealth = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$AppPort/api/health" -TimeoutSec 2
+            $mockHealth = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$MockPort/healthz" -TimeoutSec 2
             if ($appHealth.StatusCode -eq 200 -and $mockHealth.StatusCode -eq 200) {
                 $ready = $true
                 break
@@ -56,12 +58,12 @@ try {
         if ($code -eq 0) {
             Stop-Process -Id $app.Id -ErrorAction SilentlyContinue
             $app.WaitForExit()
-            $app = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8090" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "app-restart.out.log") -RedirectStandardError (Join-Path $runDir "app-restart.err.log") -PassThru
+            $app = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$AppPort" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "app-restart.out.log") -RedirectStandardError (Join-Path $runDir "app-restart.err.log") -PassThru
             $restartReady = $false
             for ($i = 0; $i -lt 30; $i++) {
                 Start-Sleep -Milliseconds 500
                 try {
-                    $health = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8090/api/health" -TimeoutSec 2
+                    $health = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$AppPort/api/health" -TimeoutSec 2
                     if ($health.StatusCode -eq 200) { $restartReady = $true; break }
                 } catch { }
             }
@@ -79,7 +81,7 @@ try {
         if ($code -ne 0) {
             Get-Content (Join-Path $runDir "app.err.log") -Tail 80 -ErrorAction SilentlyContinue
         } elseif ($KeepRunning) {
-            Write-Host "UI_READY=http://127.0.0.1:8090"
+            Write-Host "UI_READY=http://127.0.0.1:$AppPort"
             Write-Host "Press Ctrl+C to stop the test servers."
             while ($true) { Start-Sleep -Seconds 5 }
         }

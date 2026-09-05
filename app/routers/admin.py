@@ -396,6 +396,26 @@ def list_all_chats(
     return {"items": [dict(r) for r in rows], "total": total}
 
 
+@router.get("/admin/conversations")
+def list_all_conversations(
+    limit: int = 50,
+    offset: int = 0,
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(require_root),
+):
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    total = db.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]
+    rows = db.execute(
+        "SELECT v.id, v.user_id, u.username, v.title, v.created_at, v.updated_at, "
+        "COUNT(c.id) AS turn_count FROM conversations v "
+        "JOIN users u ON u.id=v.user_id LEFT JOIN chats c ON c.conversation_id=v.id "
+        "GROUP BY v.id ORDER BY v.updated_at DESC, v.id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    return {"items": [dict(row) for row in rows], "total": total}
+
+
 @router.get("/admin/feedback")
 def list_feedback(
     limit: int = 50,

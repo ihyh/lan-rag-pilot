@@ -45,6 +45,12 @@ async def chat_completions(request: Request):
     if "[[mock:http402]]" in user_content:
         return JSONResponse(status_code=402, content={"error": {"message": "mock no balance"}})
 
+    required = re.search(r"\[\[mock:require-history:(.+?)\]\]", user_content)
+    if required:
+        history_text = user_content.split("当前问题：", 1)[0]
+        if required.group(1) not in history_text:
+            return JSONResponse(status_code=400, content={"error": {"message": "required history missing"}})
+
     m = re.search(r"\[\[mock:sleep:([0-9.]+)\]\]", user_content)
     delay = float(m.group(1)) if m else 0.0
     if delay:
