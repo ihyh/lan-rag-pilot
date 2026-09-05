@@ -401,7 +401,7 @@ uvicorn app.main:app --reload --port 8088
 
 **功能边界（代码即证据）**：
 
-- 解析格式仅 **PDF / DOCX / TXT / MD**；**无 OCR** —— 扫描件/图片型 PDF 明确报错“PDF 中未提取到任何文本（可能是扫描件/图片型 PDF）。本试点不含 OCR…”（`parsing.py`，人工验收点见 §12）；**不支持 Excel** 等其它格式。
+- 解析格式支持 **PDF / DOCX / XLSX / TXT / MD**；XLSX 按工作表逐行读取非空单元格，引用文本保留工作表名、行号和单元格坐标。**无 OCR** —— 扫描件/图片型 PDF 明确报错“PDF 中未提取到任何文本（可能是扫描件/图片型 PDF）。本试点不含 OCR…”（`parsing.py`，人工验收点见 §12）。
 - 文本编码支持 UTF-8 / GB18030（按 utf-8-sig → utf-8 → gb18030 尝试）。
 - PDF 加密且无法用空密码解密 → 报错 `pdf_encrypted`；DOCX 必须是含 `word/document.xml` 的合法 ZIP。
 - 检索是**向量 Top-K**（本地内存索引，无 BM25/混合检索）；真实嵌入会先应用 `RAG_MIN_RELEVANCE_SCORE` 低相似度拒答，Top-5 片段一次性送入 LLM。
@@ -471,7 +471,7 @@ uvicorn app.main:app --port 8090
 |---|---|---|
 | 认证：登录/错误密码/注销/会话失效 | 自动（`test_auth`/`test_history`） | 错密码 401；`/api/me` 200；注销后 `/api/me` 401 |
 | 权限：user 触达全部管理端点 | 自动（`test_user_permissions`） | 一律 403“需要 root 权限” |
-| 格式：TXT / DOCX / MD / 带文字层 PDF 入库 | 自动（使用脚本生成的最小有效样本） | 201 且 `status:"ready"`、`num_chunks>=1`；正式资料仍建议人工抽验 |
+| 格式：TXT / DOCX / XLSX / MD / 带文字层 PDF 入库 | 自动（使用脚本生成的最小有效样本） | 201 且 `status:"ready"`、`num_chunks>=1`；正式资料仍建议人工抽验 |
 | 去重（SHA-256） | 自动 | 同内容改名再传 → 409 且错误信息含已存在文档 #id |
 | 超限（>25MB） | 自动 | 413 |
 | 伪造扩展名（txt 伪装 .pdf） | 自动 | 400，错误信息含 “PDF”（魔数层拦截） |

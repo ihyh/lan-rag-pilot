@@ -163,6 +163,21 @@ class Smoke:
         return buf.getvalue()
 
     @staticmethod
+    def _xlsx_bytes() -> bytes:
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "设备清单"
+        sheet.append(["设备", "巡检周期", "负责人"])
+        sheet.append(["UPS", "每季度", "运维组"])
+        sheet.append(["核心交换机", "每月", "网络组"])
+        buf = io.BytesIO()
+        workbook.save(buf)
+        workbook.close()
+        return buf.getvalue()
+
+    @staticmethod
     def _pdf_bytes() -> bytes:
         text = "Pilot policy: hotel reimbursement limit is 400 yuan per day."
         stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("ascii")
@@ -245,6 +260,18 @@ class Smoke:
 
         r = self.c.post(
             "/api/admin/documents",
+            files={
+                "file": (
+                    "设备清单.xlsx",
+                    self._xlsx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        check(r.status_code == 201 and r.json().get("status") == "ready", "XLSX 上传并入库成功")
+
+        r = self.c.post(
+            "/api/admin/documents",
             files={"file": ("制度说明.md", b"# Knowledge base\n\nMarkdown pilot document with unique content.", "text/markdown")},
         )
         check(r.status_code == 201 and r.json().get("status") == "ready", "Markdown 上传并入库成功")
@@ -272,6 +299,12 @@ class Smoke:
             files={"file": ("伪装.pdf", txt, "application/pdf")},
         )
         check(r.status_code == 400 and "PDF" in err_text(r), "伪造扩展名返回 400")
+
+        r = self.c.post(
+            "/api/admin/documents",
+            files={"file": ("伪装.xlsx", txt, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        check(r.status_code == 400 and "XLSX" in err_text(r), "伪造 XLSX 扩展名返回 400")
 
         r = self.c.post(
             "/api/admin/documents",
