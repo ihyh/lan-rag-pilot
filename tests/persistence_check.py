@@ -15,6 +15,14 @@ def main() -> None:
         docs = client.get("/api/admin/documents")
         chats = client.get("/api/admin/chats")
         conversations = client.get("/api/admin/conversations")
+        own_conversations = client.get("/api/conversations")
+        scope_persisted = False
+        if own_conversations.status_code == 200:
+            for item in own_conversations.json().get("items", []):
+                detail = client.get(f"/api/conversations/{item['id']}")
+                if detail.status_code == 200 and detail.json().get("document_ids"):
+                    scope_persisted = True
+                    break
     ok = (
         login.status_code == 200
         and docs.status_code == 200
@@ -23,9 +31,10 @@ def main() -> None:
         and len(chats.json().get("items", [])) >= 1
         and conversations.status_code == 200
         and len(conversations.json().get("items", [])) >= 1
+        and scope_persisted
     )
     print(
-        "[PASS] 重启后账号、文档、切片和问答历史仍可访问"
+        "[PASS] 重启后账号、文档、切片、问答历史和限定文档范围仍可访问"
         if ok else
         f"[FAIL] 持久化检查失败 login={login.status_code} docs={docs.status_code} "
         f"chats={chats.status_code} conversations={conversations.status_code}"

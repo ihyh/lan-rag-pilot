@@ -81,11 +81,25 @@ def main():
         request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
         user = SimpleNamespace(id=1, username="synthetic")
         answer = route.query(QueryBody(question="巡检周期是多少？"), request, db, user)
-        index.search.assert_called_once_with([1], 100, min_score=0.25)
+        index.search.assert_called_once_with([1], 100, document_ids=None, min_score=0.25)
         sent = model.call_args.args[1]
         assert len(sent) == 2 and sent[0]["content"] == full
         assert [s["chunk_id"] for s in answer["sources"]] == [s["chunk_id"] for s in sent]
         assert store.call_args.kwargs["sources"] == sent
+        scoped = [source(70, "限定设备的巡检周期为每月一次。", doc=2)]
+        db.execute.return_value.fetchall.return_value = [dict(scoped[0], paragraph=None)]
+        index.search.return_value = scoped
+        index.reset_mock()
+        model.reset_mock()
+        store.reset_mock()
+        with patch.object(route, "_require_ready_documents") as require_ready:
+            answer = route.query(
+                QueryBody(question="限定设备多久巡检？", document_ids=[2]), request, db, user
+            )
+        require_ready.assert_called_once_with(db, [2])
+        index.search.assert_called_once_with([1], 100, document_ids={2}, min_score=0.25)
+        assert [source["document_id"] for source in answer["sources"]] == [2]
+        assert store.call_args.kwargs["document_ids"] == [2]
         model.reset_mock()
         index.search.return_value = []
         answer = route.query(QueryBody(question="未知价格是多少？"), request, db, user)

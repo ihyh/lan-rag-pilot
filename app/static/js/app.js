@@ -34,7 +34,10 @@ function citedSources(answer, sources) {
     busy: false,           // 是否正在生成回答
     currentId: null,       // 当前展开的对话 id
     typingEl: null,        // “正在生成”占位气泡
-    composing: false       // 中文输入法组合中
+    composing: false,      // 中文输入法组合中
+    documents: [],
+    newDocumentIds: [],    // 新对话限定范围；空数组表示全库
+    currentDocumentIds: []
   };
 
   var els = {};
@@ -52,6 +55,10 @@ function citedSources(answer, sources) {
     els.historyFoot = document.getElementById('historyFoot');
     els.notice = document.getElementById('meNotice');
     els.questionCount = document.getElementById('questionCount');
+    els.documentScope = document.getElementById('documentScope');
+    els.documentScopeSummaryRow = document.getElementById('documentScopeSummaryRow');
+    els.documentScopeValue = document.getElementById('documentScopeValue');
+    els.documentScopeOptions = document.getElementById('documentScopeOptions');
   }
 
   function showNotice(text) {
@@ -197,6 +204,7 @@ function citedSources(answer, sources) {
 
   function renderConversation(conversation) {
     if (!conversation) { return; }
+    setDocumentScope(conversation.document_ids || [], true);
     hideGreeting();
     clear(els.messages);
     els.messages.classList.remove('hidden');
@@ -216,6 +224,66 @@ function citedSources(answer, sources) {
   }
 
   /* ---------- 历史列表 ---------- */
+
+  function scopeNames(ids) {
+    var selected = new Set(ids || []);
+    return S.documents.filter(function (doc) { return selected.has(doc.id); })
+      .map(function (doc) { return doc.filename; });
+  }
+
+  function updateScopeControls() {
+    var locked = S.currentId !== null;
+    var ids = locked ? S.currentDocumentIds || [] : S.newDocumentIds;
+    var names = scopeNames(ids);
+    els.documentScopeValue.textContent = ids.length
+      ? (names.length ? names.join('、') : ids.length + ' 个限定文档')
+      : '全部文档';
+    els.documentScope.classList.toggle('is-locked', locked);
+    if (locked) { els.documentScope.open = false; }
+    qsa('input[type="checkbox"]', els.documentScopeOptions).forEach(function (box) {
+      box.checked = ids.indexOf(Number(box.value)) !== -1;
+      box.disabled = locked || S.busy;
+    });
+  }
+
+  function setDocumentScope(ids, locked) {
+    ids = (ids || []).map(Number).filter(function (id) { return id > 0; });
+    if (locked) { S.currentDocumentIds = ids; }
+    else { S.newDocumentIds = ids; S.currentDocumentIds = []; }
+    updateScopeControls();
+  }
+
+  function renderDocumentOptions() {
+    clear(els.documentScopeOptions);
+    if (!S.documents.length) {
+      els.documentScopeOptions.appendChild(h('p', { class: 'document-scope-empty' }, ['暂无可用文档']));
+      updateScopeControls();
+      return;
+    }
+    S.documents.forEach(function (doc) {
+      var box = h('input', { type: 'checkbox', value: String(doc.id) });
+      box.addEventListener('change', function () {
+        S.newDocumentIds = qsa('input[type="checkbox"]:checked', els.documentScopeOptions)
+          .map(function (item) { return Number(item.value); });
+        updateScopeControls();
+      });
+      els.documentScopeOptions.appendChild(h('label', { class: 'document-scope-option' }, [
+        box,
+        h('span', null, [doc.filename + (doc.version ? '（' + doc.version + '）' : '')])
+      ]));
+    });
+    updateScopeControls();
+  }
+
+  async function loadDocuments() {
+    try {
+      var data = await api('/api/documents');
+      S.documents = data.items || [];
+      renderDocumentOptions();
+    } catch (e) {
+      if (!(e && e.status === 401)) { toast('文档选择列表加载失败，将使用全部文档', 'warn'); }
+    }
+  }
 
   function renderHistoryList(items, total) {
     clear(els.historyList);
@@ -260,6 +328,7 @@ function citedSources(answer, sources) {
     if (id === S.currentId && !els.messages.classList.contains('hidden')) { return; }
     S.currentId = id;
     updateDeleteButton();
+    updateScopeControls();
     markActive(id);
     loadConversationDetail(id);
   }
@@ -276,6 +345,7 @@ function citedSources(answer, sources) {
     try {
       await api('/api/conversations/' + chatId, { method: 'DELETE' });
       S.currentId = null;
+      setDocumentScope([], false);
       showGreeting();
       await loadHistory();
       toast('对话已删除', 'success');
@@ -360,6 +430,7 @@ function citedSources(answer, sources) {
     var conversationId = S.currentId;
     S.busy = true;
     updateDeleteButton();
+    updateScopeControls();
     hideGreeting();
     els.messages.classList.remove('hidden');
     els.input.value = '';
@@ -375,6 +446,7 @@ function citedSources(answer, sources) {
     try {
       var body = { question: q };
       if (conversationId !== null) { body.conversation_id = conversationId; }
+      else { body.document_ids = S.newDocumentIds.slice(); }
       var res = await api('/api/query', { method: 'POST', body: body });
       S.currentId = res.conversation_id;
       var conversation = await api('/api/conversations/' + res.conversation_id);
@@ -388,8 +460,8 @@ function citedSources(answer, sources) {
       if (failedConversationId) {
         try {
           var failedConversation = await api('/api/conversations/' + failedConversationId);
-          renderConversation(failedConversation);
           S.currentId = failedConversation.id;
+          renderConversation(failedConversation);
           await loadHistoryOnly();
         } catch (e2) {
           clear(els.messages);
@@ -407,6 +479,7 @@ function citedSources(answer, sources) {
       busy(els.sendBtn, false);
       S.busy = false;
       updateDeleteButton();
+      updateScopeControls();
       els.input.focus();
     }
   }
@@ -445,6 +518,7 @@ function citedSources(answer, sources) {
     els.newChatBtn.addEventListener('click', function () {
       if (S.busy) { toast('正在生成回答，请稍候', 'warn'); return; }
       S.currentId = null;
+      setDocumentScope([], false);
       updateDeleteButton();
       showGreeting();
       els.input.focus();
@@ -452,6 +526,9 @@ function citedSources(answer, sources) {
     });
 
     els.input.addEventListener('input', autoSize);
+    els.documentScopeSummaryRow.addEventListener('click', function (ev) {
+      if (S.currentId !== null || S.busy) { ev.preventDefault(); }
+    });
     qsa('.suggestion').forEach(function (btn) {
       btn.addEventListener('click', function () {
         if (S.busy) { return; }
@@ -492,6 +569,7 @@ function citedSources(answer, sources) {
 
     registerSW();
 
+    await loadDocuments();
     await loadHistory();
   }
 

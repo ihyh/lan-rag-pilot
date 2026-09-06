@@ -423,6 +423,20 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   margin: 0 auto 14px; max-width: 940px; width: calc(100% - 40px);
   padding: 10px 10px 8px; display: flex; flex-direction: column; gap: 8px;
 }
+.document-scope { border-bottom: 1px solid var(--border); padding: 0 6px 8px; }
+.document-scope summary {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  color: var(--muted); font-size: 12.5px; font-weight: 600;
+}
+.document-scope-value { color: var(--primary-600); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-scope-options {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px 12px; max-height: 150px; overflow: auto; margin-top: 9px;
+}
+.document-scope-option { display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; cursor: pointer; }
+.document-scope-option input { margin-top: 2px; flex: none; }
+.document-scope-empty, .document-scope-tip { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.document-scope.is-locked summary { cursor: default; }
 .composer textarea {
   width: 100%; border: 0; outline: none; resize: none; background: transparent;
   font-family: inherit; font-size: 14.5px; line-height: 1.65; color: var(--text);

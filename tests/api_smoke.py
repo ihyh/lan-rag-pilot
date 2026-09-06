@@ -124,6 +124,8 @@ class Smoke:
         check(r.status_code == 403, "user 管理用户返回 403")
         r = self.c.get("/api/admin/documents")
         check(r.status_code == 403, "user 查看管理文档返回 403")
+        r = self.c.get("/api/documents")
+        check(r.status_code == 200 and r.json().get("items") == [], "user 可读取空的问答文档选择列表")
         for path in ["/api/admin/departments", "/api/admin/knowledge-bases", "/api/knowledge-bases"]:
             check(self.c.get(path).status_code == 404, f"分类接口已移除：{path}")
 
@@ -385,11 +387,26 @@ class Smoke:
     # ---------- 4. 问答 ----------
     def test_query(self) -> None:
         print("\n== 问答 ==")
-        r = self.c.post("/api/query", json={"question": "历史标记：出差住宿上限是多少？"})
-        check(r.status_code == 200, "root 问答成功")
+        r = self.login("root", ROOT_PW)
+        check(r.status_code == 200, "限定文档问答前重新登录 root")
+        selectable = self.c.get("/api/documents")
+        check(
+            selectable.status_code == 200
+            and any(item["id"] == self.txt_doc["id"] for item in selectable.json().get("items", [])),
+            "登录用户可读取已就绪文档选择列表",
+        )
+        r = self.c.post(
+            "/api/query",
+            json={"question": "历史标记：出差住宿上限是多少？", "document_ids": [self.txt_doc["id"], self.txt_doc["id"]]},
+        )
+        check(r.status_code == 200, "root 限定文档问答成功")
         body = r.json()
         check(body.get("answer") and "Mock 模型" in body["answer"], "返回答案")
         check(len(body.get("sources", [])) > 0, f"来源数 {len(body.get('sources', []))} > 0")
+        check(
+            all(source["document_id"] == self.txt_doc["id"] for source in body.get("sources", [])),
+            "限定文档问答不会混入其它文档",
+        )
         src = body["sources"][0]
         check(src.get("filename") and ("page" in src or "paragraph" in src), "来源含文件名与位置")
         self.root_chat_id = body["chat_id"]
@@ -404,10 +421,27 @@ class Smoke:
         )
         check(
             r.status_code == 200 and r.json().get("conversation_id") == self.root_conversation_id,
-            "追问追加到原对话且模型收到历史",
+            "追问沿用原对话的限定文档且模型收到历史",
+        )
+        check(
+            all(source["document_id"] == self.txt_doc["id"] for source in r.json().get("sources", [])),
+            "追问不会逃逸到限定文档之外",
         )
         r = self.c.get(f"/api/conversations/{self.root_conversation_id}")
-        check(r.status_code == 200 and len(r.json().get("turns", [])) == 2, "对话详情按轮返回两次问答")
+        check(
+            r.status_code == 200
+            and len(r.json().get("turns", [])) == 2
+            and r.json().get("document_ids") == [self.txt_doc["id"]],
+            "对话详情保留去重后的限定文档范围",
+        )
+        other_id = next(item["id"] for item in selectable.json()["items"] if item["id"] != self.txt_doc["id"])
+        r = self.c.post(
+            "/api/query",
+            json={"question": "尝试改变范围", "conversation_id": self.root_conversation_id, "document_ids": [other_id]},
+        )
+        check(r.status_code == 409, "已有对话不能改变限定文档范围")
+        r = self.c.post("/api/query", json={"question": "无效范围", "document_ids": [999999]})
+        check(r.status_code == 400, "不存在的限定文档被拒绝")
 
         # 普通用户没有部门记录，仍可检索原属其它部门的文档。
         r = self.login("alice", "alice123")
