@@ -64,10 +64,12 @@ class TokenizerAdapter:
                 if seg and seg[-1] in _SENTENCE_END:
                     snap = i
                     break
-            seg_end = (snap + 1) if snap is not None else end
+            seg_end = end if end == total else ((snap + 1) if snap is not None else end)
             piece = text[offsets[start][0]:offsets[seg_end - 1][1]].strip()
             if piece:
                 pieces.append((piece, self.count(piece)))
+            if seg_end == total:
+                break  # 最后一块已覆盖末尾，不再逐字生成重叠尾片段。
             span = seg_end - start
             next_start = seg_end - min(overlap_tokens, span - 1)
             if next_start <= start:

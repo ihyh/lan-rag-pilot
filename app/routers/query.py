@@ -36,6 +36,20 @@ def _excerpt(text: str, limit: int = 300) -> str:
     return one[:limit] + ("…" if len(one) > limit else "")
 
 
+def _select_sources(sources: list[dict], k: int) -> list[dict]:
+    """同文档的包含型重复只保留完整片段，保留不同数值/版本的原始引用。"""
+    kept: list[tuple[dict, str]] = []
+    for src in sorted(sources, key=lambda s: len(s["content"]), reverse=True):
+        text = " ".join(src["content"].split())
+        if text and not any(
+            src["document_id"] == old["document_id"] and text in old_text
+            for old, old_text in kept
+        ):
+            kept.append((src, text))
+    ids = {src["chunk_id"] for src, _ in kept}
+    return [src for src in sources if src["chunk_id"] in ids][:k]
+
+
 def _sources_for_chat(db: sqlite3.Connection, chat_id: int) -> list[dict]:
     rows = db.execute(
         "SELECT s.chunk_id, s.document_id, s.score, s.page, s.paragraph, s.excerpt, d.filename "
@@ -258,7 +272,8 @@ def query(
         retrieval_question = f"{history[-1]['question']}\n{question}" if history else question
         qvec = embedding_service.embed_query(retrieval_question)
         min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
-        hits = vector_index.search(qvec, rt_values["top_k"], min_score=min_score)
+        # 旧索引可能包含大量重叠短尾片段；有界扩大候选，去重后仍只发送 Top-K。
+        hits = vector_index.search(qvec, min(200, rt_values["top_k"] * 20), min_score=min_score)
     except EmbeddingUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
     except ValueError as exc:
@@ -292,6 +307,7 @@ def query(
                 "content": r["content"],
             }
         )
+    sources = _select_sources(sources, rt_values["top_k"])
     if not sources:
         return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
 
