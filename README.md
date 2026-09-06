@@ -252,6 +252,8 @@ uvicorn app.main:app --reload --port 8088
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 请求模型名；当前主机的 4B 模型触发内存门槛，离线部署模板已降为 `qwen3:1.7b` |
 | `DEEPSEEK_TIMEOUT_S` | `60.0` | LLM 请求超时秒数（连接超时固定 10s）；当前 CPU Ollama 部署设为 180；超时→`llm_timeout` |
 
+使用 Ollama `qwen3` / `qwen3:*` 模型名时，请求显式设置 `reasoning_effort=none` 关闭隐藏思考，以缩短回答等待；其他模型请求不附加该参数。检索片段、引用规则与多轮上下文保持不变；复杂问题的答案质量仍需真实评测确认。
+
 ### 7.2 服务与目录
 
 | 变量 | 默认值 | 说明 |

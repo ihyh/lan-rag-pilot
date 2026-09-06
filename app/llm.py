@@ -83,6 +83,9 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
         "max_tokens": settings.llm_max_tokens,
         "stream": False,
     }
+    if settings.deepseek_model.split(":", 1)[0] == "qwen3":
+        # Ollama Qwen3 默认生成隐藏思考；知识库问答直接生成正文以缩短等待。
+        payload["reasoning_effort"] = "none"
     headers = {
         "Authorization": f"Bearer {settings.deepseek_api_key}",
         "Content-Type": "application/json",
