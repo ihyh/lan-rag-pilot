@@ -1,17 +1,38 @@
 /* ============================================================
  * app.js — 问答页逻辑
  *  - 会话校验（未登录跳 /login）
- *  - 左侧历史列表 + 右侧问答（Enter 发送 / Ctrl+Enter 换行）
- *  - 发送后拉取完整问答记录渲染「答案 + 引用来源卡」
+ *  - 左侧对话列表 + 右侧多轮问答（Enter 发送 / Ctrl+Enter 换行）
+ *  - 发送后拉取完整对话，逐轮渲染「答案 + 引用来源卡」
  *  - 顶层 try/catch + toast，避免未捕获异常白屏
  * ============================================================ */
 'use strict';
+
+// 引用编号对应模型收到的片段顺序；未标注的检索候选不作为回答来源。
+function citedSources(answer, sources) {
+  var ids = new Set();
+  String(answer || '').replace(/\[(\d+(?:\s*[,，、]\s*\d+)*)\]/g, function (_, numbers) {
+    numbers.split(/[,，、]/).forEach(function (n) { ids.add(Number(n)); });
+    return _;
+  });
+  var groups = new Map();
+  (sources || []).forEach(function (s, index) {
+    var number = index + 1;
+    if (!ids.has(number)) { return; }
+    // 没有页码的片段可能跨段落；保留其摘录，不冒充精确的单段位置。
+    var key = s.document_id + ':' + (s.page != null ? 'page:' + s.page : 'source:' + number);
+    if (!groups.has(key)) { groups.set(key, { source: s, numbers: [], excerpts: [] }); }
+    var group = groups.get(key);
+    group.numbers.push(number);
+    if (s.excerpt && group.excerpts.indexOf(s.excerpt) < 0) { group.excerpts.push(s.excerpt); }
+  });
+  return Array.from(groups.values());
+}
 
 (function () {
   var S = {
     me: null,
     busy: false,           // 是否正在生成回答
-    currentId: null,       // 当前展开的历史记录 id
+    currentId: null,       // 当前展开的对话 id
     typingEl: null,        // “正在生成”占位气泡
     composing: false       // 中文输入法组合中
   };
@@ -24,6 +45,7 @@
     els.input = document.getElementById('questionInput');
     els.sendBtn = document.getElementById('sendBtn');
     els.newChatBtn = document.getElementById('newChatBtn');
+    els.deleteChatBtn = document.getElementById('deleteChatBtn');
     els.historyList = document.getElementById('historyList');
     els.historyEmpty = document.getElementById('historyEmpty');
     els.historyLoading = document.getElementById('historyLoading');
@@ -77,15 +99,9 @@
   /** 单条来源位置文案 */
   function sourceLoc(s) {
     if (s.page !== null && s.page !== undefined && s.page !== '') { return '第 ' + s.page + ' 页'; }
-    if (s.paragraph !== null && s.paragraph !== undefined && s.paragraph !== '') { return '第 ' + s.paragraph + ' 段'; }
-    return '全文检索';
-  }
-
-  function scorePct(score) {
-    if (score === null || score === undefined || score === '') { return '—'; }
-    var n = Number(score);
-    if (isNaN(n)) { return '—'; }
-    return (Math.round(n * 1000) / 10) + '%';
+    if (/\.xlsx$/i.test(s.filename || '')) { return '工作表与单元格位置见下方摘录'; }
+    if (s.paragraph !== null && s.paragraph !== undefined && s.paragraph !== '') { return '片段起始：第 ' + s.paragraph + ' 段'; }
+    return '未记录具体位置';
   }
 
   function sourceUrl(s) {
@@ -96,35 +112,31 @@
     return url;
   }
 
-  function sourcesNode(sources) {
-    var items = sources || [];
-    var wrap = h('div', { class: 'msg-a' }, []);
+  function sourcesNode(answer, sources) {
+    var items = citedSources(answer, sources);
+    var wrap = h('details', { class: 'msg-a source-details' }, [
+      h('summary', { class: 'sources-title' }, ['查看引用来源' + (items.length ? '（' + items.length + '）' : '')])
+    ]);
     if (!items.length) {
-      var none = h('div', { class: 'no-sources' }, [h('span', { html: icon('search') })]);
-      none.appendChild(h('span', null, ['本次回答没有引用来源']));
-      wrap.appendChild(none);
+      wrap.appendChild(h('p', { class: 'no-sources' }, ['本次回答未提供可对应的引用编号，无法确认具体来源。']));
       return wrap;
     }
-    var cards = items.map(function (s) {
+    var cards = items.map(function (group) {
+      var s = group.source;
       return h('div', { class: 'source-card' }, [
         h('div', { class: 'doc-ic', html: icon('doc') }),
         h('div', { class: 's-main' }, [
           h('div', { class: 's-top' }, [
-            h('span', { class: 's-name', title: s.filename || '' }, [s.filename || '未知文档']),
-            h('span', { class: 's-score', title: '相似度' }, [scorePct(s.score)])
+            h('span', { class: 's-name', title: s.filename || '' }, [group.numbers.map(function (n) { return '[' + n + ']'; }).join('') + ' ' + (s.filename || '未知文档')])
           ]),
           h('div', { class: 's-meta' }, [
             h('span', { class: 's-loc' }, [sourceLoc(s)]),
-            s.chunk_id ? h('span', { class: 's-chunk' }, ['片段 #' + s.chunk_id]) : null,
             h('a', { class: 's-open', href: sourceUrl(s), target: '_blank', rel: 'noopener noreferrer' }, ['打开原文'])
           ]),
-          h('div', { class: 's-excerpt' }, [excerpt(s.excerpt, 220) || '（无摘要内容）'])
+          h('div', { class: 's-excerpt' }, [group.excerpts.join('\n\n') || '（未保存原文摘录）'])
         ])
       ]);
     });
-    var title = h('div', { class: 'sources-title' }, [h('span', { html: icon('folder') })]);
-    title.appendChild(h('span', null, ['引用来源（' + items.length + '）']));
-    wrap.appendChild(title);
     var grid = h('div', { class: 'sources' }, cards);
     wrap.appendChild(grid);
     return wrap;
@@ -168,14 +180,10 @@
   }
 
   /**
-   * 将一条问答记录渲染到消息区（覆盖当前视图）
-   * rec: GET /api/chats/{id} 返回的记录（含 sources）
+   * 将一轮问答追加到消息区。
    */
-  function renderRecord(rec) {
+  function appendRecord(rec) {
     if (!rec) { return; }
-    hideGreeting();
-    clear(els.messages);
-    els.messages.classList.remove('hidden');
     els.messages.appendChild(askBubble(rec.question));
     if (rec.status === 'error') {
       var why = rec.error || '未知错误';
@@ -183,8 +191,16 @@
     } else {
       els.messages.appendChild(answerBubble(rec.answer));
       els.messages.appendChild(feedbackNode(rec));
-      els.messages.appendChild(sourcesNode(rec.sources));
+      els.messages.appendChild(sourcesNode(rec.answer, rec.sources));
     }
+  }
+
+  function renderConversation(conversation) {
+    if (!conversation) { return; }
+    hideGreeting();
+    clear(els.messages);
+    els.messages.classList.remove('hidden');
+    (conversation.turns || []).forEach(appendRecord);
     scrollBottom();
   }
 
@@ -217,14 +233,15 @@
       var btn = h('button', {
         class: 'history-item' + (item.id === S.currentId ? ' is-active' : ''),
         type: 'button',
-        title: item.question || ''
+        title: item.title || ''
       }, [
-        h('span', { class: 'h-dot' + (item.status === 'error' ? ' err' : '') }),
+        h('span', { class: 'h-dot' + (item.has_error ? ' err' : '') }),
         h('span', { class: 'h-body' }, [
-          h('span', { class: 'h-q' }, [excerpt(item.question, 80)]),
+          h('span', { class: 'h-q' }, [excerpt(item.title, 80)]),
           h('span', { class: 'h-time' }, [
-            fmtTime(item.created_at),
-            item.status === 'error' ? ' · 失败' : ''
+            fmtTime(item.updated_at),
+            ' · ' + item.turn_count + ' 轮',
+            item.has_error ? ' · 含失败记录' : ''
           ])
         ])
       ]);
@@ -242,8 +259,31 @@
     if (S.busy) { toast('正在生成回答，请稍候再切换', 'warn'); return; }
     if (id === S.currentId && !els.messages.classList.contains('hidden')) { return; }
     S.currentId = id;
+    updateDeleteButton();
     markActive(id);
-    loadChatDetail(id);
+    loadConversationDetail(id);
+  }
+
+  function updateDeleteButton() {
+    els.deleteChatBtn.disabled = S.busy || S.currentId === null;
+  }
+
+  async function deleteSelectedChat() {
+    if (S.busy || S.currentId === null) { return; }
+    var chatId = S.currentId;
+    if (!window.confirm('确定删除当前选中的对话？其中全部问答将被删除且无法恢复。')) { return; }
+    els.deleteChatBtn.disabled = true;
+    try {
+      await api('/api/conversations/' + chatId, { method: 'DELETE' });
+      S.currentId = null;
+      showGreeting();
+      await loadHistory();
+      toast('对话已删除', 'success');
+    } catch (e) {
+      toast('删除失败：' + (e.message || '请稍后重试'), 'error');
+    } finally {
+      updateDeleteButton();
+    }
   }
 
   function markActive(id) {
@@ -252,18 +292,18 @@
     });
   }
 
-  async function loadChatDetail(id) {
+  async function loadConversationDetail(id) {
     hideGreeting();
     clear(els.messages);
     els.messages.classList.remove('hidden');
     var loadBox = h('div', { class: 'msg msg-a' }, [
-      h('div', { class: 'bubble bubble-a bubble-load' }, [h('span', { class: 'spin' }), '正在加载对话详情…'])
+      h('div', { class: 'bubble bubble-a bubble-load' }, [h('span', { class: 'spin' }), '正在加载对话…'])
     ]);
     els.messages.appendChild(loadBox);
     scrollBottom();
     try {
-      var rec = await api('/api/chats/' + id);
-      renderRecord(rec);
+      var conversation = await api('/api/conversations/' + id);
+      renderConversation(conversation);
     } catch (e) {
       if (e && e.status === 401) { return; }
       clear(els.messages);
@@ -275,7 +315,7 @@
     els.historyLoading.classList.remove('hidden');
     els.historyList.classList.add('hidden');
     try {
-      var data = await api('/api/chats?limit=25');
+      var data = await api('/api/conversations?limit=25');
       els.historyList.classList.remove('hidden');
       els.historyLoading.classList.add('hidden');
       S.historyItems = data.items || [];
@@ -317,35 +357,39 @@
       toast('问题过长（最多 2000 字）', 'warn');
       return;
     }
+    var conversationId = S.currentId;
     S.busy = true;
+    updateDeleteButton();
     hideGreeting();
     els.messages.classList.remove('hidden');
     els.input.value = '';
     autoSize();
     busy(els.sendBtn, true, '生成中…');
 
-    // 新的提问先清空当前对话视图，立即展示问题气泡
-    clear(els.messages);
+    // 新对话清空欢迎页；继续追问时保留之前的轮次。
+    if (conversationId === null) { clear(els.messages); }
     els.messages.appendChild(askBubble(q));
     showTyping();
     scrollBottom();
 
     try {
-      var res = await api('/api/query', { method: 'POST', body: { question: q } });
-      var rec = await api('/api/chats/' + res.chat_id);
-      renderRecord(rec);
-      S.currentId = rec.id;
+      var body = { question: q };
+      if (conversationId !== null) { body.conversation_id = conversationId; }
+      var res = await api('/api/query', { method: 'POST', body: body });
+      S.currentId = res.conversation_id;
+      var conversation = await api('/api/conversations/' + res.conversation_id);
+      renderConversation(conversation);
       await loadHistoryOnly();
     } catch (e) {
       removeTyping();
       if (e && e.status === 401) { return; }
-      // 后端 502 时 detail 里带 chat_id，可回拉失败记录展示
-      var cid = e && e.data && e.data.detail && e.data.detail.chat_id;
-      if (cid) {
+      // 后端 502 时 detail 里带 conversation_id，可回拉失败对话展示
+      var failedConversationId = e && e.data && e.data.detail && e.data.detail.conversation_id;
+      if (failedConversationId) {
         try {
-          var errRec = await api('/api/chats/' + cid);
-          renderRecord(errRec);
-          S.currentId = errRec.id;
+          var failedConversation = await api('/api/conversations/' + failedConversationId);
+          renderConversation(failedConversation);
+          S.currentId = failedConversation.id;
           await loadHistoryOnly();
         } catch (e2) {
           clear(els.messages);
@@ -353,13 +397,16 @@
           els.messages.appendChild(errorBubble('回答失败：' + (e.message || '未知错误')));
         }
       } else {
-        clear(els.messages);
-        els.messages.appendChild(askBubble(q));
+        if (conversationId === null) {
+          clear(els.messages);
+          els.messages.appendChild(askBubble(q));
+        }
         els.messages.appendChild(errorBubble('回答失败：' + (e.message || '未知错误')));
       }
     } finally {
       busy(els.sendBtn, false);
       S.busy = false;
+      updateDeleteButton();
       els.input.focus();
     }
   }
@@ -367,7 +414,7 @@
   /** 只重拉历史列表（不自动选中，保持当前视图） */
   async function loadHistoryOnly() {
     try {
-      var data = await api('/api/chats?limit=25');
+      var data = await api('/api/conversations?limit=25');
       S.historyItems = data.items || [];
       renderHistoryList(S.historyItems, data.total);
       markActive(S.currentId);
@@ -394,9 +441,11 @@
     if (gi) { gi.innerHTML = icon('chat'); }
 
     els.sendBtn.addEventListener('click', function () { sendQuestion(); });
+    els.deleteChatBtn.addEventListener('click', deleteSelectedChat);
     els.newChatBtn.addEventListener('click', function () {
       if (S.busy) { toast('正在生成回答，请稍候', 'warn'); return; }
       S.currentId = null;
+      updateDeleteButton();
       showGreeting();
       els.input.focus();
       qsa('.history-item').forEach(function (it) { it.classList.remove('is-active'); });

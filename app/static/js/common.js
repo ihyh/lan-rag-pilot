@@ -486,7 +486,7 @@ async function initSession(opts) {
     userChip.innerHTML = '';
     userChip.appendChild(h('span', { class: 'u-ic', html: icon('user') }));
     userChip.appendChild(h('span', { class: 'u-name' }, [me.username]));
-    userChip.appendChild(h('span', { class: 'u-role' }, [root ? '系统管理员' : (kbAdmin ? '知识库管理员' : '普通用户')]));
+    userChip.appendChild(h('span', { class: 'u-role' }, [root ? '系统管理员' : (kbAdmin ? '文档管理员' : '普通用户')]));
   }
   // 静态图标注入（保持 HTML 纯净，由 JS 统一放图标）
   var toggle = qs('#navToggle');

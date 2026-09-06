@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import audit
 from .config import settings
-from .db import connect, ensure_scope_defaults, init_db, now_iso
+from .db import connect, init_db, now_iso
 from .embeddings import embedding_service
 from .index import vector_index
 from .pages import router as pages_router
@@ -56,7 +56,6 @@ def _bootstrap() -> None:
                 detail="首次启动创建初始 root 账号",
             )
             logger.info("已用 RAG_ROOT_PASSWORD 创建初始 root 账号（建议尽快在界面修改密码）")
-        ensure_scope_defaults(db)
         if not settings.secret_key:
             logger.warning(
                 "未设置 RAG_SECRET_KEY：会话令牌哈希使用内置开发密钥，接入正式环境前必须配置"
