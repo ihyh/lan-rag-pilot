@@ -25,6 +25,9 @@ class CharacterTokenizer:
 
 
 def main():
+    # Existing CI entry point also runs the exact-term regression suite.
+    from hybrid_retrieval_check import main as check_hybrid
+    check_hybrid()
     ta = TokenizerAdapter(CharacterTokenizer())
     text = "甲" * 400 + "乙" * 100
     pieces = ta.split_long(text, 400, 60)
@@ -81,7 +84,7 @@ def main():
         request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
         user = SimpleNamespace(id=1, username="synthetic")
         answer = route.query(QueryBody(question="巡检周期是多少？"), request, db, user)
-        index.search.assert_called_once_with([1], 100, document_ids=None, min_score=0.25)
+        index.search.assert_called_once_with([1], 100, document_ids=None, min_score=0.25, query_text="巡检周期是多少？")
         sent = model.call_args.args[1]
         assert len(sent) == 2 and sent[0]["content"] == full
         assert [s["chunk_id"] for s in answer["sources"]] == [s["chunk_id"] for s in sent]
@@ -97,7 +100,7 @@ def main():
                 QueryBody(question="限定设备多久巡检？", document_ids=[2]), request, db, user
             )
         require_ready.assert_called_once_with(db, [2])
-        index.search.assert_called_once_with([1], 100, document_ids={2}, min_score=0.25)
+        index.search.assert_called_once_with([1], 100, document_ids={2}, min_score=0.25, query_text="限定设备多久巡检？")
         assert [source["document_id"] for source in answer["sources"]] == [2]
         assert store.call_args.kwargs["document_ids"] == [2]
         model.reset_mock()

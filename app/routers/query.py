@@ -321,6 +321,7 @@ def query(
             min(200, rt_values["top_k"] * 20),
             document_ids=set(document_ids) or None,
             min_score=min_score,
+            query_text=question,
         )
     except EmbeddingUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
