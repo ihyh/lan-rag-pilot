@@ -28,6 +28,22 @@ function citedSources(answer, sources) {
   return Array.from(groups.values());
 }
 
+// 仅依据文件名的明确设备标识；多设备合订文档留给用户手动选择。
+function deviceDocumentIds(documents, device) {
+  var patterns = {
+    PLM: /(^|[^a-z0-9])plm(?=$|[^a-z0-9])/i,
+    PLUSPRO: /(^|[^a-z0-9])plus[\s_-]*pro(?=$|[^a-z0-9])/i,
+    PLUS500: /(^|[^a-z0-9])plus[\s_-]*500(?=$|[^a-z0-9])/i
+  };
+  if (!patterns[device]) { return []; }
+  return (documents || []).filter(function (doc) {
+    var matches = Object.keys(patterns).filter(function (name) {
+      return patterns[name].test(doc.filename || '');
+    });
+    return matches.length === 1 && matches[0] === device;
+  }).map(function (doc) { return doc.id; });
+}
+
 (function () {
   var S = {
     me: null,
@@ -36,6 +52,7 @@ function citedSources(answer, sources) {
     typingEl: null,        // “正在生成”占位气泡
     composing: false,      // 中文输入法组合中
     documents: [],
+    documentsLoaded: false,
     newDocumentIds: [],    // 新对话限定范围；空数组表示全库
     currentDocumentIds: []
   };
@@ -59,6 +76,7 @@ function citedSources(answer, sources) {
     els.documentScopeSummaryRow = document.getElementById('documentScopeSummaryRow');
     els.documentScopeValue = document.getElementById('documentScopeValue');
     els.documentScopeOptions = document.getElementById('documentScopeOptions');
+    els.deviceScopeHint = document.getElementById('deviceScopeHint');
   }
 
   function showNotice(text) {
@@ -244,6 +262,21 @@ function citedSources(answer, sources) {
       box.checked = ids.indexOf(Number(box.value)) !== -1;
       box.disabled = locked || S.busy;
     });
+    var selectedDevice = '';
+    qsa('[data-device]').forEach(function (btn) {
+      var matching = deviceDocumentIds(S.documents, btn.dataset.device);
+      var selected = matching.length > 0 && matching.length === ids.length
+        && matching.every(function (id) { return ids.indexOf(id) !== -1; });
+      if (selected) { selectedDevice = btn.dataset.device; }
+      btn.setAttribute('aria-pressed', String(selected));
+      btn.disabled = locked || S.busy || !S.documentsLoaded || !matching.length;
+      btn.title = matching.length ? '限定 ' + matching.length + ' 个对应文档' : '暂无可明确匹配的设备文档';
+    });
+    els.deviceScopeHint.textContent = !S.documentsLoaded
+      ? '设备文档尚未加载成功，请刷新重试或手动选择文档。'
+      : selectedDevice ? '已选择 ' + selectedDevice + '，限定 ' + ids.length + ' 个文档。'
+      : ids.length ? '已手动限定文档；选择设备将替换当前范围。'
+      : '未选择设备时检索全部文档；灰色设备暂无可明确匹配的文档，可在下方手动选择。';
   }
 
   function setDocumentScope(ids, locked) {
@@ -279,8 +312,10 @@ function citedSources(answer, sources) {
     try {
       var data = await api('/api/documents');
       S.documents = data.items || [];
+      S.documentsLoaded = true;
       renderDocumentOptions();
     } catch (e) {
+      updateScopeControls();
       if (!(e && e.status === 401)) { toast('文档选择列表加载失败，将使用全部文档', 'warn'); }
     }
   }
@@ -529,11 +564,12 @@ function citedSources(answer, sources) {
     els.documentScopeSummaryRow.addEventListener('click', function (ev) {
       if (S.currentId !== null || S.busy) { ev.preventDefault(); }
     });
-    qsa('.suggestion').forEach(function (btn) {
+    qsa('[data-device]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        if (S.busy) { return; }
-        els.input.value = btn.dataset.question || '';
-        autoSize();
+        if (S.busy || S.currentId !== null || !S.documentsLoaded) { return; }
+        var ids = deviceDocumentIds(S.documents, btn.dataset.device);
+        if (!ids.length) { toast('没有找到该设备的可用文档，请在下方手动选择', 'warn'); return; }
+        setDocumentScope(ids, false);
         els.input.focus();
       });
     });

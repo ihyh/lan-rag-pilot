@@ -26,3 +26,4 @@ assert.equal(context.citedSources('引用[1]', []).length, 0);
 assert.match(appHtml, /id="documentScopeOptions"/);
 assert.match(appSource, /body\.document_ids/);
 console.log('引用筛选、编号对应、去重、缺失来源检查通过');
+require('./device_scope_check.js');

@@ -356,7 +356,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .chat-greeting p { font-size: 13px; }
 .suggestions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 .suggestion { border: 1px solid var(--border); border-radius: 999px; background: #fff; color: var(--text); padding: 7px 12px; cursor: pointer; font: inherit; font-size: 12px; }
-.suggestion:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+.suggestion:hover:not(:disabled), .suggestion[aria-pressed="true"] { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+.suggestion:disabled { opacity: .5; cursor: not-allowed; }
+.suggestion:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 
 .msg { display: flex; flex-direction: column; gap: 6px; }
 .msg-q { align-items: flex-end; }
