@@ -11,7 +11,7 @@
 
 | 项目 | 当前进度 |
 |---|---|
-| 文档管理 | 已实现统一共享文档库，取消部门/知识库划分；root 与 kb_admin 维护文档。支持 PDF、DOCX、XLSX、TXT、MD，批量上传只需文件和可选版本，上传日期自动记录 |
+| 文档管理 | 已实现统一共享文档库，取消部门/知识库划分；root 与 kb_admin 维护文档。支持 PDF、DOC、DOCX、XLSX、TXT、MD，批量上传只需文件和可选版本，上传日期自动记录 |
 | 多轮对话 | 已实现连续追问、对话列表/详情/删除、本人/root 权限隔离、旧问答迁移和旧 `/api/chats` 兼容；引用只来自当前轮检索 |
 | 回答提速 | 已实现 Qwen3 请求关闭隐藏思考，新增请求参数回归测试；尚未实现流式回答或 GPU 加速部署 |
 | 本地验证 | 最近一次隔离 mock smoke **138/138 通过**，重启持久化通过；旧库合成样本迁移及重复初始化通过，`integrity_check=ok`；Python/JS 静态检查、引用与模型请求检查通过 |
@@ -56,7 +56,7 @@ POST /api/query ──► ① 权限(user 即可) + 每用户限流(默认 10 �
 
 上传侧（root / kb_admin）：
 POST /api/admin/documents ──► 四层校验(扩展名/MIME/魔数/实际解析) → SHA-256 查重(409)
-   → UUID 命名落盘(uploads) → 解析(PDF 按页 / DOCX·TXT·MD 按段 / XLSX 按工作表和行) → 按 token 切块(400/60，可调)
+   → UUID 命名落盘(uploads) → 解析(PDF 按页 / DOC·DOCX·TXT·MD 按段 / XLSX 按工作表和行) → 按 token 切块(400/60，可调)
    → 向量化入库 → 全量重建内存索引(vector_index.reload) → 状态 ready
 ```
 
@@ -93,7 +93,7 @@ rag/
 │  ├─ gate.py          # 全局 LLM 并发闸门实例
 │  ├─ deps.py          # 认证依赖：current_user_or_none / require_user / require_root
 │  ├─ schemas.py       # Pydantic 请求体与字段约束
-│  ├─ parsing.py       # PDF/DOCX/XLSX/TXT/MD 解析（扫描 PDF 明确报错，无 OCR）
+│  ├─ parsing.py       # PDF/DOC/DOCX/XLSX/TXT/MD 解析（扫描 PDF 明确报错，无 OCR）
 │  ├─ chunking.py      # 合并切块 + 长文本二次切分（token 精确/近似两种）
 │  ├─ embeddings.py    # 嵌入服务：真实(st) / mock(仅测试) 两种后端
 │  ├─ index.py         # 内存向量索引（SQLite 全量重建、点积 Top-K）
@@ -352,7 +352,7 @@ uvicorn app.main:app --reload --port 8088
 | `GET /api/admin/documents?version=&uploaded_date_from=&uploaded_date_to=` | root/kb_admin | 全部文档列表，可按版本和上传日期筛选；文档管理员与 root 的文档管理范围相同 |
 | `POST /api/admin/documents` | root/kb_admin | multipart `file` + 可选 `version`；上传日期由系统自动记录，无需填写标签、日期、部门或知识库 |
 | `DELETE /api/admin/documents/{doc_id}` | root/kb_admin | 删除文档+切片+磁盘文件并重建索引；root 和文档管理员均可管理全部文档 |
-| `POST /api/admin/documents/{doc_id}/reindex` | root/kb_admin | 按原文件重新解析/切块/向量化；范围限制同删除 |
+| `POST /api/admin/documents/{doc_id}/reindex` | root/kb_admin | 重建索引：按已上传的原文件重新解析/切块/向量化，不重复上传文件；范围限制同删除 |
 | `GET /api/admin/users` | root | 用户列表（不含密码哈希） |
 | `POST /api/admin/users` | root | 建用户：`username`（2–32，`^[A-Za-z0-9_.\-]+$`）、`password`（6–128）、`role`（`user`/`kb_admin`/`root`，默认 `user`）；重名→409 |
 | `PATCH /api/admin/users/{user_id}` | root | 改密码/角色/启停；已移除 `department_ids`，提交该字段返回 422；约束（`admin.py`）：不能停用/降级自己；系统至少保留一个启用 root。无字段→400 |
@@ -424,12 +424,12 @@ uvicorn app.main:app --reload --port 8088
 
 **功能边界（代码即证据）**：
 
-- 解析格式支持 **PDF / DOCX / XLSX / TXT / MD**；XLSX 按工作表逐行读取非空单元格，引用文本保留工作表名、行号和单元格坐标。**无 OCR** —— 扫描件/图片型 PDF 明确报错“PDF 中未提取到任何文本（可能是扫描件/图片型 PDF）。本试点不含 OCR…”（`parsing.py`，人工验收点见 §12）。
+- 解析格式支持 **PDF / DOC / DOCX / XLSX / TXT / MD**；旧版 Word 97–2003 DOC 由容器内 `antiword` 提取文本，XLSX 按工作表逐行读取非空单元格。**无 OCR** —— 扫描件/图片型 PDF 明确报错“PDF 中未提取到任何文本（可能是扫描件/图片型 PDF）。本试点不含 OCR…”（`parsing.py`，人工验收点见 §12）。
 - 文本编码支持 UTF-8 / GB18030（按 utf-8-sig → utf-8 → gb18030 尝试）。
-- PDF 加密且无法用空密码解密 → 报错 `pdf_encrypted`；DOCX 必须是含 `word/document.xml` 的合法 ZIP。
+- PDF 加密且无法用空密码解密 → 报错 `pdf_encrypted`；DOC 必须是 OLE 复合文档且可被 `antiword` 读取；DOCX 必须是含 `word/document.xml` 的合法 ZIP。
 - 检索是**向量 Top-K**（本地内存索引，无 BM25/混合检索）；真实嵌入会先应用 `RAG_MIN_RELEVANCE_SCORE` 低相似度拒答，Top-5 片段一次性送入 LLM。
 - **模型输入有界**：LLM 请求体包含系统提示词、当前问题、本轮检索片段，以及最近 3 个成功轮次（最多 2000 字）的历史，不含完整原文件。历史只辅助理解追问，当前答案的引用编号只对应本轮来源。离线部署必须显式指向内网 Ollama，运行环境不得保存有效公网模型 Key，不允许自动回退到公网模型；错误响应映射为稳定业务码且不透传上游报文（`app/llm.py`）。
-- 伪造扩展名防护：扩展名白名单 → MIME 白名单（`application/octet-stream` 放行但由魔数把关）→ 魔数（PDF 头 `%PDF-`、DOCX `PK\x03\x04` + zip 内容）→ 实际解析 四层校验（`parsing.py`/`ingest.py`）。
+- 伪造扩展名防护：扩展名白名单 → MIME 白名单（`application/octet-stream` 放行但由魔数把关）→ 魔数（PDF 头 `%PDF-`、DOC 的 OLE 头、DOCX `PK\x03\x04` + zip 内容）→ 实际解析 四层校验（`parsing.py`/`ingest.py`）。
 
 **运行约束与规模上限**：
 
@@ -494,7 +494,7 @@ uvicorn app.main:app --port 8090
 |---|---|---|
 | 认证：登录/错误密码/注销/会话失效 | 自动（`test_auth`/`test_history`） | 错密码 401；`/api/me` 200；注销后 `/api/me` 401 |
 | 权限：user 触达全部管理端点 | 自动（`test_user_permissions`） | 一律 403“需要 root 权限” |
-| 格式：TXT / DOCX / XLSX / MD / 带文字层 PDF 入库 | 自动（使用脚本生成的最小有效样本） | 201 且 `status:"ready"`、`num_chunks>=1`；正式资料仍建议人工抽验 |
+| 格式：TXT / DOC / DOCX / XLSX / MD / 带文字层 PDF 入库 | DOC 解析边界自动检查，其余格式端到端自动检查 | 201 且 `status:"ready"`、`num_chunks>=1`；DOC 部署后须用非机密样本人工抽验 |
 | 去重（SHA-256） | 自动 | 同内容改名再传 → 409 且错误信息含已存在文档 #id |
 | 超限（>25MB） | 自动 | 413 |
 | 伪造扩展名（txt 伪装 .pdf） | 自动 | 400，错误信息含 “PDF”（魔数层拦截） |

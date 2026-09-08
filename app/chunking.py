@@ -110,7 +110,7 @@ def chunk_units(
     """把 (页码|段落, 文本) 单元流切成 Piece 列表。
 
     PDF：页码相同的单元可合并，切块不跨页（保证页码引用准确）。
-    DOCX/TXT/MD：全部段落合并为一条流（引用记起始段落号）。
+    DOC/DOCX/TXT/MD：全部段落合并为一条流（引用记起始段落号）。
     """
     pieces_out: list[Piece] = []
     buffer_texts: list[str] = []

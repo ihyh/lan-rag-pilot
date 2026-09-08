@@ -12,12 +12,12 @@
 | 项 | 内容 |
 |---|---|
 | 形态 | 单体 FastAPI 应用 + SQLite（WAL）+ 本地 BGE 嵌入检索 + 内网 Ollama `qwen3:1.7b` 生成；问题和 Top-5 片段只发往内网模型主机 |
-| 技术栈 | Python 3.12（镜像 `python:3.12-slim`）、CPU 版 PyTorch、`sentence-transformers`、嵌入模型 `BAAI/bge-small-zh-v1.5`（512 维）、Argon2id、pypdf/python-docx |
+| 技术栈 | Python 3.12（镜像 `python:3.12-slim`）、CPU 版 PyTorch、`sentence-transformers`、嵌入模型 `BAAI/bge-small-zh-v1.5`（512 维）、Argon2id、antiword、pypdf/python-docx |
 | 容器 | compose 项目名/容器名 **`rag-pilot`**，服务键 `rag`，镜像 `rag-pilot:local`，`restart: unless-stopped` |
 | 端口 | 宿主机 **8088** → 容器 8088（映射可改，见 §4 FAQ 类说明） |
 | 数据卷 | `rag-pilot_rag_data` → `/rag/data`（含 `rag.db` 与 `uploads/`）；`rag-pilot_rag_models` → `/rag/models`（模型缓存） |
 | 健康检查 | 存活 `/api/health`；Compose readiness 每 30s 请求 `http://127.0.0.1:8088/api/ready`（10s 超时、3 次重试、30s 启动宽限）；模型未就绪时 readiness 为 503 |
-| 支持文档格式 | PDF / DOCX / TXT / MD；**无 OCR、无 Excel**；扫描件 PDF 明确报错拒收 |
+| 支持文档格式 | PDF / DOC / DOCX / XLSX / TXT / MD；**无 OCR**；扫描件 PDF 明确报错拒收 |
 | 认证 | 账号密码（root/kb_admin/user 三级）+ HttpOnly Cookie 会话（`rag_session`，SameSite=Lax）；**无 SSO** |
 | 规模上限 | 试点约 20 人 / 1000 文档 / 5 万切片；之后须迁移 PostgreSQL+pgvector（见 §9） |
 | 界面状态 | 服务端页面 `/login /app /admin` 已提供登录、问答、引用、反馈和 root 管理功能 |
@@ -288,7 +288,7 @@ docker compose logs -f rag    # 确认启动横幅与模型就绪
 - □ 数据按公司分类分级管理：本系统不提供敏感级加密存储（SQLite 落盘明文、无字段加密），敏感资料应等 §8 门禁全部通过后再考虑。
 - □ 定期备份（§7.2）并至少演练一次恢复。
 
-**已知限制（勿超出使用）**：仅 PDF/DOCX/TXT/MD、无 OCR/Excel；无 SSO/多因素；HTTP 试点级防线（Cookie + 同源校验）；单进程（限流/并发闸门/内存索引在进程内），不得多副本横向扩展。
+**已知限制（勿超出使用）**：仅 PDF/DOC/DOCX/XLSX/TXT/MD、无 OCR；无 SSO/多因素；HTTP 试点级防线（Cookie + 同源校验）；单进程（限流/并发闸门/内存索引在进程内），不得多副本横向扩展。
 
 ## 9. 容量与升级路线
 

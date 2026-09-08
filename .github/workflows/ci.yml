@@ -39,6 +39,7 @@ jobs:
           python tests/eval_runner_check.py
           python tests/llm_request_check.py
           python tests/retrieval_quality_check.py
+          python tests/doc_parsing_check.py
 
       - name: Compose syntax
         shell: bash

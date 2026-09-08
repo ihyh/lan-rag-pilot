@@ -82,7 +82,7 @@
       if (!data.items.length) { body.appendChild(empty('尚未上传文档')); return; }
       var rows = data.items.map(function (d) {
         var actions = h('td', { class: 'cell-actions' });
-        actions.appendChild(actionButton('重新处理', 'btn-outline', function () { reindexDoc(d.id, d.filename); }));
+        actions.appendChild(actionButton('重建索引', 'btn-outline', function () { reindexDoc(d.id, d.filename); }));
         actions.appendChild(actionButton('删除', 'btn-danger', function () { removeDoc(d.id, d.filename); }));
         var state = d.status === 'ready' ? badge('就绪', 'b-ok') : d.status === 'failed' ? badge('失败', 'b-err') : badge('处理中', 'b-warn');
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
@@ -117,11 +117,11 @@
     }
   }
   async function reindexDoc(id, name) {
-    if (!window.confirm('重新处理《' + name + '》？')) { return; }
+    if (!window.confirm('重建《' + name + '》的检索索引？\n\n系统会使用已上传的原文件重新解析、分段并生成检索向量，不会重复上传文件。')) { return; }
     try {
       await api('/api/admin/documents/' + id + '/reindex', { method: 'POST', body: {} });
-      toast('重新处理完成', 'success'); await loadDocs(); await refreshOverview();
-    } catch (e) { toast(e.message || '重新处理失败', 'error'); }
+      toast('索引重建完成', 'success'); await loadDocs(); await refreshOverview();
+    } catch (e) { toast(e.message || '索引重建失败', 'error'); }
   }
   async function removeDoc(id, name) {
     if (!window.confirm('确认删除《' + name + '》？此操作不可撤销。')) { return; }
