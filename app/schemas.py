@@ -22,6 +22,16 @@ class QueryBody(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: int | None = Field(default=None, gt=0)
+    document_ids: list[int] | None = Field(default=None, max_length=100)
+
+    @field_validator("document_ids")
+    @classmethod
+    def _normalize_document_ids(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if any(document_id <= 0 for document_id in value):
+            raise ValueError("文档 ID 必须为正整数")
+        return sorted(set(value))
 
 
 class FeedbackBody(BaseModel):

@@ -30,6 +30,10 @@ def main() -> None:
 
         def respond(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
+            assert body["max_tokens"] == 1200 and body["stream"] is False
+            prompt = body["messages"][0]["content"]
+            assert "有部分依据时回答该部分" in prompt and "全部无依据" in prompt
+            assert "200字" in prompt and "每个有依据的结论后必须" in prompt
             if model in ("qwen3:1.7b", "qwen3:4b", "qwen3"):
                 assert body["reasoning_effort"] == "none"
             else:
@@ -48,6 +52,9 @@ def main() -> None:
             result = llm.chat("几点开放？", sources, history)
         assert result["answer"] == "09:00至17:00。[1]"
         assert result["model"] == model and result["completion_tokens"] == 12
+    assert llm._normalize_answer("可在维护页调整。[1]\n根据知识库现有内容无法回答该问题。") == "可在维护页调整。[1]"
+    assert llm._normalize_answer("10。[1]\n根据知识库现有内容无法回答该问题。") == "10。[1]"
+    assert llm._normalize_answer("根据知识库现有内容无法回答该问题。[3]") == llm.NO_ANSWER
     print("LLM request check: PASS (5 model variants, history and sources preserved)")
 
 

@@ -38,6 +38,8 @@ jobs:
           bash -n scripts/backup_data.sh scripts/restore_check.sh scripts/install_backup_cron.sh tests/smoke_runner.sh
           python tests/eval_runner_check.py
           python tests/llm_request_check.py
+          python tests/retrieval_quality_check.py
+          python tests/doc_parsing_check.py
 
       - name: Compose syntax
         shell: bash

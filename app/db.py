@@ -92,11 +92,12 @@ CREATE TABLE IF NOT EXISTS document_knowledge_bases (
 CREATE INDEX IF NOT EXISTS idx_doc_kb_kb ON document_knowledge_bases(knowledge_base_id);
 
 CREATE TABLE IF NOT EXISTS conversations (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    title      TEXT    NOT NULL,
-    created_at TEXT    NOT NULL,
-    updated_at TEXT    NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title        TEXT    NOT NULL,
+    document_ids TEXT    NOT NULL DEFAULT '[]',
+    created_at   TEXT    NOT NULL,
+    updated_at   TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_user_time ON conversations(user_id, updated_at);
 
@@ -222,6 +223,10 @@ def _ensure_user_permission_columns(conn: sqlite3.Connection) -> None:
 
 def _ensure_conversation_columns(conn: sqlite3.Connection) -> None:
     """补齐多轮对话字段，并把每条旧问答保留为一个单轮对话。"""
+    conversation_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
+    if "document_ids" not in conversation_columns:
+        conn.execute("ALTER TABLE conversations ADD COLUMN document_ids TEXT NOT NULL DEFAULT '[]'")
+
     columns = {row[1] for row in conn.execute("PRAGMA table_info(chats)")}
     if "conversation_id" not in columns:
         conn.execute("ALTER TABLE chats ADD COLUMN conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE")

@@ -36,6 +36,42 @@ def _excerpt(text: str, limit: int = 300) -> str:
     return one[:limit] + ("…" if len(one) > limit else "")
 
 
+def _stored_document_ids(raw: str | None) -> list[int]:
+    try:
+        values = json.loads(raw or "[]")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("对话的限定文档范围数据损坏") from exc
+    if not isinstance(values, list) or any(not isinstance(value, int) or value <= 0 for value in values):
+        raise ValueError("对话的限定文档范围数据损坏")
+    return sorted(set(values))
+
+
+def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int]) -> None:
+    if not document_ids:
+        return
+    placeholders = ",".join("?" * len(document_ids))
+    rows = db.execute(
+        f"SELECT id FROM documents WHERE status='ready' AND id IN ({placeholders})",
+        document_ids,
+    ).fetchall()
+    if {int(row["id"]) for row in rows} != set(document_ids):
+        raise HTTPException(status_code=400, detail="限定文档不存在或尚未处理完成，请重新选择")
+
+
+def _select_sources(sources: list[dict], k: int) -> list[dict]:
+    """同文档的包含型重复只保留完整片段，保留不同数值/版本的原始引用。"""
+    kept: list[tuple[dict, str]] = []
+    for src in sorted(sources, key=lambda s: len(s["content"]), reverse=True):
+        text = " ".join(src["content"].split())
+        if text and not any(
+            src["document_id"] == old["document_id"] and text in old_text
+            for old, old_text in kept
+        ):
+            kept.append((src, text))
+    ids = {src["chunk_id"] for src, _ in kept}
+    return [src for src in sources if src["chunk_id"] in ids][:k]
+
+
 def _sources_for_chat(db: sqlite3.Connection, chat_id: int) -> list[dict]:
     rows = db.execute(
         "SELECT s.chunk_id, s.document_id, s.score, s.page, s.paragraph, s.excerpt, d.filename "
@@ -85,6 +121,17 @@ def _conversation_history(db: sqlite3.Connection, conversation_id: int) -> list[
         kept.append({"question": question, "answer": answer})
     kept.reverse()
     return kept
+
+
+@router.get("/documents")
+def list_query_documents(
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(require_user),
+):
+    rows = db.execute(
+        "SELECT id, filename, version FROM documents WHERE status='ready' ORDER BY filename, id"
+    ).fetchall()
+    return {"items": [dict(row) for row in rows], "total": len(rows)}
 
 
 @router.get("/documents/{document_id}/file", response_class=FileResponse)
@@ -138,12 +185,14 @@ def _store_chat(
     completion_tokens: int | None = None,
     sources: list[dict] | None = None,
     conversation_id: int | None = None,
+    document_ids: list[int] | None = None,
 ) -> tuple[int, int]:
     created = now_iso()
     if conversation_id is None:
         cur = db.execute(
-            "INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?,?,?,?)",
-            (user_id, question[:30], created, created),
+            "INSERT INTO conversations (user_id, title, document_ids, created_at, updated_at) "
+            "VALUES (?,?,?,?,?)",
+            (user_id, question[:30], json.dumps(document_ids or []), created, created),
         )
         conversation_id = int(cur.lastrowid)
     turn_index = db.execute(
@@ -198,15 +247,23 @@ def query(
     question = body.question.strip()
     ip = _ip(request)
     conversation_id = body.conversation_id
+    document_ids = body.document_ids or []
     history: list[dict] = []
     if conversation_id is not None:
         owned = db.execute(
-            "SELECT id FROM conversations WHERE id=? AND user_id=?",
+            "SELECT id, document_ids FROM conversations WHERE id=? AND user_id=?",
             (conversation_id, user.id),
         ).fetchone()
         if owned is None:
             raise HTTPException(status_code=404, detail="对话不存在")
+        try:
+            document_ids = _stored_document_ids(owned["document_ids"])
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if body.document_ids is not None and body.document_ids != document_ids:
+            raise HTTPException(status_code=409, detail="已有对话不能改变限定文档范围，请新建对话")
         history = _conversation_history(db, conversation_id)
+    _require_ready_documents(db, document_ids)
 
     rt_values = rt.get_all(db)
     ok, retry = query_limiter.allow(
@@ -233,7 +290,7 @@ def query(
     def refuse(message: str, action: str) -> dict:
         chat_id, stored_conversation_id = _store_chat(
             db, user.id, question, message, "ok", None,
-            model=None, conversation_id=conversation_id,
+            model=None, conversation_id=conversation_id, document_ids=document_ids,
         )
         audit.log_audit(
             db,
@@ -258,7 +315,14 @@ def query(
         retrieval_question = f"{history[-1]['question']}\n{question}" if history else question
         qvec = embedding_service.embed_query(retrieval_question)
         min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
-        hits = vector_index.search(qvec, rt_values["top_k"], min_score=min_score)
+        # 旧索引可能包含大量重叠短尾片段；有界扩大候选，去重后仍只发送 Top-K。
+        hits = vector_index.search(
+            qvec,
+            min(200, rt_values["top_k"] * 20),
+            document_ids=set(document_ids) or None,
+            min_score=min_score,
+            query_text=question,
+        )
     except EmbeddingUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
     except ValueError as exc:
@@ -292,6 +356,7 @@ def query(
                 "content": r["content"],
             }
         )
+    sources = _select_sources(sources, rt_values["top_k"])
     if not sources:
         return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
 
@@ -310,6 +375,7 @@ def query(
                 db, user.id, question, "", "error", f"{exc.code}: {exc.message}",
                 model=settings.deepseek_model,
                 conversation_id=conversation_id,
+                document_ids=document_ids,
             )
             audit.log_audit(
                 db,
@@ -352,6 +418,7 @@ def query(
         completion_tokens=result["completion_tokens"],
         sources=sources,
         conversation_id=conversation_id,
+        document_ids=document_ids,
     )
     audit.log_audit(
         db,
@@ -425,6 +492,10 @@ def get_conversation(
     ).fetchall()
     item = dict(conversation)
     item["username"] = item.pop("owner_username")
+    try:
+        item["document_ids"] = _stored_document_ids(item.get("document_ids"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     item["turns"] = []
     for turn in turns:
         record = dict(turn)

@@ -18,6 +18,11 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 解析旧版 Word 97-2003 .doc；放在 Python 依赖层之后，避免小改动重装大型 PyTorch。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends antiword \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY app ./app
 COPY scripts ./scripts
 

@@ -69,15 +69,26 @@
         <h2>开始提问</h2>
         <p>输入您的问题，助手将检索知识库文档并结合大模型作答</p>
         <p class="small">回答下方会展示引用来源，便于核对原文</p>
-        <div class="suggestions" aria-label="示例问题">
-          <button class="suggestion" type="button" data-question="这份文档主要介绍什么内容？">文档主要介绍什么？</button>
-          <button class="suggestion" type="button" data-question="请列出这份文档中的关键流程和注意事项。">关键流程和注意事项</button>
+        <p class="small">选择提问设备，自动限定对应文档</p>
+        <div class="suggestions" role="group" aria-label="选择提问设备">
+          <button class="suggestion" type="button" data-device="PLM" aria-pressed="false" disabled>PLM</button>
+          <button class="suggestion" type="button" data-device="PLUSPRO" aria-pressed="false" disabled>PLUSPRO</button>
+          <button class="suggestion" type="button" data-device="PLUS500" aria-pressed="false" disabled>PLUS500</button>
         </div>
+        <p class="small" id="deviceScopeHint" role="status">正在加载设备文档…</p>
       </div>
       <div class="messages hidden" id="messages"></div>
     </div>
 
     <div class="composer card">
+      <details class="document-scope" id="documentScope">
+        <summary id="documentScopeSummaryRow">
+          <span>限定文档</span>
+          <span class="document-scope-value" id="documentScopeValue">全部文档</span>
+        </summary>
+        <div class="document-scope-options" id="documentScopeOptions" role="group" aria-label="限定检索文档"></div>
+        <p class="document-scope-tip">不勾选时检索全部文档；发送第一条问题后，本对话范围将固定。</p>
+      </details>
       <textarea id="questionInput" rows="2" maxlength="2000"
                 placeholder="请输入问题（Enter 发送，Ctrl+Enter 换行）"></textarea>
       <div class="composer-bar">

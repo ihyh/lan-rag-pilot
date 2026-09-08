@@ -1,18 +1,20 @@
-"""文档解析：PDF / DOCX / XLSX / TXT / MD -> (页码|段落, 文本) 单元列表。
+"""文档解析：PDF / DOC / DOCX / XLSX / TXT / MD -> (页码|段落, 文本) 单元列表。
 
 - PDF 保留页码；扫描件/无文本层直接报错（本试点不含 OCR）。
-- DOCX/TXT/MD 以“段落号”作为位置引用；XLSX 以工作表行作为文本单元。
+- DOC/DOCX/TXT/MD 以“段落号”作为位置引用；XLSX 以工作表行作为文本单元。
 """
 from __future__ import annotations
 
 import io
 import re
+import subprocess
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 EXTENSIONS = {
     ".pdf": "pdf",
+    ".doc": "doc",
     ".docx": "docx",
     ".xlsx": "xlsx",
     ".txt": "txt",
@@ -22,6 +24,7 @@ EXTENSIONS = {
 # 各类型的允许 MIME；application/octet-stream 一律放行，最终以魔数+实际解析为准
 MIME_MAP: dict[str, set[str]] = {
     "pdf": {"application/pdf", "application/x-pdf"},
+    "doc": {"application/msword", "application/vnd.ms-word"},
     "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
     "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
     "txt": {"text/plain"},
@@ -43,14 +46,14 @@ class Unit:
 
     text: str
     page: int | None = None          # 1 起始页码（仅 PDF）
-    paragraph: int | None = None     # 1 起始段落号（DOCX/TXT/MD）
+    paragraph: int | None = None     # 1 起始段落号（DOC/DOCX/TXT/MD）
 
 
 def detect_ext(filename: str) -> str:
     ext = Path(filename or "").suffix.lower()
     if ext not in EXTENSIONS:
         raise ParseError(
-            f"不支持的文件类型 {ext or '(无扩展名)'}：仅支持 PDF / DOCX / XLSX / TXT / MD",
+            f"不支持的文件类型 {ext or '(无扩展名)'}：仅支持 PDF / DOC / DOCX / XLSX / TXT / MD",
             code="unsupported_ext",
         )
     return ext
@@ -75,6 +78,9 @@ def check_magic(kind: str, data: bytes) -> None:
             raise ParseError(f"文件内容不是有效 DOCX（ZIP 损坏）：{exc}", code="bad_magic") from exc
         if "word/document.xml" not in names:
             raise ParseError("文件内容不是有效 DOCX（缺少 word/document.xml）", code="bad_magic")
+    elif kind == "doc":
+        if data[:8] != b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+            raise ParseError("文件内容不是有效 DOC（缺少 OLE 复合文档头）", code="bad_magic")
     elif kind == "xlsx":
         if data[:4] != b"PK\x03\x04":
             raise ParseError("文件内容不是有效 XLSX（缺少 ZIP/OOXML 头）", code="bad_magic")
@@ -140,7 +146,31 @@ def parse_pdf(path: Path) -> list[Unit]:
     return units
 
 
-# ---------------- DOCX ----------------
+# ---------------- DOC / DOCX ----------------
+
+def parse_doc(path: Path) -> list[Unit]:
+    try:
+        result = subprocess.run(
+            ["antiword", "-m", "UTF-8.txt", str(path)],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except FileNotFoundError as exc:
+        raise ParseError("DOC 解析组件未安装，请联系管理员", code="doc_parser_missing") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ParseError("DOC 解析超时，请检查文件是否损坏", code="doc_extract") from exc
+    if result.returncode != 0:
+        raise ParseError("DOC 读取失败，文件可能损坏、加密或格式不兼容", code="doc_extract")
+    text = _clean(result.stdout.decode("utf-8", errors="replace"))
+    units = [
+        Unit(text=para, paragraph=index)
+        for index, para in enumerate((part.strip() for part in re.split(r"\n\s*\n", text)), start=1)
+        if para
+    ]
+    if not units:
+        raise ParseError("DOC 中没有可索引的文本内容", code="empty_doc")
+    return units
 
 def parse_docx(path: Path) -> list[Unit]:
     from docx import Document
@@ -232,6 +262,7 @@ def parse_text(path: Path) -> list[Unit]:
 
 PARSERS: dict[str, object] = {
     "pdf": parse_pdf,
+    "doc": parse_doc,
     "docx": parse_docx,
     "xlsx": parse_xlsx,
     "txt": parse_text,

@@ -109,9 +109,9 @@
       <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="上传文档区域">
         <span id="uploadZoneIcon"></span>
         <p class="uz-title">点击选择或拖拽文件到此处上传</p>
-        <p class="uz-tip">支持 PDF / DOCX / XLSX / TXT / Markdown，单个文件不超过 <span id="maxUploadMB">25</span> MB</p>
+        <p class="uz-tip">支持 PDF / DOC / DOCX / XLSX / TXT / Markdown，单个文件不超过 <span id="maxUploadMB">25</span> MB</p>
       </div>
-      <input type="file" id="fileInput" multiple accept=".pdf,.docx,.xlsx,.txt,.md" class="hidden">
+      <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.xlsx,.txt,.md" class="hidden">
       <div class="file-chips" id="fileChips"></div>
     </div>
 
@@ -124,6 +124,7 @@
           <button class="btn btn-outline btn-sm" id="refreshDocsBtn" type="button">刷新列表</button>
         </div>
       </div>
+      <p class="small muted">“重建索引”会使用已上传的原文件重新解析、分段并生成检索向量；仅在处理失败或检索异常时使用。</p>
       <div class="list-loading" id="docsLoading"><span class="spin spin-lg"></span></div>
       <div id="docsBody"></div>
     </div>
