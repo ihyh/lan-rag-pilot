@@ -3,7 +3,7 @@
 用法：
   1) 在能访问 Hugging Face 的机器上（本机或临时容器）：
        docker compose build
-       docker compose run --rm rag python scripts/predownload_models.py
+       docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 rag python scripts/predownload_models.py
      （或本机先 pip install -r requirements.txt 后直接 python scripts/predownload_models.py）
   2) 把下载好的 models 目录整体拷贝到目标服务器，并在 compose 挂载到 /rag/models：
      volumes: - <本地路径>/models:/rag/models
