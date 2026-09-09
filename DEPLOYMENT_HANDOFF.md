@@ -1,10 +1,20 @@
 # RAG Ubuntu Docker 部署交接记录
 
-更新时间：2026-09-05（Asia/Shanghai）
+更新时间：2026-09-09（Asia/Shanghai）
 
-> 说明：本文第 1–4 节是此前 Ubuntu 已验证的历史快照。2026-09-05 本地版本已按用户要求取消部门隔离：登录用户共享全部文档，文档管理员管理全部文档，个人问答仍仅本人及 root 可见。部门/知识库接口已移除，历史分类数据保留。此版本尚未在 Ubuntu 重新构建验证；同步最新源码后按第 8 节重新验收。
+> 当前结论：应用提交 `2631f8e` 已部署到 Ubuntu，且对应功能已通过 PR #4 合并到 GitHub `main`。本页后半部分保留 2026-09-05 初次部署与迁移过程作为历史记录；判断当前状态时，以本节的 2026-09-09 实时检查为准。
 
-## 0. 2026-09-05 本地离线模型进展
+## 0. 2026-09-09 实时运行状态
+
+- Ubuntu 容器 `rag-pilot` 已连续运行约 13 小时，状态 `running healthy`，自动重启策略为 `unless-stopped`。
+- 当前镜像 ID 为 `6876d37067be`，镜像标签中的源码版本为 `2631f8e`；回退标签 `rag-pilot:before-2631f8e` 指向上一版 `27a34d4` 镜像。
+- SQLite `integrity_check=ok`；当前共有 3 个用户、20 个文档、24112 个切片、44 个对话、44 条问答、185 条引用、42 条反馈、164 条审计和 20 个上传文件。
+- 嵌入模型为 `BAAI/bge-small-zh-v1.5`，生成模型为内网 Ollama `qwen3:1.7b`；模型接口返回 HTTP 200，配置模型存在。
+- `127.0.0.1:8090`、`192.168.136.128:8088` 及当前 WLAN 地址 `172.16.3.56:8088` 的 `/api/health`、`/api/ready` 均返回 HTTP 200。
+- 原计划地址 `172.16.3.50` 已因 DHCP 变化失效；Ubuntu 的 `RAG_PUBLIC_ORIGIN` 仍显示旧地址，属于待整改配置。正式团队入口必须先做 DHCP 保留或内部 DNS，不应长期使用当前临时地址 `172.16.3.56`。
+- 每日 02:30 数据备份任务仍在 crontab 中，服务器目前保留 4 个数据备份归档；本次只检查任务和文件数量，未打开备份内容。
+
+## 0.1 2026-09-05 本地离线模型历史
 
 - Windows 已安装 Ollama `0.33.3`，模型目录为 `D:\Ollama\models`，只监听 `192.168.136.1:11434`。
 - 已把安装器的托盘自启动项改为隐藏运行纯 `ollama serve`，启动命令固定 `OLLAMA_NO_CLOUD=1`、`OLLAMA_CONTEXT_LENGTH=8192`，且不继承 HTTP(S) 代理。
@@ -19,14 +29,25 @@ Get-NetFirewallRule -DisplayName 'RAG Ollama from Ubuntu VM' -ErrorAction Silent
 New-NetFirewallRule -DisplayName 'RAG Ollama from Ubuntu VM' -Direction Inbound -Action Allow -Protocol TCP -LocalAddress 192.168.136.1 -LocalPort 11434 -RemoteAddress 192.168.136.128 -Profile Any
 ```
 
-- Ubuntu 的当前 Windows SSH 公钥仍未获授权，因此升级前备份、02:30 cron、源码重建和 Ollama `.env` 切换尚未执行。不得在缺少这些证据时导入公司机密文档。
+- Ubuntu 已授权当前 Windows SSH 公钥；升级前备份、02:30 cron、源码重建和 Ollama `.env` 切换均已完成。
+
+### 0.2 统一数据库迁移历史
+
+- 唯一活动数据源：Ubuntu Docker 卷 `rag-pilot_rag_data`。Windows 原 `data/rag.db` 与上传文件仅作为停用恢复副本保留，不再启动本地 RAG 应用读取它们。
+- 2026-09-05 已将 Windows 数据一致性快照恢复到该卷：2 个用户、21 个文档、25217 个切片、2 条问答、10 条引用、2 条反馈、46 条审计、21 个上传文件；SQLite `integrity_check=ok`，无缺失存储文件。
+- 迁移包：`rag-windows-main-24f6135.tgz`，SHA-256 `769ec1ee4789837fd4730348d9da79d1bd5e37ce59980d9db1e9371322eef5bf`；传输前后校验及 `restore_check.sh` 均通过。
+- 切换前 Ubuntu 回退包：`backups/rag_data_20260905T133511Z.tgz`，保留原 1 个文档、4 条问答和 21 条审计；校验与临时恢复检查均通过。
+- 当日重启后容器状态为 `running healthy`，当时的 `172.16.3.50:8088/api/health` 与 `/api/ready` 均返回 HTTP 200。
+- 当日外部入口使用 `172.16.3.50:8088`；本机入口配置为 `127.0.0.1:8090` 转发到 `192.168.136.128:8088`。这两种地址的 Cookie 相互独立，但后端数据库相同。该段是迁移完成时的历史快照，不代表当前文档和问答数量。
 
 ## 1. 当前结论
 
-此前版本的 RAG 已成功部署到本机 VMware Ubuntu 虚拟机，容器、模型、数据库、真实 DeepSeek 问答和容器重启后的数据持久化均已验证。
+当前 RAG 已部署到本机 VMware Ubuntu 虚拟机。应用、多轮对话、设备/文档范围、混合检索、DOC 上传和本地 Ollama 调用均已进入运行镜像；容器、模型、数据库完整性和重启持久化已验证。
 
 - 宿主机直连地址：`http://192.168.136.128:8088`
-- 局域网入口：`http://172.16.3.50:8088`
+- 本机入口：`http://127.0.0.1:8090`
+- 临时局域网入口：`http://172.16.3.56:8088`（DHCP 地址，可能再次变化）
+- 计划固定入口：`http://172.16.3.50:8088`（当前未生效，不应继续作为书签）
 - 容器：`rag-pilot`
 - 镜像：`rag-pilot:local`
 - Compose 项目：`rag-pilot`
@@ -35,7 +56,7 @@ New-NetFirewallRule -DisplayName 'RAG Ollama from Ubuntu VM' -Direction Inbound 
 - Ubuntu 项目目录：`/home/ihyh/rag-pilot`
 - Windows 源码目录：`C:\Users\23960\Desktop\agent\rag`
 
-VM 使用 VMware NAT；已在 Windows 配置端口转发和入站防火墙规则，因此局域网入口为 `http://172.16.3.50:8088`。目前已从宿主机验证入口；仍建议用另一台公司电脑或手机 Wi-Fi/VPN 做最终访问验证。
+VM 使用 VMware NAT；Windows 的 `0.0.0.0:8088` 端口转发仍指向 Ubuntu。由于 WLAN 地址会随 DHCP 变化，当前入口跟随宿主机地址变为 `http://172.16.3.56:8088`。团队使用前应由 IT 配置 DHCP 保留和内部 DNS，再把 Ubuntu 的 `RAG_PUBLIC_ORIGIN` 改为固定地址并重建容器。
 
 ## 2. 目标机信息
 
@@ -48,7 +69,7 @@ VM 使用 VMware NAT；已在 Windows 配置端口转发和入站防火墙规则
 - Docker Compose：2.40.3
 - `ihyh` 已加入 `docker` 组，可不使用 sudo 运行 Docker
 - VM NAT 地址：`192.168.136.128`
-- Windows WLAN 地址：`172.16.3.50/22`
+- Windows WLAN 当前地址：`172.16.3.56/22`（2026-09-09 实测；计划保留的 `172.16.3.50` 尚未生效）
 - 根分区：已从 20 GiB 扩到 40 GiB；扩容后剩余约 21 GiB（约 47% 已用）
 
 本次已完成磁盘扩容：VMware 虚拟磁盘、`/dev/sda2` 和 ext4 根文件系统均为 40 GiB。
@@ -82,24 +103,22 @@ VM 使用 VMware NAT；已在 Windows 配置端口转发和入站防火墙规则
 
 | 检查项 | 结果 |
 |---|---|
-| `GET /api/health` | `status=ok` |
-| `GET /api/ready` | 需在本轮源码重建后验证；模型就绪时应为 HTTP 200 |
-| embedding | `ready`，512 维 |
-| 宿主机访问 VM:8088 | 成功 |
-| 宿主机访问 LAN 入口 172.16.3.50:8088 | 成功 |
-| root 登录 | 成功，角色 `root` |
+| `GET /api/health` | localhost、VM 直连、当前 WLAN 入口均为 HTTP 200 |
+| `GET /api/ready` | localhost、VM 直连、当前 WLAN 入口均为 HTTP 200 |
+| embedding | `BAAI/bge-small-zh-v1.5`，ready，512 维 |
+| Ollama | `qwen3:1.7b`，接口 HTTP 200，配置模型存在 |
 | SQLite 完整性 | `ok` |
-| 用户数量 | 2 |
-| 文档数量 | 1 |
-| 切片数量 | 2035 |
-| 真实 RAG 问答 | 成功，返回 5 个来源 |
-| 新问答 chat_id | 3 |
-| 容器重启后文档 | 1 |
-| 容器重启后聊天 | 2 |
+| 用户 / 文档 / 切片 | 3 / 20 / 24112 |
+| 对话 / 问答 / 引用 / 反馈 | 44 / 44 / 185 / 42 |
+| 上传文件 | 20，均位于活动数据卷 |
 | 容器健康状态 | `healthy` |
 | 自动重启策略 | `unless-stopped` |
+| 部署提交 | `2631f8e` |
+| 当前镜像 | `rag-pilot:local` / `6876d37067be` |
+| 回退镜像 | `rag-pilot:before-2631f8e` / `5b36b5260c37`（应用提交 `27a34d4`） |
+| 自动备份 | 当前用户 crontab 每日 02:30 执行 |
 
-真实测试问题为“这份手册主要介绍什么内容？请根据文档简要回答。”，调用成功并返回 `Fortrend PLUS-500 SECS manual` 的命中文档片段。未在本文记录 DeepSeek API Key、会话密钥或密码明文。
+本次实时检查没有登录用户界面、读取业务文档、输出问答内容或显示任何密码、密钥。
 
 ## 5. 本次修改的源码配置
 
@@ -120,13 +139,15 @@ HF_HUB_OFFLINE: "1"
 TRANSFORMERS_OFFLINE: "1"
 ```
 
-服务器 `.env` 当前的 `RAG_PUBLIC_ORIGIN` 是：
+服务器 `.env` 当前仍保留下面的旧地址：
 
 ```text
 http://172.16.3.50:8088
 ```
 
-## 6. 局域网入口（已配置）
+该值只用于状态展示，不决定实际转发；由于宿主机当前地址已变为 `172.16.3.56`，应在 IT 确定固定 IP 或内部域名后更新它并重建容器。
+
+## 6. 局域网入口（转发正常，固定地址待配置）
 
 Windows 管理员 PowerShell 已执行：
 
@@ -142,7 +163,7 @@ netsh interface portproxy show all
 Get-NetFirewallRule -DisplayName "RAG Pilot 8088"
 ```
 
-随后已在 Ubuntu `/home/ihyh/rag-pilot/.env` 中把：
+2026-09-05 曾在 Ubuntu `/home/ihyh/rag-pilot/.env` 中把：
 
 ```text
 RAG_PUBLIC_ORIGIN=http://192.168.136.128:8088
@@ -154,7 +175,9 @@ RAG_PUBLIC_ORIGIN=http://192.168.136.128:8088
 RAG_PUBLIC_ORIGIN=http://172.16.3.50:8088
 ```
 
-并重建容器配置：
+并重建容器配置。该地址当时可用，但 2026-09-09 已因 DHCP 变化失效。当前临时地址为 `http://172.16.3.56:8088`，本机实时检查通过；仍需从另一台局域网设备做最终验收。
+
+固定 IP 或内部 DNS 确定后，在 `.env` 写入最终入口并重建容器：
 
 ```bash
 cd /home/ihyh/rag-pilot
@@ -162,7 +185,7 @@ docker compose up -d --force-recreate
 docker compose ps
 ```
 
-此后公司局域网电脑访问：`http://172.16.3.50:8088`。宿主机 IP 改变后，需要同步更新端口入口、`RAG_PUBLIC_ORIGIN` 和内部 DNS；正式使用应让 IT 给 `172.16.3.50` 做 DHCP 保留。
+不要把 `172.16.3.56` 当作长期入口。宿主机 IP 改变后，客户端书签和工作台链接都会失效；正式使用应配置 DHCP 保留并优先使用内部 DNS 名称。
 
 如需撤销 Windows 转发：
 
@@ -171,15 +194,15 @@ netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=8088
 Remove-NetFirewallRule -DisplayName "RAG Pilot 8088"
 ```
 
-## 7. 企业微信 / 飞书入口（已准备，需管理员后台保存）
+## 7. 企业微信 / 飞书入口（等待固定地址）
 
-两个平台统一使用下面的网页入口：
+两个平台最终应统一使用同一个固定入口：
 
 ```text
-http://172.16.3.50:8088
+https://<内网域名>
 ```
 
-接入方式是工作台网页链接，不是机器人或单点登录：
+接入方式是工作台网页链接，不是机器人或单点登录。在固定 IP、内部 DNS 和 HTTPS 完成前，不要把当前 DHCP 地址保存为全员入口：
 
 - 企业微信：管理后台 → 应用管理 → 创建自建应用 → 应用主页 → 设置上述 URL → 设置可见范围。
 - 飞书：开放平台 → 企业自建应用 → 添加网页入口/应用主页 → 设置上述 URL → 设置可用范围并发布。
@@ -251,4 +274,4 @@ df -h /
 docker system df
 ```
 
-同步本轮源码并执行 `docker compose up -d --build` 后，预期看到 `rag-pilot` 为 `healthy`、端口为 `0.0.0.0:8088->8088/tcp`。浏览器可用 `http://192.168.136.128:8088` 直连 VM，或用 `http://172.16.3.50:8088` 通过 Windows 局域网入口访问。
+2026-09-09 当前 `rag-pilot` 为 `healthy`，端口为 `0.0.0.0:8088->8088/tcp`。本机可用 `http://127.0.0.1:8090`，也可用 `http://192.168.136.128:8088` 直连 VM；当前临时 WLAN 入口是 `http://172.16.3.56:8088`，仅供固定 IP 完成前测试。

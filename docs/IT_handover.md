@@ -2,7 +2,7 @@
 
 > 面向公司 IT、网络与系统管理员的中文交付文档。系统版本 v0.1.0；所有变量名、端口、路径与仓库代码一致（配置出处 `app/config.py`、`docker-compose.yml`、`Dockerfile`、`.env.example`）。
 > **定位提醒**：这是**隔离局域网内的试点系统**，明文 HTTP、初始弱口令，红线与整改项见 §8。正式发布前必须逐项过门禁。
-> 工程根目录：`C:\Users\23960\Desktop\agent\rag`（下文以 `<rag>` 指代）。
+> 工程根目录由部署方决定（Ubuntu 推荐 `/opt/lan-rag-pilot`，下文以 `<rag>` 指代）。
 > 安全与可维护性复核清单见 `<rag>/docs/SECURITY_AUDIT.md`。
 
 ---
@@ -11,7 +11,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 形态 | 单体 FastAPI 应用 + SQLite（WAL）+ 本地 BGE 嵌入检索 + 内网 Ollama `qwen3:1.7b` 生成；问题和 Top-5 片段只发往内网模型主机 |
+| 形态 | 单体 FastAPI 应用 + SQLite（WAL）+ BGE 语义/精确技术词混合检索 + 内网 Ollama `qwen3:1.7b` 生成；问题和最终选中的 Top-K 片段只发往内网模型主机 |
 | 技术栈 | Python 3.12（镜像 `python:3.12-slim`）、CPU 版 PyTorch、`sentence-transformers`、嵌入模型 `BAAI/bge-small-zh-v1.5`（512 维）、Argon2id、antiword、pypdf/python-docx |
 | 容器 | compose 项目名/容器名 **`rag-pilot`**，服务键 `rag`，镜像 `rag-pilot:local`，`restart: unless-stopped` |
 | 端口 | 宿主机 **8088** → 容器 8088（映射可改，见 §4 FAQ 类说明） |
@@ -20,7 +20,7 @@
 | 支持文档格式 | PDF / DOC / DOCX / XLSX / TXT / MD；**无 OCR**；扫描件 PDF 明确报错拒收 |
 | 认证 | 账号密码（root/kb_admin/user 三级）+ HttpOnly Cookie 会话（`rag_session`，SameSite=Lax）；**无 SSO** |
 | 规模上限 | 试点约 20 人 / 1000 文档 / 5 万切片；之后须迁移 PostgreSQL+pgvector（见 §9） |
-| 界面状态 | 服务端页面 `/login /app /admin` 已提供登录、问答、引用、反馈和 root 管理功能 |
+| 界面状态 | 服务端页面 `/login /app /admin` 已提供登录、设备/文档范围、多轮问答、引用、反馈和管理功能 |
 
 ## 2. 部署前置条件（□ 勾选核对）
 
@@ -33,7 +33,7 @@
 | 目标 | 端口 | 用途 | 首次部署后可否收紧 |
 |---|---|---|---|
 | 内网 Ollama 主机 | 11434/TCP | RAG 服务调用本地 LLM | 只允许 RAG 服务器访问；当前实验地址为 `192.168.136.1` |
-| `huggingface.co` 或 `hf-mirror.com` | 443/TCP | 首次启动自动下载嵌入模型 | 可收紧：完成 §4 离线模型预下载后断网也可运行 |
+| `huggingface.co` 或 `hf-mirror.com` | 443/TCP | 部署准备阶段下载嵌入模型 | 可收紧：完成 §4.4 预下载后断网也可运行 |
 | `download.pytorch.org` | 443/TCP | 仅 `docker compose build` 时安装 CPU PyTorch | 构建完成后可断 |
 | 局域网入站 | 8088/TCP | 员工浏览器访问 | 仅放行目标网段（如 172.16.0.0/16），勿暴露公网 |
 
@@ -43,17 +43,17 @@
 
 ## 3. 网络与地址规划
 
-### 3.1 DHCP 保留（固定 IP：**172.16.3.50**）
+### 3.1 DHCP 保留（必须使用实际固定 IP）
 
 目标：宿主机 MAC 与 IP 绑定，避免重启换 IP 导致员工书签/企业微信链接失效。
 
 1. 登录公司 DHCP 服务器（Windows DHCP 或网关设备）。
-2. 新建“保留”：
+2. 新建“保留”（下面的 `172.16.3.50` 只是实验计划值，实施前必须确认未被占用）：
    - 保留名称：`RAG-PILOT-HOST`（示例）
    - **IP 地址：172.16.3.50**
    - **MAC 地址**：在宿主机执行 `getmac /v` 取以太网适配器 MAC 填入（用小写连字符格式，如 `aa-bb-cc-dd-ee-ff`）
    - 作用域需在 172.16.3.x 网段内且不与其它保留冲突
-3. 客户端验证：在宿主机 `ipconfig /renew` 后 `ipconfig` 确认 `IPv4 地址` 为 172.16.3.50。
+3. 客户端验证：续租后确认实际 IPv4 地址等于 DHCP 保留值。实验主机曾从 `172.16.3.50` 漂移到 `172.16.3.56`，说明仅在文档里填写固定地址并不生效。
 4. （可选）在网关/防火墙上为 172.16.3.50 建一条仅允许 8088 入站 + 出站白名单的规则。
 
 ### 3.2 内部 DNS 记录
@@ -82,25 +82,25 @@ RAG_PUBLIC_ORIGIN=http://rag.corp.example.local:8088
 
 ### 4.1 部署步骤（Docker）
 
-```powershell
-cd C:\Users\23960\Desktop\agent\rag
-Copy-Item .env.example .env        # .env 已被 .gitignore 忽略，勿提交版本库
-# 编辑 .env，至少填写/生成三项（详见下节）：
-#   DEEPSEEK_API_KEY=sk-...
-#   RAG_ROOT_PASSWORD=...
-#   RAG_SECRET_KEY=...
-docker compose up -d --build
+```bash
+git clone --branch main --single-branch https://github.com/ihyh/lan-rag-pilot.git /opt/lan-rag-pilot
+cd /opt/lan-rag-pilot
+cp .env.example .env                # 编辑但不要提交；文件权限建议 600
+# 至少填写：内网 Ollama 地址/模型、RAG_ROOT_PASSWORD、RAG_SECRET_KEY、RAG_PUBLIC_ORIGIN
+docker compose build
+docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 rag python scripts/predownload_models.py
+docker compose up -d --no-build
 docker compose ps                   # 期望 rag-pilot 处于 Up (healthy)
-docker compose logs -f rag          # 首次启动自动下载嵌入模型，观察日志
+docker compose logs -f rag
 ```
 
 - 首次启动且库为空时，系统用 `RAG_ROOT_PASSWORD` 自动创建 **root** 账号并写审计 `system_init`（幂等；`app/main.py _bootstrap`）。**库空且未设置该变量 → 进程拒绝启动**（错误信息明确提示）。
-- 嵌入模型在后台线程加载/下载，**不阻塞启动**：登录与健康检查可用，`model_ready:false` 期间问答/上传返回 503 `embed_not_ready`；日志出现“嵌入模型就绪：BAAI/bge-small-zh-v1.5（512 维）”后即可正常使用。
+- 嵌入模型在后台线程加载，**不阻塞进程启动**：登录与存活检查可用，`model_ready:false` 期间问答/上传返回 503 `embed_not_ready`；日志出现“嵌入模型就绪：BAAI/bge-small-zh-v1.5（512 维）”后即可正常使用。正式 Compose 设置了离线标志，新服务器必须先执行上面的预下载步骤或恢复已有模型卷。
 - 服务器无法访问 Hugging Face 时按 §4.4 离线模型方案。
 
 ### 4.2 初始口令与密钥（重要）
 
-- **`root` 初始密码（示例 `fcd123`）只是试点临时弱口令**：该值出现在测试与示例环境（`tests/api_smoke.py` 默认 `RAG_ROOT_PASSWORD` 即 `fcd123`）。正式试点开始前必须换成强口令（≥12 位混合字符），换法：
+- **`root` 初始密码只能是一次性部署强口令**：测试代码中的默认值不允许用于部署。正式试点开始前必须设置强口令（≥12 位混合字符），换法：
   - root 登录后调用 `POST /api/me/password`（改自己），或
   - 任一启用的 root 调 `PATCH /api/admin/users/{root_id}`（帮他人重置）。
 - **`RAG_SECRET_KEY`**（会话令牌 HMAC 密钥）生成并写入 `.env`：
@@ -123,7 +123,7 @@ docker compose logs -f rag          # 首次启动自动下载嵌入模型，观
 ```powershell
 # 1) 在有网机器（可与目标机同镜像或本机装好依赖）预下载：
 docker compose build
-docker compose run --rm rag python scripts/predownload_models.py
+docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 rag python scripts/predownload_models.py
 # 或：python scripts/predownload_models.py        （本机直跑）
 # 国内镜像加速：
 $env:HF_ENDPOINT = "https://hf-mirror.com"        # 再执行上面命令
@@ -147,18 +147,18 @@ docker compose logs -f rag    # 期望：嵌入模型就绪：BAAI/bge-small-zh-
 
 ## 5. 企业微信 / 飞书“工作台应用链接”
 
-**共同前提**：两个入口都只是把**同一个内部 HTTP(S) URL** 挂在应用/工作台上，由客户端内置浏览器打开；**无机器人、无 SSO、无回调**，也不走公网——员工终端必须能直连内网（公司 Wi-Fi 或 VPN）才能访问 172.16.3.50:8088。
+**共同前提**：两个入口都只是把**同一个内部 HTTP(S) URL** 挂在应用/工作台上，由客户端内置浏览器打开；**无机器人、无 SSO、无回调**，也不走公网——员工终端必须能通过公司 Wi-Fi 或 VPN 访问最终确定的固定地址。
 
 - 统一入口 URL（二选一，全司一致）：
   - `http://rag.corp.example.local:8088`（有 DNS，推荐），或
-  - `http://172.16.3.50:8088`（无 DNS 时）
+  - `http://<固定IP>:8088`（无 DNS 时，仅限隔离试点网络）
 - **企业微信**：管理后台 → 应用管理 → 创建自建应用 → 应用主页/可信域名处填上述 URL → 可见范围设为试点团队 → 员工在“工作台”点击打开（企业微信移动端内嵌浏览器直接访问内网地址；若走“企业微信代理/中转”需确认可回源内网，否则失效）。
 - **飞书**：开发者后台（或用管理员身份）→ 企业自建应用 → 添加“网页应用” → 网页链接填上述 URL → 可用范围设为试点团队 → 在工作台打开。
 - 配置后自测：分别用**企业微信与飞书客户端**打开，确认能完成登录、问答和 root 管理操作且无需公网。若两者入口要求 HTTPS，请先完成 §8 的 HTTPS 改造再配置，避免在明文 HTTP 上做入口推广。
 
 ## 6. 手机访问与 PWA 说明（如实）
 
-- 手机（iOS/Android）浏览器可访问 `http://172.16.3.50:8088` 或内网域名，**前提是手机连接公司 Wi-Fi/VPN**（流量走内网，4G/5G 公网无法到达）。
+- 手机（iOS/Android）浏览器可访问 `http://<固定IP>:8088` 或内网域名，**前提是手机连接公司 Wi-Fi/VPN**（流量走内网，4G/5G 公网无法到达）。
 - 页面含移动端 viewport、Web App Manifest 和 Service Worker；Service Worker 只在 HTTPS 下注册，且不会缓存 `/api/`：
   - HTTP 阶段：只能作为**普通网页**使用；浏览器“添加到主屏幕/桌面快捷方式”仅是书签式入口，无离线能力、不满足完整安装条件。
   - HTTPS 阶段：浏览器可注册 Service Worker 并安装为 PWA；离线缓存仅覆盖页面壳和静态资源，问答、登录和管理接口仍必须联网。
@@ -277,7 +277,7 @@ docker compose logs -f rag    # 确认启动横幅与模型就绪
 
 **进入正式使用前必须完成**
 - □ **HTTPS**：前置反向代理/网关终结 TLS（如内网 CA 或公司证书），并把 `RAG_COOKIE_SECURE=true` 写入 `.env`；入口地址与 `RAG_PUBLIC_ORIGIN` 一致。
-- □ **更换初始弱口令**（root 及所有账号，示例值 `fcd123` 仅用于测试环境）；启用最小可用账号集，长期不用的账号停用（`is_active=false`）。
+- □ **更换初始弱口令**（root 及所有账号；不得复用测试代码中的默认值）；启用最小可用账号集，长期不用的账号停用（`is_active=false`）。
 - □ **配置强 `RAG_SECRET_KEY`**（§4.2），确认启动日志不再出现开发密钥告警。
 - □ 复核网络白名单（§2）：RAG 只能访问指定内网 Ollama 地址，服务器不保存有效公网模型 Key，运行网络无多余公网外联。
 - □ 端口 8088 仅对需要访问的网段开放。
@@ -304,7 +304,7 @@ docker compose logs -f rag    # 确认启动横幅与模型就绪
 ## 10. 交接核对表（汇总）
 
 - □ §2 前置条件全部满足（Docker、8088、磁盘/内存、出网策略）
-- □ §3 DHCP 保留 172.16.3.50 生效；DNS A 记录可解析；`.env` 已填 `RAG_PUBLIC_ORIGIN`
+- □ §3 DHCP 保留的实际固定 IP 已生效；DNS A 记录可解析；`.env` 已填最终 `RAG_PUBLIC_ORIGIN`
 - □ §4 `.env` 中 Ollama 内网地址、`RAG_ROOT_PASSWORD`、`RAG_SECRET_KEY` 就位；不存在有效公网模型 Key；`docker compose up -d` 后 healthy
 - □ 无法访问 HF 时已完成 §4.4 离线模型挂载并验证日志
 - □ §8 门禁：是否已 HTTPS / 已更换弱口令 / 已配强密钥 / 出网白名单核对（未完成则系统仅限隔离试点用途并书面知会）
