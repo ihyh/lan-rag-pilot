@@ -6,6 +6,28 @@
 
 > 当前版本为内部试点版 v0.1.0，适合小团队在隔离局域网中使用。系统不会自动改用公网模型。
 
+## 开发者导入后先配置
+
+以下步骤用于开发机或隔离测试网络；正式接入公司资料前，先完成 HTTPS、访问控制和备份验收。需要 Docker Compose，以及一台已安装 Ollama 的内网电脑。先在 Ollama 所在电脑执行 `ollama pull qwen3:1.7b`。
+
+1. 在项目根目录把 `.env.example` 复制为 `.env`：Linux/macOS 用 `cp .env.example .env`，Windows PowerShell 用 `Copy-Item .env.example .env`。
+2. 编辑 `.env` 中的下列值。模板里的 `192.168.136.1` 只适用于原开发机的 VMware 网络，导入到其他电脑后必须改成 **RAG 容器能够访问**的 Ollama 地址；容器中的 `127.0.0.1` 指向容器自身。
+
+   | 变量 | 应填写的内容 |
+   |---|---|
+   | `DEEPSEEK_API_KEY` | 连接 Ollama 时保留非空占位值 `ollama`；这是兼容接口的历史变量名，不是公网密钥 |
+   | `DEEPSEEK_BASE_URL` | `http://<Ollama 内网地址>:11434/v1`；按实际网络和防火墙配置，勿开放公网 |
+   | `DEEPSEEK_MODEL` | 已通过 `ollama pull` 下载的模型名，如 `qwen3:1.7b` |
+   | `RAG_ROOT_PASSWORD` | **全新数据库**首次创建 root 账号所用的强密码；已有数据库请在界面改密 |
+   | `RAG_SECRET_KEY` | 独立生成的随机会话密钥，不能留空或使用公开示例值 |
+   | `RAG_PUBLIC_ORIGIN` | 用户在浏览器实际访问的完整地址，如 `http://<RAG 主机内网地址>:8088` |
+
+   用 `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` 生成 `RAG_SECRET_KEY`；Windows 如只有 `python`，把命令中的 `python3` 换成 `python`。`.env` 已被 Git 忽略，仍不要上传、粘贴到 Issue 或提交给模型。其余空白变量由 `app/config.py` 的默认值或 Compose 容器设置补齐。
+3. 运行 `docker compose config --quiet` 检查配置，再按下文“快速启动”构建、预下载 BGE 检索模型并启动。首次下载需要能访问模型源；离线环境按 [IT 部署与交付清单](docs/IT_handover.md) 预置模型缓存。
+4. 等待 `docker compose ps` 显示 `rag-pilot` 为 `healthy`，并确认 `/api/health` 与 `/api/ready` 均返回 200，然后登录、上传一份无机密测试文档并检查回答引用。修改 `.env` 后用 `docker compose up -d` 重建容器使配置生效。
+
+HTTP 试验环境的 `RAG_COOKIE_SECURE` 可保持默认 `false`；启用 HTTPS 时须设为 `true`，并将 `RAG_PUBLIC_ORIGIN` 改为实际 HTTPS 入口。单机试点必须保持一个应用 worker 和一个副本。
+
 ## 它解决什么问题
 
 以前查设备资料，通常需要打开多份 PDF 或 Word，再逐页搜索关键词。本项目把这个过程变成：
@@ -271,7 +293,7 @@ GitHub 仓库不包含生产数据库、上传文档、模型、备份、`.env` 
 
 - 已实现多轮对话、设备/文档范围、混合检索、引用、反馈和三级权限。
 - 已支持 PDF、DOC、DOCX、XLSX、TXT、MD。
-- 最近一次完整隔离 smoke 测试为 **145/145 通过**，重启持久化通过。
+- 2026-09-13 本地 `codex/refresh-project-docs` 功能分支已实现浏览器流式回答、设备版本范围匹配和角色权限展示；完整隔离 smoke **149/149 通过**，重启持久化通过。流式回答已部署到当前 Ubuntu VM，健康/就绪检查和合成文本模型流验证通过。GitHub `main` 的代码发布状态以仓库分支和 PR 为准。
 - 当前 Ubuntu 试点环境使用 BGE 检索和内网 Ollama `qwen3:1.7b`。
 - 正式推广前仍需完成固定地址、HTTPS、独立备份和真实问题质量评测。
 
