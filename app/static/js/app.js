@@ -31,9 +31,9 @@ function citedSources(answer, sources) {
 // 仅依据文件名的明确设备标识；多设备合订文档留给用户手动选择。
 function deviceDocumentIds(documents, device) {
   var patterns = {
-    PLM: /(^|[^a-z0-9])plm(?=$|[^a-z0-9])/i,
-    PLUSPRO: /(^|[^a-z0-9])plus[\s_-]*pro(?=$|[^a-z0-9])/i,
-    PLUS500: /(^|[^a-z0-9])plus[\s_-]*500(?=$|[^a-z0-9])/i
+    PLM: /(^|[^a-z0-9])plm(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i,
+    PLUSPRO: /(^|[^a-z0-9])plus[\s_-]*pro(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i,
+    PLUS500: /(^|[^a-z0-9])plus[\s_-]*500(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i
   };
   if (!patterns[device]) { return []; }
   return (documents || []).filter(function (doc) {
@@ -477,18 +477,33 @@ function deviceDocumentIds(documents, device) {
     els.messages.appendChild(askBubble(q));
     showTyping();
     scrollBottom();
+    var liveBubble = null;
+    var liveText = null;
 
     try {
       var body = { question: q };
       if (conversationId !== null) { body.conversation_id = conversationId; }
       else { body.document_ids = S.newDocumentIds.slice(); }
-      var res = await api('/api/query', { method: 'POST', body: body });
+      var res = await api('/api/query?stream=true', {
+        method: 'POST', body: body,
+        onDelta: function (text) {
+          if (!liveText) {
+            removeTyping();
+            liveText = h('div', { class: 'bubble bubble-a' });
+            liveBubble = h('div', { class: 'msg msg-a' }, [liveText]);
+            els.messages.appendChild(liveBubble);
+          }
+          liveText.textContent += text;
+          scrollBottom();
+        }
+      });
       S.currentId = res.conversation_id;
       var conversation = await api('/api/conversations/' + res.conversation_id);
       renderConversation(conversation);
       await loadHistoryOnly();
     } catch (e) {
       removeTyping();
+      if (liveBubble && liveBubble.parentNode) { liveBubble.parentNode.removeChild(liveBubble); }
       if (e && e.status === 401) { return; }
       // 后端 502 时 detail 里带 conversation_id，可回拉失败对话展示
       var failedConversationId = e && e.data && e.data.detail && e.data.detail.conversation_id;

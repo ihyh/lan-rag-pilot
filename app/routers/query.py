@@ -3,18 +3,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .. import audit, runtime as rt
 from ..config import settings
-from ..db import get_db, now_iso
+from ..db import connect, get_db, now_iso
 from ..deps import require_user
 from ..embeddings import EmbeddingUnavailable, embedding_service
 from ..gate import llm_gate
 from ..index import vector_index
-from ..llm import LLMError, chat as llm_chat
+from ..llm import LLMError, _normalize_answer, chat as llm_chat, stream_chat as llm_stream_chat
 from ..ratelimit import SlidingWindowLimiter
 from ..schemas import FeedbackBody, QueryBody
 
@@ -241,6 +242,7 @@ def _store_chat(
 def query(
     body: QueryBody,
     request: Request,
+    stream: bool = False,
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_user),
 ):
@@ -361,6 +363,61 @@ def query(
         return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
 
     doc_names = sorted({s["filename"] for s in sources})
+
+    if stream:
+        def events():
+            def line(data: dict) -> str:
+                return json.dumps(data, ensure_ascii=False) + "\n"
+
+            if not llm_gate.acquire(90.0):
+                yield line({"type": "error", "message": "系统繁忙：并发模型请求已达上限，请稍后重试"})
+                return
+            answer_parts: list[str] = []
+            usage: dict = {}
+            try:
+                for event in llm_stream_chat(question, sources, history):
+                    if event["type"] == "delta":
+                        answer_parts.append(event["text"])
+                        yield line(event)
+                    else:
+                        usage = event
+            except LLMError as exc:
+                with closing(connect()) as stream_db:
+                    chat_id, stored_conversation_id = _store_chat(
+                        stream_db, user.id, question, "", "error", f"{exc.code}: {exc.message}",
+                        model=settings.deepseek_model,
+                        conversation_id=conversation_id, document_ids=document_ids,
+                    )
+                    audit.log_audit(
+                        stream_db, action="llm_query_failed", user_id=user.id, username=user.username,
+                        detail=json.dumps({"question": question[:200], "documents": doc_names,
+                                           "code": exc.code, "chat_id": chat_id}, ensure_ascii=False), ip=ip,
+                    )
+                yield line({"type": "error", "code": exc.code, "message": exc.message,
+                            "conversation_id": stored_conversation_id})
+                return
+            finally:
+                llm_gate.release()
+
+            answer = _normalize_answer("".join(answer_parts).strip())
+            with closing(connect()) as stream_db:
+                chat_id, stored_conversation_id = _store_chat(
+                    stream_db, user.id, question, answer, "ok", None,
+                    model=settings.deepseek_model, latency_ms=usage["latency_ms"],
+                    prompt_tokens=usage["prompt_tokens"], completion_tokens=usage["completion_tokens"],
+                    sources=sources, conversation_id=conversation_id, document_ids=document_ids,
+                )
+                audit.log_audit(
+                    stream_db, action="llm_query", user_id=user.id, username=user.username,
+                    detail=json.dumps({"question": question[:200], "documents": doc_names,
+                                       "model": settings.deepseek_model, "latency_ms": usage["latency_ms"],
+                                       "prompt_tokens": usage["prompt_tokens"],
+                                       "completion_tokens": usage["completion_tokens"]}, ensure_ascii=False), ip=ip,
+                )
+            yield line({"type": "done", "chat_id": chat_id, "conversation_id": stored_conversation_id})
+
+        return StreamingResponse(events(), media_type="application/x-ndjson",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
     if not llm_gate.acquire(90.0):
         raise HTTPException(

@@ -26,7 +26,7 @@
         <a class="nav-link is-active" href="/admin" id="adminLink">管理</a>
       </nav>
       <div class="nav-user">
-        <span class="user-chip" id="userChip"></span>
+        <button class="user-chip" id="userChip" type="button" aria-label="查看我的权限" title="查看我的权限"></button>
         <button class="btn btn-ghost-light" id="chgPwdBtn" type="button">修改密码</button>
         <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
       </div>
@@ -159,6 +159,48 @@
           <button class="btn btn-primary" type="submit" id="createUserBtn">创建用户</button>
         </div>
       </form>
+    </div>
+
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">角色权限说明</h2>
+      </div>
+      <div class="role-permission-grid" aria-label="角色权限说明">
+        <article class="role-permission-item" data-role-permission="root">
+          <div class="role-permission-head">
+            <span class="tag-role tag-root">root</span>
+            <strong>系统管理员</strong>
+          </div>
+          <ul class="role-permission-list">
+            <li>使用知识库问答并管理自己的对话</li>
+            <li>上传、查看、重新处理和删除文档</li>
+            <li>创建、停用用户，重置密码和设置角色</li>
+            <li>查看和删除全部对话，查看反馈、审计和系统概览，修改运行参数</li>
+          </ul>
+        </article>
+        <article class="role-permission-item" data-role-permission="kb_admin">
+          <div class="role-permission-head">
+            <span class="tag-role tag-kb_admin">kb_admin</span>
+            <strong>文档管理员</strong>
+          </div>
+          <ul class="role-permission-list">
+            <li>使用知识库问答并管理自己的对话</li>
+            <li>上传、查看、重新处理和删除文档</li>
+            <li>不能管理用户、查看全局记录或修改运行参数</li>
+          </ul>
+        </article>
+        <article class="role-permission-item" data-role-permission="user">
+          <div class="role-permission-head">
+            <span class="tag-role tag-user">user</span>
+            <strong>普通用户</strong>
+          </div>
+          <ul class="role-permission-list">
+            <li>使用知识库问答并管理自己的对话</li>
+            <li>查看知识库文档、引用原文并提交回答反馈</li>
+            <li>不能管理文档、用户或系统设置</li>
+          </ul>
+        </article>
+      </div>
     </div>
 
     <div class="card panel-card">

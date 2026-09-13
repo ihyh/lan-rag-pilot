@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import time
+from typing import Iterator
 
 import httpx
 
@@ -79,12 +81,9 @@ def _map_http_error(status: int) -> tuple[str, str]:
     return "llm_error", f"模型服务返回错误（HTTP {status}）"
 
 
-def chat(question: str, sources: list[dict], history: list[dict] | None = None) -> dict:
-    """调用模型并返回 {answer, model, latency_ms, prompt_tokens, completion_tokens}。"""
+def _payload(question: str, sources: list[dict], history: list[dict] | None, stream: bool) -> dict:
     if not settings.deepseek_api_key:
         raise LLMError("llm_auth", "服务端未配置 DEEPSEEK_API_KEY，请联系管理员")
-
-    url = f"{settings.deepseek_base_url}/chat/completions"
     payload = {
         "model": settings.deepseek_model,
         "messages": [
@@ -93,11 +92,20 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
         ],
         "temperature": settings.llm_temperature,
         "max_tokens": settings.llm_max_tokens,
-        "stream": False,
+        "stream": stream,
     }
+    if stream:
+        payload["stream_options"] = {"include_usage": True}
     if settings.deepseek_model.split(":", 1)[0] == "qwen3":
         # Ollama Qwen3 默认生成隐藏思考；知识库问答直接生成正文以缩短等待。
         payload["reasoning_effort"] = "none"
+    return payload
+
+
+def chat(question: str, sources: list[dict], history: list[dict] | None = None) -> dict:
+    """调用模型并返回 {answer, model, latency_ms, prompt_tokens, completion_tokens}。"""
+    payload = _payload(question, sources, history, False)
+    url = f"{settings.deepseek_base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {settings.deepseek_api_key}",
         "Content-Type": "application/json",
@@ -128,6 +136,58 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
         "answer": answer,
         "model": settings.deepseek_model,
         "latency_ms": latency_ms,
+        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+        "completion_tokens": int(usage.get("completion_tokens") or 0),
+    }
+
+
+def stream_chat(question: str, sources: list[dict], history: list[dict] | None = None) -> Iterator[dict]:
+    """逐段返回正文，最后返回模型耗时与 token 用量。"""
+    payload = _payload(question, sources, history, True)
+    url = f"{settings.deepseek_base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.deepseek_api_key}",
+        "Content-Type": "application/json",
+    }
+    started = time.monotonic()
+    usage: dict = {}
+    done = False
+    try:
+        with httpx.Client(timeout=httpx.Timeout(settings.deepseek_timeout_s, connect=10.0)) as client:
+            with client.stream("POST", url, json=payload, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    raise LLMError(*_map_http_error(resp.status_code))
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        done = True
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        if chunk.get("error"):
+                            raise LLMError("llm_upstream", "模型服务暂时不可用，请稍后重试")
+                        if isinstance(chunk.get("usage"), dict):
+                            usage = chunk["usage"]
+                        for choice in chunk.get("choices") or []:
+                            delta = choice.get("delta") or {}
+                            content = delta.get("content")
+                            if content:
+                                if not isinstance(content, str):
+                                    raise LLMError("llm_bad_response", "模型服务返回了无法解析的响应")
+                                yield {"type": "delta", "text": content}
+                    except (ValueError, AttributeError, TypeError) as exc:
+                        raise LLMError("llm_bad_response", "模型服务返回了无法解析的响应") from exc
+    except httpx.TimeoutException as exc:
+        raise LLMError("llm_timeout", "模型服务响应超时，请稍后重试") from exc
+    except httpx.HTTPError as exc:
+        raise LLMError("llm_network", f"无法连接模型服务（{exc.__class__.__name__}），请检查网络与 DEEPSEEK_BASE_URL") from exc
+    if not done:
+        raise LLMError("llm_bad_response", "模型服务的回答传输中断")
+    yield {
+        "type": "usage",
+        "latency_ms": int((time.monotonic() - started) * 1000),
         "prompt_tokens": int(usage.get("prompt_tokens") or 0),
         "completion_tokens": int(usage.get("completion_tokens") or 0),
     }
