@@ -200,6 +200,38 @@ async function api(path, opts) {
     err.data = data;
     throw err;
   }
+  if (opts.onDelta && ct.indexOf('application/x-ndjson') !== -1) {
+    if (!res.body) { throw new Error('浏览器无法读取流式回答'); }
+    var reader = res.body.getReader();
+    var decoder = new TextDecoder();
+    var pending = '';
+    var completed = null;
+    function consume(line) {
+      if (!line.trim()) { return; }
+      var event;
+      try { event = JSON.parse(line); }
+      catch (e) { throw new Error('服务器返回了无法解析的回答'); }
+      if (event.type === 'delta') { opts.onDelta(event.text || ''); }
+      else if (event.type === 'done') { completed = event; }
+      else if (event.type === 'error') {
+        var streamErr = new Error(event.message || '回答失败');
+        streamErr.status = 502;
+        streamErr.data = { detail: event };
+        throw streamErr;
+      }
+    }
+    while (true) {
+      var chunk = await reader.read();
+      pending += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+      var lines = pending.split('\n');
+      pending = lines.pop();
+      lines.forEach(consume);
+      if (chunk.done) { break; }
+    }
+    consume(pending);
+    if (!completed) { throw new Error('回答传输中断，请稍后重试'); }
+    return completed;
+  }
   return data;
 }
 
@@ -394,7 +426,7 @@ function formModal(opts) {
   var cancelBtn = h('button', { class: 'btn btn-outline', type: 'button' }, [opts.cancelText || '取消']);
   var okBtn = h('button', {
     class: 'btn ' + (opts.danger ? 'btn-danger' : 'btn-primary'),
-    type: 'submit'
+    type: 'button'
   }, [opts.submitText || '保存']);
   foot.appendChild(cancelBtn);
   foot.appendChild(okBtn);
@@ -408,6 +440,7 @@ function formModal(opts) {
 
   return new Promise(function (resolve) {
     cancelBtn.addEventListener('click', function () { m.close(); resolve(null); });
+    okBtn.addEventListener('click', function () { form.requestSubmit(); });
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
       if (!form.checkValidity()) { form.reportValidity(); return; }
@@ -487,6 +520,7 @@ async function initSession(opts) {
     userChip.appendChild(h('span', { class: 'u-ic', html: icon('user') }));
     userChip.appendChild(h('span', { class: 'u-name' }, [me.username]));
     userChip.appendChild(h('span', { class: 'u-role' }, [root ? '系统管理员' : (kbAdmin ? '文档管理员' : '普通用户')]));
+    userChip.addEventListener('click', function () { openMyPermissionsModal(me); });
   }
   // 静态图标注入（保持 HTML 纯净，由 JS 统一放图标）
   var toggle = qs('#navToggle');
@@ -551,6 +585,39 @@ function bindNavActions() {
       }
     });
   }
+}
+
+function openMyPermissionsModal(me) {
+  var roles = {
+    root: ['系统管理员', [
+      '知识库问答、查看文档和引用原文、管理自己的对话并提交反馈',
+      '上传、重新处理和删除文档',
+      '管理用户（创建、停用、重置密码和设置角色）',
+      '查看和删除全部对话、查看反馈、审计与系统概览',
+      '修改运行参数'
+    ]],
+    kb_admin: ['文档管理员', [
+      '知识库问答、查看文档和引用原文、管理自己的对话并提交反馈',
+      '上传、重新处理和删除文档',
+      '不能管理用户、查看全局记录或修改运行参数'
+    ]],
+    user: ['普通用户', [
+      '知识库问答、查看文档和引用原文、管理自己的对话并提交反馈',
+      '不能管理文档、用户或系统设置'
+    ]]
+  };
+  var info = roles[me.role];
+  var body = h('div', { class: 'role-permission-item' }, [
+    h('div', { class: 'role-permission-head' }, [
+      h('span', { class: 'tag-role tag-' + me.role }, [me.role]),
+      h('strong', null, [info[0]])
+    ]),
+    h('ul', { class: 'role-permission-list' }, info[1].map(function (permission) {
+      return h('li', null, [permission]);
+    }))
+  ]);
+  var modal = openModal({ title: '我的权限', body: body, onClose: function () { qs('.user-chip').focus(); } });
+  qs('.modal-head .btn', modal.modal).focus();
 }
 
 function openChangePasswordModal() {

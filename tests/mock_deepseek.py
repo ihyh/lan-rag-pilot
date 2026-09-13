@@ -13,10 +13,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI(title="mock-deepseek")
 
@@ -55,6 +56,18 @@ async def chat_completions(request: Request):
     delay = float(m.group(1)) if m else 0.0
     if delay:
         await asyncio.sleep(delay)
+
+    if body.get("stream"):
+        async def events():
+            for part in (MOCK_ANSWER[:35], MOCK_ANSWER[35:]):
+                yield "data: " + json.dumps({"choices": [{"delta": {"content": part}}]}, ensure_ascii=False) + "\n\n"
+                await asyncio.sleep(0.05)
+                if "[[mock:stream-cut]]" in user_content:
+                    return
+            if (body.get("stream_options") or {}).get("include_usage"):
+                yield "data: " + json.dumps({"choices": [], "usage": {"prompt_tokens": 123, "completion_tokens": 87}}) + "\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     return {
         "id": "chatcmpl-mock-1",

@@ -190,10 +190,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .nav-user { display: flex; align-items: center; gap: 8px; padding-left: 14px; border-left: 1px solid rgba(255,255,255,.14); }
 .user-chip {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 3px 10px; border-radius: 999px;
+  padding: 3px 10px; border: 0; border-radius: 999px;
   background: rgba(255,255,255,.1); color: #fff; font-size: 13px;
-  max-width: 200px;
+  font-family: inherit; cursor: pointer; max-width: 200px;
 }
+.user-chip:hover, .user-chip:focus-visible { background: rgba(255,255,255,.18); }
+.user-chip:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .user-chip svg.ic { color: #9fb2d8; }
 .user-chip .u-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-chip .u-role { font-size: 11px; color: #9db4e8; border-left: 1px solid rgba(255,255,255,.25); padding-left: 8px; flex: none; }
@@ -303,6 +305,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* 用户创建 */
 .user-create-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
 .user-create-grid .btn { margin-bottom: 0; height: 40px; }
+.role-permission-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.role-permission-item { padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: #f8fafc; }
+.role-permission-head { display: flex; align-items: center; gap: 8px; }
+.role-permission-list { margin: 10px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.65; }
 
 /* 文档错误信息 */
 .doc-err { color: var(--red); font-size: 12px; margin-top: 2px; max-width: 340px;

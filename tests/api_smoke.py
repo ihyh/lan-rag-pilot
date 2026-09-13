@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sqlite3
 import sys
@@ -469,6 +470,30 @@ class Smoke:
         r = self.c.post(f"/api/chats/{self.root_chat_id}/feedback", json={"rating": "unhelpful"})
         check(r.status_code == 404, "user 不能评价他人问答")
 
+    def test_streaming(self) -> None:
+        print("\n== 流式问答 ==")
+        self.login("root", ROOT_PW)
+        with self.c.stream("POST", "/api/query?stream=true", json={"question": "流式测试：出差住宿上限是多少？"}) as response:
+            status = response.status_code
+            events = [json.loads(line) for line in response.iter_lines() if line]
+        deltas = [event["text"] for event in events if event["type"] == "delta"]
+        completed = next((event for event in events if event["type"] == "done"), None)
+        check(status == 200 and len(deltas) >= 2 and completed is not None, "模型片段在完成事件前逐段到达")
+        if completed:
+            saved = self.c.get(f"/api/conversations/{completed['conversation_id']}").json()["turns"][-1]
+            check(saved["answer"] == "".join(deltas) and saved["sources"] and saved["status"] == "ok",
+                  "流式完整答案与引用只保存一次")
+
+        with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:stream-cut]] 出差住宿上限是多少？"}) as response:
+            interrupted = [json.loads(line) for line in response.iter_lines() if line]
+        failure = next((event for event in interrupted if event["type"] == "error"), None)
+        check(any(event["type"] == "delta" for event in interrupted) and failure is not None
+              and not any(event["type"] == "done" for event in interrupted), "中断流不会报告成功")
+        if failure and failure.get("conversation_id"):
+            saved = self.c.get(f"/api/conversations/{failure['conversation_id']}").json()["turns"][-1]
+            check(saved["status"] == "error" and not saved["answer"], "中断流不保存部分答案")
+        self.login("alice", "alice123")
+
     def test_history(self) -> None:
         print("\n== 历史与可见性 ==")
         r = self.c.get("/api/chats")
@@ -665,6 +690,7 @@ def main() -> None:
     s.test_documents()
     s.test_kb_admin_permissions()
     s.test_query()
+    s.test_streaming()
     s.test_history()
     s.test_admin_views()
     s.test_rate_limit()
