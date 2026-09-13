@@ -1,330 +1,65 @@
-# 局域网知识库助手（LAN RAG）
+# 局域网知识库助手 · LAN RAG Pilot
 
-把设备手册、操作说明等资料上传到公司内网后，员工可以像聊天一样提问，并查看答案引用了哪份文档。
+把文档放进知识库，用自然语言提问，查看回答依据的原文位置。适合个人离线知识整理，也可在**同一资料访问权限范围内**做团队试点。
 
-它不是普通聊天机器人：系统会先从已上传的资料中查找相关内容，再让内网中的 AI 模型整理答案。找不到可靠资料时，它会明确说无法回答。
+文档依据代码基线 `1936a0d` 核对，不代表某台服务器的实时状态。安装步骤须由管理员在目标环境验收；历史测试次数不是安全或质量承诺。
 
-> 当前版本为内部试点版 v0.1.0，适合小团队在隔离局域网中使用。系统不会自动改用公网模型。
+## 先了解边界
 
-## 开发者导入后先配置
+- 运行机器禁止访问互联网；允许经过批准的局域网通信。安装包、依赖和模型由管理员在另一台准备机下载、核验后带入。
+- **当前没有部门/个人级文档权限隔离。** 已登录用户可检索和读取共享库文档。设备选择、限定文档、账号角色不能替代文档授权。
+- 如果企业要求部门或人员之间不能互读资料，**当前版本不得用于这种正式部署**。先完成授权功能及越权测试，再做上线验收。
+- 离线不等于绝对安全。程序没有强制禁止所有外联；断网、出口策略、HTTPS、备份和账号治理需要管理员落实。
 
-以下步骤用于开发机或隔离测试网络；正式接入公司资料前，先完成 HTTPS、访问控制和备份验收。需要 Docker Compose，以及一台已安装 Ollama 的内网电脑。先在 Ollama 所在电脑执行 `ollama pull qwen3:1.7b`。
+## 选一条阅读路线
 
-1. 在项目根目录把 `.env.example` 复制为 `.env`：Linux/macOS 用 `cp .env.example .env`，Windows PowerShell 用 `Copy-Item .env.example .env`。
-2. 编辑 `.env` 中的下列值。模板里的 `192.168.136.1` 只适用于原开发机的 VMware 网络，导入到其他电脑后必须改成 **RAG 容器能够访问**的 Ollama 地址；容器中的 `127.0.0.1` 指向容器自身。
-
-   | 变量 | 应填写的内容 |
-   |---|---|
-   | `DEEPSEEK_API_KEY` | 连接 Ollama 时保留非空占位值 `ollama`；这是兼容接口的历史变量名，不是公网密钥 |
-   | `DEEPSEEK_BASE_URL` | `http://<Ollama 内网地址>:11434/v1`；按实际网络和防火墙配置，勿开放公网 |
-   | `DEEPSEEK_MODEL` | 已通过 `ollama pull` 下载的模型名，如 `qwen3:1.7b` |
-   | `RAG_ROOT_PASSWORD` | **全新数据库**首次创建 root 账号所用的强密码；已有数据库请在界面改密 |
-   | `RAG_SECRET_KEY` | 独立生成的随机会话密钥，不能留空或使用公开示例值 |
-   | `RAG_PUBLIC_ORIGIN` | 用户在浏览器实际访问的完整地址，如 `http://<RAG 主机内网地址>:8088` |
-
-   用 `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` 生成 `RAG_SECRET_KEY`；Windows 如只有 `python`，把命令中的 `python3` 换成 `python`。`.env` 已被 Git 忽略，仍不要上传、粘贴到 Issue 或提交给模型。其余空白变量由 `app/config.py` 的默认值或 Compose 容器设置补齐。
-3. 运行 `docker compose config --quiet` 检查配置，再按下文“快速启动”构建、预下载 BGE 检索模型并启动。首次下载需要能访问模型源；离线环境按 [IT 部署与交付清单](docs/IT_handover.md) 预置模型缓存。
-4. 等待 `docker compose ps` 显示 `rag-pilot` 为 `healthy`，并确认 `/api/health` 与 `/api/ready` 均返回 200，然后登录、上传一份无机密测试文档并检查回答引用。修改 `.env` 后用 `docker compose up -d` 重建容器使配置生效。
-
-HTTP 试验环境的 `RAG_COOKIE_SECURE` 可保持默认 `false`；启用 HTTPS 时须设为 `true`，并将 `RAG_PUBLIC_ORIGIN` 改为实际 HTTPS 入口。单机试点必须保持一个应用 worker 和一个副本。
-
-## 它解决什么问题
-
-以前查设备资料，通常需要打开多份 PDF 或 Word，再逐页搜索关键词。本项目把这个过程变成：
-
-```text
-上传文档 → 系统解析和建立索引 → 用户提问 → 查找相关原文 → AI 生成答案 → 展示引用来源
-```
-
-## 目前能做什么
-
-| 功能 | 小白理解 |
+| 你要做什么 | 从这里开始 |
 |---|---|
-| 上传资料 | 支持 PDF、DOC、DOCX、XLSX、TXT、MD |
-| 选择设备 | 提问前可以选择设备，也可以手动选择文档 |
-| 连续追问 | 同一个对话中可以继续问，不必每次重复背景 |
-| 引用原文 | 每次回答都会显示本轮实际使用的资料来源 |
-| 管理文档 | 管理员可以上传、删除或重新处理文档 |
-| 管理账号 | root 可以创建、停用账号和重置密码 |
-| 收集反馈 | 用户可以标记回答“有帮助”或“没帮助” |
-| 内网运行 | 文档、数据库和模型都可以放在局域网内 |
+| 使用已经部署的网站 | [第一次使用](docs/GETTING_STARTED.md) |
+| 在自己的 Windows 电脑运行 | [Windows 离线安装](docs/WINDOWS.md) |
+| 一台服务器供多台低配置电脑使用 | [Ubuntu 局域网部署](docs/UBUNTU.md) |
+| 为断网机器准备安装材料 | [管理员离线包制作](docs/OFFLINE_PACKAGE.md) |
+| 选择或更换模型 | [硬件与模型](docs/MODELS.md) |
+| 重启、备份、迁移、升级 | [日常运维](docs/OPERATIONS.md) |
+| 网页、账号、模型或引用异常 | [故障排查](docs/TROUBLESHOOTING.md) |
+| 评估能否安全上线 | [安全要求](docs/SECURITY.md)、[代码边界核对](docs/SECURITY_AUDIT.md) |
+| 维护代码或测试接口 | [开发与配置索引](docs/IT_handover.md) |
 
-## 目前不能做什么
+团队结构：浏览器客户端 → 内网 HTTPS 入口 → RAG 服务 → 同机 Ollama。文档、索引、模型保存在服务器；客户端不用安装 Python、Ollama 或显卡驱动。受管客户端也应遵守禁止外网、禁止云同步等组织策略。
 
-- 不支持扫描图片型 PDF 的文字识别，也就是暂时没有 OCR。
-- 不支持旧版 XLS、PPT 和 PPTX。
-- 不会自动联网搜索，也不会自动回退到 DeepSeek 等公网模型。
-- 所有登录用户共享同一套文档，不提供部门之间的资料隔离。
-- AI 回答可能有误，重要参数和操作步骤必须核对引用原文。
-- 当前是单机试点架构，不适合直接作为大型互联网服务。
+## 能做什么
 
-## 普通用户怎么使用
+- PDF、DOCX、XLSX、TXT、MD 解析；真正的旧版 DOC 需要 antiword，容器镜像包含它。
+- 设备/文档范围、多轮对话、流式回答、引用来源、反馈和历史记录。
+- 本地向量检索，与技术标识符的关键词召回融合。
+- 三级账号权限、文档管理、用户管理、运行参数和审计。
 
-1. 打开管理员提供的局域网网址并登录。
-2. 点击“新建对话”。
-3. 选择要询问的设备或具体文档。
-4. 输入一个尽量明确的问题，然后发送。
-5. 查看回答，并展开“引用来源”核对原文。
-6. 同一主题可以继续追问；要切换设备时，请新建对话。
+扫描 PDF 没有内置 OCR；Excel 图片、图表和公式计算结果不保证完整解析。检索到资料也不保证回答正确，重要结论必须打开原文核对。
 
-提问越具体，通常越容易得到准确答案。例如：
+## 模型分别负责什么
 
-```text
-不够具体：速度怎么调？
-更清楚：PLUSPRO 点动速度在哪个参数页面调整？可调范围是多少？
-```
-
-## 管理员怎么使用
-
-管理员登录后进入“管理”页面：
-
-1. 上传文档。
-2. 等待文档状态变成“可用”。
-3. 回到问答页面进行测试。
-4. 如果文档解析失败，查看失败原因后处理原文件。
-
-“重新处理”不会重新上传文件。它会再次解析已经保存的原文件、重新切片并建立检索索引，适用于模型恢复、上次处理失败或解析逻辑升级后的情况。
-
-## 系统是怎么工作的
-
-```text
-浏览器
-  ↓
-FastAPI 应用：登录、权限、文档管理、问答
-  ↓
-本地 BGE：从文档中找出与问题最相关的片段
-  ↓
-内网 Ollama：只根据这些片段组织答案
-  ↓
-SQLite：保存账号、文档索引、对话、引用和反馈
-```
-
-当前默认组件：
-
-- Web 服务：FastAPI
-- 数据库：SQLite
-- 检索模型：`BAAI/bge-small-zh-v1.5`
-- 生成模型：Ollama 中的 `qwen3:1.7b`
-- 部署方式：Docker Compose
-- 默认服务端口：`8088`
-
-完整原文件不会作为整体发送给生成模型。模型只接收当前问题、检索到的少量片段和有限的对话历史。
-
-## 快速部署
-
-下面是最短部署流程。第一次部署建议由了解 Docker 和局域网配置的人员操作。
-
-### 1. 准备环境
-
-需要：
-
-- 一台运行 RAG 服务的电脑或服务器，已安装 Git、Docker 和 Docker Compose。
-- 一台能运行 Ollama 的电脑；它可以和 RAG 服务在同一台机器上。
-- RAG 服务能够通过局域网访问 Ollama 的 `11434` 端口。
-- 第一次准备 BGE 模型时可以访问 Hugging Face，或者已经有离线模型目录。
-
-先在模型电脑上安装并启动 Ollama，再准备模型：
-
-```bash
-ollama pull qwen3:1.7b
-```
-
-如果 Ollama 和 RAG 不在同一台电脑，还需要让 Ollama 监听局域网地址并配置防火墙。不要把 Ollama 端口暴露到公网。
-
-### 2. 下载项目
-
-```bash
-git clone https://github.com/ihyh/lan-rag-pilot.git
-cd lan-rag-pilot
-```
-
-### 3. 创建配置文件
-
-Linux：
-
-```bash
-cp .env.example .env
-```
-
-Windows PowerShell：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-然后用文本编辑器打开 `.env`，至少确认下面这些设置：
-
-```dotenv
-DEEPSEEK_API_KEY=ollama
-DEEPSEEK_BASE_URL=http://192.168.1.10:11434/v1  # 示例：改成 Ollama 电脑的实际地址
-DEEPSEEK_MODEL=qwen3:1.7b
-RAG_ROOT_PASSWORD=
-RAG_SECRET_KEY=
-RAG_PUBLIC_ORIGIN=http://192.168.1.20:8088     # 示例：改成 RAG 服务器的实际地址
-```
-
-其中 `DEEPSEEK_*` 是为了兼容 OpenAI 风格接口保留的历史变量名。这里实际连接的是内网 Ollama，不是公网 DeepSeek。
-
-`RAG_ROOT_PASSWORD` 和 `RAG_SECRET_KEY` 不能留空：前者填写首次登录使用的强口令，后者填写下面命令生成的随机字符串。
-
-可以用下面的命令生成 `RAG_SECRET_KEY`：
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-`.env` 中可能包含口令和密钥，已经被 Git 忽略，不要上传或发给他人。
-
-### 4. 构建并启动
-
-```bash
-docker compose build
-docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 rag python scripts/predownload_models.py
-docker compose up -d --no-build
-docker compose ps
-```
-
-当 `rag-pilot` 显示为 `healthy` 后，在浏览器访问：
-
-```text
-http://RAG服务器地址:8088
-```
-
-检查接口：
-
-```bash
-curl http://127.0.0.1:8088/api/health
-curl http://127.0.0.1:8088/api/ready
-```
-
-- `/api/health` 表示程序已经启动。
-- `/api/ready` 表示检索模型已经加载，可以上传文档和提问。
-
-### 5. 第一次登录后
-
-1. 使用 `.env` 中设置的 root 口令登录。
-2. 立即确认或修改 root 口令。
-3. 创建普通用户或文档管理员账号。
-4. 上传一份不含机密的测试文档。
-5. 提问并检查引用是否来自正确文档。
-
-## 电脑重启后怎么恢复
-
-容器设置了 `restart: unless-stopped`，Docker 正常启动后，RAG 容器通常会自动恢复。仍建议执行：
-
-```bash
-cd lan-rag-pilot
-docker compose up -d
-docker compose ps
-```
-
-同时确认 Ollama 已启动：
-
-```bash
-ollama list
-```
-
-如果网页能打开但提问超时，通常先检查 Ollama 是否运行、模型是否存在，以及 RAG 服务器能否访问 Ollama 地址。
-
-## 数据保存在哪里
-
-Docker 部署默认使用两个数据卷：
-
-| 数据卷 | 保存内容 |
+| 环节 | 当前实现 |
 |---|---|
-| `rag-pilot_rag_data` | 数据库和上传的原文件 |
-| `rag-pilot_rag_models` | BGE 检索模型 |
+| 分词 | 嵌入模型配套 tokenizer，把文本变成 token |
+| 切片 | 项目规则代码，默认上限 400 token、重叠 60 token；不是独立模型 |
+| 检索/嵌入 | 默认 BAAI/bge-small-zh-v1.5，Sentence Transformers 在 CPU 上运行 |
+| 生成 | 管理员在本地 Ollama 装入的模型，由 DEEPSEEK_MODEL 指定；教程用 Qwen3 示例 |
 
-停止或更新容器不会自动删除数据卷。不要随意执行 `docker compose down -v`，其中的 `-v` 会删除数据卷。
+`DEEPSEEK_*` 是兼容接口的历史变量名，不意味着本教程使用云服务。地址必须显式填写本机/受控内网地址，不可依赖程序默认值。
 
-GitHub 仓库不包含生产数据库、上传文档、模型、备份、`.env` 或本地工作记录。
+## 开始前要准备
 
-## 三种账号有什么区别
+普通使用者只需要管理员给出的内网网址和个人账号。安装人员还需要核验过的离线包、足够的内存/磁盘以及服务管理员权限。仓库**不提供已制作好的通用离线安装包**。
 
-| 账号 | 权限 |
-|---|---|
-| `user` | 提问、查看和删除自己的对话、查看引用、提交反馈 |
-| `kb_admin` | 包含 user 权限，并可上传、删除和重新处理文档 |
-| `root` | 包含全部权限，并可管理用户、全体对话、反馈、审计和参数 |
+不要直接照抄 `.env.example` 的实验地址；不要在运行机在线安装依赖、拉取模型或构建镜像。按 Windows/Ubuntu 教程创建部署副本和配置，先用无敏感测试文档完成问答与引用验证。
 
-个人对话只对本人和 root 可见，但所有启用账号都可以检索共享文档库。
+## 其他资料
 
-## 常见问题
+- [模型交付清单](deploy/MODEL_MANIFEST.md)
+- [检索验证](docs/RETRIEVAL_VALIDATION.md)与[业务评测](eval/README.md)
+- [路线图与上线阻塞项](ROADMAP.md)
+- [源码交付](docs/GIT_HANDOFF.md)
+- [历史部署记录（非现状）](DEPLOYMENT_HANDOFF.md)
+- [安全问题报告](SECURITY.md)
 
-### 为什么回答“根据知识库现有内容无法回答”？
-
-常见原因：选错设备或文档、文档还没有处理完成、问题太模糊，或者资料中确实没有答案。先确认文档状态为“可用”，再选择正确设备并把型号、参数名和现象写清楚。
-
-### 为什么回答中混入了另一台设备？
-
-新建对话时选择正确设备或具体文档。文档范围会绑定到整个对话；切换设备时应新建对话，不要在原对话中继续问。
-
-### 为什么回答很慢？
-
-主要时间通常花在 Ollama 生成答案。CPU 运行模型会比较慢，使用兼容 GPU 可以明显提速。文档检索、问题长度、模型大小和同时提问人数也会影响耗时。
-
-### 为什么上传不了 DOC？
-
-系统支持真正的 Word 97–2003 `.doc` 文件。如果只是把其他文件改成 `.doc` 后缀，或者文件已经损坏，系统会拒绝。建议先用 Word 打开确认，再重新保存或转换成 DOCX。
-
-### 为什么网页地址重启后变了？
-
-服务器使用了 DHCP 动态地址。正式使用前应让 IT 设置固定 IP 或内部域名，然后同步更新 `.env` 中的 `RAG_PUBLIC_ORIGIN`。
-
-### 网页能打开，但提问显示超时怎么办？
-
-依次检查：
-
-1. `ollama list` 能否看到配置的模型。
-2. Ollama 服务是否正在运行。
-3. `.env` 中的模型名称和地址是否正确。
-4. RAG 服务器能否访问 Ollama 的 `11434` 端口。
-5. `docker compose logs -f rag` 中是否有模型连接错误。
-
-## 当前项目状态
-
-- 已实现多轮对话、设备/文档范围、混合检索、引用、反馈和三级权限。
-- 已支持 PDF、DOC、DOCX、XLSX、TXT、MD。
-- 2026-09-13 本地 `codex/refresh-project-docs` 功能分支已实现浏览器流式回答、设备版本范围匹配和角色权限展示；完整隔离 smoke **149/149 通过**，重启持久化通过。流式回答已部署到当前 Ubuntu VM，健康/就绪检查和合成文本模型流验证通过。GitHub `main` 的代码发布状态以仓库分支和 PR 为准。
-- 当前 Ubuntu 试点环境使用 BGE 检索和内网 Ollama `qwen3:1.7b`。
-- 正式推广前仍需完成固定地址、HTTPS、独立备份和真实问题质量评测。
-
-自动化测试只能证明功能流程正常，不能证明每个真实问题都能得到高质量答案。
-
-## 给开发和运维人员
-
-常用命令：
-
-```bash
-docker compose logs -f rag
-docker compose restart rag
-docker compose config --quiet
-```
-
-Windows 完整冒烟测试：
-
-```powershell
-.\tests\smoke_runner.ps1 -Python .\.venv\Scripts\python.exe -AppPort 18092 -MockPort 18101
-```
-
-更多资料：
-
-- [项目路线图](ROADMAP.md)
-- [Ubuntu 当前部署记录](DEPLOYMENT_HANDOFF.md)
-- [IT 部署与交付清单](docs/IT_handover.md)
-- [安全与上线检查](docs/SECURITY_AUDIT.md)
-- [企业微信 / 飞书工作台接入](docs/WORKBENCH_INTEGRATION.md)
-- [真实问题质量评测](eval/README.md)
-- 启动后访问 `/docs` 查看完整 API 文档
-
-## 安全提醒
-
-当前版本仍属于隔离局域网试点。存放敏感资料前，至少完成：
-
-- 使用 HTTPS，并设置 `RAG_COOKIE_SECURE=true`。
-- 使用强 root 口令和随机 `RAG_SECRET_KEY`。
-- 防火墙只允许指定内网访问。
-- 定期备份数据卷，并验证备份可以恢复。
-- 不把 `.env`、数据库、上传文档或模型服务端口暴露到公网。
-
-详细要求请阅读 [安全与上线检查](docs/SECURITY_AUDIT.md)。
+仓库不应包含密码、会话、内部文档、数据库、备份或私有评测集。源码、依赖和模型许可需分别核对，不要因为可下载就假定可以任意再分发。
