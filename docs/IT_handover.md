@@ -1,317 +1,93 @@
-# 局域网 RAG 试点系统 —— IT / 管理员交付清单
+# 开发与配置索引
 
-> 面向公司 IT、网络与系统管理员的中文交付文档。系统版本 v0.1.0；所有变量名、端口、路径与仓库代码一致（配置出处 `app/config.py`、`docker-compose.yml`、`Dockerfile`、`.env.example`）。
-> **定位提醒**：这是**隔离局域网内的试点系统**，明文 HTTP、初始弱口令，红线与整改项见 §8。正式发布前必须逐项过门禁。
-> 工程根目录由部署方决定（Ubuntu 推荐 `/opt/lan-rag-pilot`，下文以 `<rag>` 指代）。
-> 安全与可维护性复核清单见 `<rag>/docs/SECURITY_AUDIT.md`。
+[返回首页](../README.md)
 
----
+本页面向开发者和 IT。新手安装步骤拆分为 [Windows](WINDOWS.md)、[Ubuntu](UBUNTU.md)和[管理员离线包](OFFLINE_PACKAGE.md)；安全和运维分别见 [安全要求](SECURITY.md)、[运维](OPERATIONS.md)。旧版交接中实验地址、部门隔离和在线升级说明不再作为现行操作依据。
 
-## 1. 系统概要（速览）
+## 实现地图
 
-| 项 | 内容 |
+| 文件 | 职责 |
 |---|---|
-| 形态 | 单体 FastAPI 应用 + SQLite（WAL）+ BGE 语义/精确技术词混合检索 + 内网 Ollama `qwen3:1.7b` 生成；问题和最终选中的 Top-K 片段只发往内网模型主机 |
-| 技术栈 | Python 3.12（镜像 `python:3.12-slim`）、CPU 版 PyTorch、`sentence-transformers`、嵌入模型 `BAAI/bge-small-zh-v1.5`（512 维）、Argon2id、antiword、pypdf/python-docx |
-| 容器 | compose 项目名/容器名 **`rag-pilot`**，服务键 `rag`，镜像 `rag-pilot:local`，`restart: unless-stopped` |
-| 端口 | 宿主机 **8088** → 容器 8088（映射可改，见 §4 FAQ 类说明） |
-| 数据卷 | `rag-pilot_rag_data` → `/rag/data`（含 `rag.db` 与 `uploads/`）；`rag-pilot_rag_models` → `/rag/models`（模型缓存） |
-| 健康检查 | 存活 `/api/health`；Compose readiness 每 30s 请求 `http://127.0.0.1:8088/api/ready`（10s 超时、3 次重试、30s 启动宽限）；模型未就绪时 readiness 为 503 |
-| 支持文档格式 | PDF / DOC / DOCX / XLSX / TXT / MD；**无 OCR**；扫描件 PDF 明确报错拒收 |
-| 认证 | 账号密码（root/kb_admin/user 三级）+ HttpOnly Cookie 会话（`rag_session`，SameSite=Lax）；**无 SSO** |
-| 规模上限 | 试点约 20 人 / 1000 文档 / 5 万切片；之后须迁移 PostgreSQL+pgvector（见 §9） |
-| 界面状态 | 服务端页面 `/login /app /admin` 已提供登录、设备/文档范围、多轮问答、引用、反馈和管理功能 |
+| [config.py](../app/config.py)、[runtime.py](../app/runtime.py) | 环境默认值、数据库运行设置 |
+| [main.py](../app/main.py)、[db.py](../app/db.py) | 初始化、HTTP 中间件、探针、SQLite |
+| [security.py](../app/security.py)、[deps.py](../app/deps.py)、[auth.py](../app/routers/auth.py) | 哈希、会话、角色依赖、登录与密码 |
+| [parsing.py](../app/parsing.py)、[chunking.py](../app/chunking.py)、[ingest.py](../app/ingest.py) | 文档解析、规则切片、入库 |
+| [embeddings.py](../app/embeddings.py)、[index.py](../app/index.py) | CPU 嵌入、内存向量/关键词检索 |
+| [llm.py](../app/llm.py)、[query.py](../app/routers/query.py) | 兼容模型请求、对话、流式结果与引用 |
+| [admin.py](../app/routers/admin.py)、[前端脚本](../app/static/js/common.js) | 管理接口与共用表单 |
 
-## 2. 部署前置条件（□ 勾选核对）
+文档授权缺失必须视为企业隔离需求的阻塞项，不能因表中存在角色或历史部门字段就认为实现了 ACL。
 
-- □ **Docker Engine + Docker Compose** 已安装（`docker --version`、`docker compose version` 可执行）。
-- □ 宿主机端口 **8088** 空闲（`netstat -ano | findstr 8088`），或已按 §4.3 改用其它映射。
-- □ 磁盘：系统盘 ≥ 10GB（镜像含 CPU PyTorch，体积较大）；数据卷所在盘为长期存储预留空间，SQLite+上传文件按文档量增长（单文件上限 25MB）。
-- □ 内存：建议 **≥ 4GB 可用**（嵌入模型加载 + 5 万切片索引约 100MB + 应用）。
-- □ 网络策略按最小范围放行：
+## 配置规则与优先级
 
-| 目标 | 端口 | 用途 | 首次部署后可否收紧 |
-|---|---|---|---|
-| 内网 Ollama 主机 | 11434/TCP | RAG 服务调用本地 LLM | 只允许 RAG 服务器访问；当前实验地址为 `192.168.136.1` |
-| `huggingface.co` 或 `hf-mirror.com` | 443/TCP | 部署准备阶段下载嵌入模型 | 可收紧：完成 §4.4 预下载后断网也可运行 |
-| `download.pytorch.org` | 443/TCP | 仅 `docker compose build` 时安装 CPU PyTorch | 构建完成后可断 |
-| 局域网入站 | 8088/TCP | 员工浏览器访问 | 仅放行目标网段（如 172.16.0.0/16），勿暴露公网 |
+应用通过 os.environ 读取，**不会自动加载 .env**。Compose 的 env_file 和 Windows start_local.ps1 负责导入。独立 Python 脚本/直接 uvicorn 命令需要显式设置相同环境。
 
-运行阶段不需要访问公网模型服务；镜像、Python 依赖和模型权重应在受控准备阶段下载并核对，正式运行网络可断开公网出口。
+Windows 脚本不移除值两侧引号或行尾注释；Compose 则有自己的引号与变量插值语义。跨平台配置时必须复核，建议生成的密钥/初始口令采用足够长的 URL-safe 随机字符以减少解析歧义。不要打印完整生产环境或 Compose config。
 
-- □ 明确**服务不会暴露到公网**，也不在不可信无线网上直接开放（HTTP 明文）。
+数据库已有运行设置会覆盖 Top-K、每分钟请求数、并发数的初始环境值。修改 .env 后想改这三项，应在 root 管理页面核查；其余环境配置通常需进程重启/容器重建。
 
-## 3. 网络与地址规划
+## 核心变量
 
-### 3.1 DHCP 保留（必须使用实际固定 IP）
+| 变量 | 代码默认或作用 | 离线部署注意 |
+|---|---|---|
+| DEEPSEEK_BASE_URL | 缺失/空值回退公共 DeepSeek URL | 必须显式本机/内网兼容接口 /v1 |
+| DEEPSEEK_MODEL | 缺失回退公共服务模型名 | 填已离线导入的精确本地标签 |
+| DEEPSEEK_API_KEY | 默认空；模型调用要求非空 | 本文 Ollama 示例为 ollama，不是真正接口鉴权 |
+| DEEPSEEK_TIMEOUT_S | 60 秒 | 教程 180，需与代理超时协调 |
+| RAG_SECRET_KEY | 默认空，代码会用固定开发密钥 | 必须随机配置，缺失不自动阻止启动 |
+| RAG_ROOT_PASSWORD | 空库没有初始密码时启动失败 | 只初始化首个 root，不重置已有用户 |
+| RAG_COOKIE_SECURE | false | LAN HTTPS 必须 true |
+| RAG_SESSION_TTL_HOURS | 168 小时 | 教程 8，由组织审定 |
+| RAG_PUBLIC_ORIGIN | 空 | 对外地址信息，不是 ACL/防火墙 |
+| RAG_HOST / RAG_PORT | 0.0.0.0 / 8088 | Windows 脚本用它们；直接 uvicorn 参数另行决定监听 |
+| RAG_DATA_DIR | 项目 data | 部署时用明确持久路径 |
+| RAG_DB_PATH / RAG_UPLOAD_DIR | data 下 rag.db / uploads | 数据与原文共同备份 |
+| RAG_MODELS_DIR | 项目 models | 不等于 Ollama 模型目录 |
+| RAG_EMBED_MODEL | BAAI/bge-small-zh-v1.5 | 教程用完整本地模型目录 |
+| RAG_EMBED_BACKEND | st | mock 只用于测试，不可上线 |
+| RAG_CHUNK_MAX_TOKENS / RAG_CHUNK_OVERLAP_TOKENS | 400 / 60 | 改后旧文档不自动重切 |
+| RAG_TOP_K | 5 | 可被数据库运行设置覆盖 |
+| RAG_MIN_RELEVANCE_SCORE | 0.25 | 需按模型/语料校准，不是答案可信度 |
+| RAG_QUERIES_PER_MINUTE | 10 | 可被数据库运行设置覆盖 |
+| RAG_MAX_CONCURRENT_LLM | 3 | 教程初始设 1；数据库设置优先 |
+| RAG_LLM_MAX_TOKENS / RAG_LLM_TEMPERATURE | 1200 / 0.2 | 输出长度/随机性，不保证正确 |
+| RAG_MAX_UPLOAD_MB | 25 | 与代理上限一起审查 |
+| HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE | 依赖库识别 | 教程显式 1，不是通用外联阻断 |
+| OLLAMA_NO_CLOUD / OLLAMA_MODELS | Ollama 进程读取 | 在 Ollama 环境设置，RAG 的 .env 不会自动改变外部 Ollama |
 
-目标：宿主机 MAC 与 IP 绑定，避免重启换 IP 导致员工书签/企业微信链接失效。
+源码中的默认值不同于部署建议。`.env.example` 仍保留历史实验值，本次文档任务没有修改它；使用平台指南中的完整配置，替换占位值。
 
-1. 登录公司 DHCP 服务器（Windows DHCP 或网关设备）。
-2. 新建“保留”（下面的 `172.16.3.50` 只是实验计划值，实施前必须确认未被占用）：
-   - 保留名称：`RAG-PILOT-HOST`（示例）
-   - **IP 地址：172.16.3.50**
-   - **MAC 地址**：在宿主机执行 `getmac /v` 取以太网适配器 MAC 填入（用小写连字符格式，如 `aa-bb-cc-dd-ee-ff`）
-   - 作用域需在 172.16.3.x 网段内且不与其它保留冲突
-3. 客户端验证：续租后确认实际 IPv4 地址等于 DHCP 保留值。实验主机曾从 `172.16.3.50` 漂移到 `172.16.3.56`，说明仅在文档里填写固定地址并不生效。
-4. （可选）在网关/防火墙上为 172.16.3.50 建一条仅允许 8088 入站 + 出站白名单的规则。
+## 运行限制与 API
 
-### 3.2 内部 DNS 记录
+单 worker、单 RAG 副本。限流、并发闸门和向量索引依赖进程内状态，不能通过增加 uvicorn workers 安全扩容。多机/多进程需要额外架构改造。
 
-在内部 DNS（Windows DNS / 内网域名服务器）建一条 **A 记录**：
+本地启动后 /docs 提供 OpenAPI 文档，/api/health 用于存活，/api/ready 用于嵌入就绪；后者不验证 Ollama 全链路。生产应由 IT 控制管理/诊断入口范围，不把接口文档可见性当成授权。
 
-- 主机名：`rag`（示例）
-- 域名：公司内部域，如 `corp.example.local`
-- IP：`172.16.3.50`
+改 env 不等于改数据库。升级可能涉及模式变化，先读 [备份回退](OPERATIONS.md)，不能把旧程序直接接到未知新库。
 
-验证：内网机器 `nslookup rag.corp.example.local` 应解析到 172.16.3.50。员工与手机即可用 `http://rag.corp.example.local:8088` 访问，域名变更时只需改 DNS。
+## 开发与验证
 
-### 3.3 RAG_PUBLIC_ORIGIN 填写
+在独立源码副本、独立测试数据库和回环端口测试，**不能使用生产卷**。运行环境禁止公网；开发依赖同样由管理员 wheelhouse 导入。Node 用于前端静态回归，不是普通用户安装要求。
 
-在 `<rag>/.env` 中把对外访问地址写全（**协议+主机，无末尾斜杠**），例如：
-
-```dotenv
-RAG_PUBLIC_ORIGIN=http://rag.corp.example.local:8088
-# 无 DNS 时也可直接用 IP：
-# RAG_PUBLIC_ORIGIN=http://172.16.3.50:8088
-```
-
-用途（来自代码）：启动横幅打印、`GET /api/admin/overview` 返回 `model.public_origin` 供前端/监控核对。注意：**同源校验**（§7.1）以请求自身的 `Host` 与 `Origin/Referer` 比对为准，与 `RAG_PUBLIC_ORIGIN` 无关；因此入口地址必须与员工实际访问的地址一致（经反向代理时需保持 Host 透传）。
-
-## 4. 首次初始化与密码 / 密钥管理
-
-### 4.1 部署步骤（Docker）
-
-```bash
-git clone --branch main --single-branch https://github.com/ihyh/lan-rag-pilot.git /opt/lan-rag-pilot
-cd /opt/lan-rag-pilot
-cp .env.example .env                # 编辑但不要提交；文件权限建议 600
-# 至少填写：内网 Ollama 地址/模型、RAG_ROOT_PASSWORD、RAG_SECRET_KEY、RAG_PUBLIC_ORIGIN
-docker compose build
-docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 rag python scripts/predownload_models.py
-docker compose up -d --no-build
-docker compose ps                   # 期望 rag-pilot 处于 Up (healthy)
-docker compose logs -f rag
-```
-
-- 首次启动且库为空时，系统用 `RAG_ROOT_PASSWORD` 自动创建 **root** 账号并写审计 `system_init`（幂等；`app/main.py _bootstrap`）。**库空且未设置该变量 → 进程拒绝启动**（错误信息明确提示）。
-- 嵌入模型在后台线程加载，**不阻塞进程启动**：登录与存活检查可用，`model_ready:false` 期间问答/上传返回 503 `embed_not_ready`；日志出现“嵌入模型就绪：BAAI/bge-small-zh-v1.5（512 维）”后即可正常使用。正式 Compose 设置了离线标志，新服务器必须先执行上面的预下载步骤或恢复已有模型卷。
-- 服务器无法访问 Hugging Face 时按 §4.4 离线模型方案。
-
-### 4.2 初始口令与密钥（重要）
-
-- **`root` 初始密码只能是一次性部署强口令**：测试代码中的默认值不允许用于部署。正式试点开始前必须设置强口令（≥12 位混合字符），换法：
-  - root 登录后调用 `POST /api/me/password`（改自己），或
-  - 任一启用的 root 调 `PATCH /api/admin/users/{root_id}`（帮他人重置）。
-- **`RAG_SECRET_KEY`**（会话令牌 HMAC 密钥）生成并写入 `.env`：
-
-  ```powershell
-  python -c "import secrets;print(secrets.token_urlsafe(48))"
-  ```
-
-  不配置时系统回退内置开发密钥 `rag-pilot-dev-key-change-me` 并在启动日志告警（`security.py`）。**正式环境必须配置强密钥**。注意：中途更换密钥会使所有已登录会话失效（全员重新登录）。
-- 修改 `.env` 后需 `docker compose up -d` 重建容器生效；`RAG_ROOT_PASSWORD` 仅首次建库有效，之后改它不影响库内密码（详见 README §13 FAQ）。
-- 忘记 root 密码：系统**无自助找回**；可行做法（改库或重建）见 README §13 Q3，重建会清空全部数据。
-
-### 4.3 端口 / 卷 / 备份路径速查
-
-- 改宿主机端口：编辑 `docker-compose.yml` 的 `ports`（如 `"9088:8088"`，容器内固定 8088），`docker compose up -d` 生效。
-- 数据文件位置（容器内）：`/rag/data/rag.db`、`/rag/data/uploads/`；宿主机侧通过卷访问：`docker volume inspect rag-pilot_rag_data` 查看挂载点，或按 §7.2 用临时容器备份。
-
-### 4.4 离线模型部署（服务器无法访问 Hugging Face 时）
+已装好离线依赖的 Windows 开发副本，在项目根目录可执行：
 
 ```powershell
-# 1) 在有网机器（可与目标机同镜像或本机装好依赖）预下载：
-docker compose build
-docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 rag python scripts/predownload_models.py
-# 或：python scripts/predownload_models.py        （本机直跑）
-# 国内镜像加速：
-$env:HF_ENDPOINT = "https://hf-mirror.com"        # 再执行上面命令
-
-# 2) 将生成的 models 目录整体拷贝到目标服务器，如 C:\rag-models（须含 hub 子目录）
-
-# 3) 目标机新建 docker-compose.override.yml（compose 自动合并，不改原文件）：
-#    services:
-#      rag:
-#        volumes:
-#          - rag_data:/rag/data
-#          - C:/rag-models:/rag/models
-
-# 4) 重启并确认：
-docker compose up -d
-docker compose logs -f rag    # 期望：嵌入模型就绪：BAAI/bge-small-zh-v1.5（512 维）
+node tests/form_modal_check.js
+node tests/citations_check.js
+node tests/device_scope_check.js
+.\.venv\Scripts\python.exe tests/llm_request_check.py
+.\.venv\Scripts\python.exe tests/retrieval_quality_check.py
+.\.venv\Scripts\python.exe tests/conversation_scope_check.py
 ```
 
-> 模型缓存目录在容器内由环境变量固化：`HF_HOME`/`TRANSFORMERS_CACHE`/`HF_HUB_CACHE`/`SENTENCE_TRANSFORMERS_HOME` 均指向 `/rag/models`（`Dockerfile`）；`HF_ENDPOINT` 写入 `.env` 即可经 `env_file` 注入容器被 Hub 客户端读取。
-> 注意：`RAG_EMBED_BACKEND=mock` 是测试模式（伪向量、无语义），生产部署**不要**使用。
-
-## 5. 企业微信 / 飞书“工作台应用链接”
-
-**共同前提**：两个入口都只是把**同一个内部 HTTP(S) URL** 挂在应用/工作台上，由客户端内置浏览器打开；**无机器人、无 SSO、无回调**，也不走公网——员工终端必须能通过公司 Wi-Fi 或 VPN 访问最终确定的固定地址。
-
-- 统一入口 URL（二选一，全司一致）：
-  - `http://rag.corp.example.local:8088`（有 DNS，推荐），或
-  - `http://<固定IP>:8088`（无 DNS 时，仅限隔离试点网络）
-- **企业微信**：管理后台 → 应用管理 → 创建自建应用 → 应用主页/可信域名处填上述 URL → 可见范围设为试点团队 → 员工在“工作台”点击打开（企业微信移动端内嵌浏览器直接访问内网地址；若走“企业微信代理/中转”需确认可回源内网，否则失效）。
-- **飞书**：开发者后台（或用管理员身份）→ 企业自建应用 → 添加“网页应用” → 网页链接填上述 URL → 可用范围设为试点团队 → 在工作台打开。
-- 配置后自测：分别用**企业微信与飞书客户端**打开，确认能完成登录、问答和 root 管理操作且无需公网。若两者入口要求 HTTPS，请先完成 §8 的 HTTPS 改造再配置，避免在明文 HTTP 上做入口推广。
-
-## 6. 手机访问与 PWA 说明（如实）
-
-- 手机（iOS/Android）浏览器可访问 `http://<固定IP>:8088` 或内网域名，**前提是手机连接公司 Wi-Fi/VPN**（流量走内网，4G/5G 公网无法到达）。
-- 页面含移动端 viewport、Web App Manifest 和 Service Worker；Service Worker 只在 HTTPS 下注册，且不会缓存 `/api/`：
-  - HTTP 阶段：只能作为**普通网页**使用；浏览器“添加到主屏幕/桌面快捷方式”仅是书签式入口，无离线能力、不满足完整安装条件。
-  - HTTPS 阶段：浏览器可注册 Service Worker 并安装为 PWA；离线缓存仅覆盖页面壳和静态资源，问答、登录和管理接口仍必须联网。
-- 当前不提供应用商店安装包或 Windows EXE；企业微信、飞书仍采用同一网页入口。
-
-## 7. 日常运维清单
-
-### 7.1 查看状态与日志
+完整 mock smoke 会启动临时实例并写测试数据，使用新终端，确认两个端口空闲：
 
 ```powershell
-docker compose ps                       # rag-pilot 应 Up (healthy)
-docker compose logs -f rag              # 跟踪日志（容器名 rag-pilot，服务键 rag）
-docker compose logs --tail=200 rag      # 最近 200 行
+powershell -NoProfile -File .\tests\smoke_runner.ps1 -Python .\.venv\Scripts\python.exe -AppPort 18092 -MockPort 18101
 ```
 
-日志中值得关注：启动横幅（版本/对外地址/嵌入模型/模型接口）、`嵌入模型就绪…`、`未设置 RAG_SECRET_KEY…` 告警、每次问答的审计（存库而非仅日志）。
+脚本中的弱测试凭据/密钥仅用于隔离临时库，不能复制到部署配置。mock 通过验证流程，不证明真实嵌入、Ollama 质量或服务器容量。真实验证见 [检索检查](RETRIEVAL_VALIDATION.md)、[人工评测](../eval/README.md)。
 
-### 7.2 备份与恢复（data 卷）
+## 文档维护规则
 
-备份对象：**`rag-pilot_rag_data` 卷**（含 SQLite `rag.db`、上传文件 `uploads/`）。模型卷可重建，不必备份。
-
-推荐使用工程内脚本生成归档和 SHA-256 校验文件；脚本不会停止服务，也不会删除或覆盖生产卷：
-
-```bash
-cd /home/ihyh/rag-pilot
-bash scripts/backup_data.sh /home/ihyh/rag-pilot/backups
-```
-
-安装每日 02:30 自动任务（可把第二个参数改成其它 `HH:MM` 时间）：
-
-```bash
-bash scripts/install_backup_cron.sh /home/ihyh/rag-pilot/backups 02:30
-crontab -l | grep 'rag-pilot daily backup'
-```
-
-任务日志写入 `backups/cron.log`。请按公司策略把 `backups/` 复制到独立磁盘或受控存储；本机备份不能替代异地备份。
-
-### 7.2.1 反馈与部门/知识库权限
-
-- 问答页每条本人回答下方可点“有帮助 / 没帮助”；root 在管理页“问答与审计 → 用户反馈”查看。
-- 用户反馈面板提供 CSV 导出，可直接整理为后续评测集候选；导出接口仍受 root 会话保护。
-- root 可新建部门、管理用户和全部知识库；`kb_admin` 只能新建和维护本人所属部门内的知识库与文档。
-- 旧数据启动时会自动归入“默认部门 / 默认知识库”；root 上传未指定知识库时进入默认知识库，`kb_admin` 上传必须选择所属知识库。
-- user 与 kb_admin 只会检索自己所属部门下知识库的 ready 文档；root 不受范围限制。
-
-恢复演练只解包到临时目录，并执行 SQLite 完整性检查，不会改动现有 Docker 卷：
-
-```bash
-bash scripts/restore_check.sh /home/ihyh/rag-pilot/backups/rag_data_YYYYMMDDTHHMMSSZ.tgz
-```
-
-看到 `restore check ok` 后，才说明该归档可用于后续人工恢复。建议用 cron 或公司备份系统每日执行备份，并把 `backups/` 复制到另一块磁盘或受控存储。
-
-```powershell
-# 在线热备 SQLite（WAL 模式下安全），先做一致性副本：
-docker compose exec rag python -c "import sqlite3; s=sqlite3.connect('/rag/data/rag.db'); d=sqlite3.connect('/rag/data/backup-rag.db'); s.backup(d); d.close(); s.close(); print('backup ok')"
-
-# 把备份与整卷导出到宿主机（示例输出到 D:\backups\rag）：
-docker run --rm -v rag-pilot_rag_data:/data -v D:\backups\rag:/backup alpine tar czf /backup/rag_data.tgz -C /data .
-```
-
-恢复（整卷回滚）示例：停服 → 把旧卷导出后重建卷并灌回 → 起服：
-
-```powershell
-docker compose down
-docker volume rm rag-pilot_rag_data
-docker volume create rag-pilot_rag_data
-docker run --rm -v rag-pilot_rag_data:/data -v D:\backups\rag:/backup alpine tar xzf /backup/rag_data.tgz -C /data
-docker compose up -d
-```
-
-> 建议备份周期与公司数据策略一致（至少每日一次在线 `sqlite3.backup` + 定期整卷导出异地存放）；恢复演练至少做一次。**任何重大升级前先备份**。
-
-### 7.3 健康检查
-
-```powershell
-curl.exe http://127.0.0.1:8088/api/health
-# 期望 {"status":"ok","version":"0.1.0","model_ready":true,...}
-curl.exe http://127.0.0.1:8088/api/ready
-# 期望 HTTP 200 且 {"status":"ready"}；模型加载失败时为 HTTP 503
-```
-
-- `status:ok` + `model_ready:true` = 进程存活且嵌入模型正常；`/api/ready` HTTP 200 才表示可接收问答。
-- `model_ready:false` = 模型仍加载/已失败（看日志；离线部署核对 §4.4）。
-- 可纳入公司监控（如 Zabbix/自有探针）每 1–5 分钟探测一次。
-
-### 7.3.1 HTTPS 反向代理
-
-Ubuntu 上的 Nginx 配置模板见 `deploy/nginx/rag.conf.example`，Compose 绑定模板见 `deploy/docker-compose.https.override.yml.example`。正式接入步骤：申请公司内网证书 → 修改 `server_name` 和证书路径 → 复制 Compose 绑定模板让端口只监听 `127.0.0.1:8088` → Nginx 对内提供 443 → `.env` 设置 `RAG_COOKIE_SECURE=true` 和真实 `RAG_PUBLIC_ORIGIN` → `nginx -t && systemctl reload nginx`。证书、DNS 和防火墙仍需公司环境配置，模板不会自动执行这些操作。
-
-### 7.4 升级步骤（代码更新）
-
-```powershell
-cd C:\Users\23960\Desktop\agent\rag
-# 1) 备份（§7.2）
-# 2) 拉取/更新代码（git pull 等）
-# 3) 重新构建并滚动应用：
-docker compose build
-docker compose up -d          # restart: unless-stopped + 卷保留，容器重建、数据不丢
-docker compose ps
-docker compose logs -f rag    # 确认启动横幅与模型就绪
-# 4) 冒烟回归：见 README §12（或 <rag>\tests\api_smoke.py 说明）
-```
-
-- 当前为 v0.1.0 且**无数据库迁移框架**（建表 `CREATE TABLE IF NOT EXISTS`），若未来升级引入表结构变更，必须先备份并按发布说明手工迁移。
-- 健康检查由 compose 自动执行（§1），无需人工介入。
-
-## 8. 安全与合规门禁清单（试点前提与红线）
-
-> 本系统按“隔离局域网试点”设计；**以下任一项未满足前，禁止放入敏感/生产资料或扩大使用团队**：
-
-**试点启动前提**
-- □ 仅限隔离局域网/测试网段运行，物理/逻辑上与生产网与公网隔离。
-- □ 参与人员为内部指定试点团队，账号由 root 统一创建、按人实名（禁止共用账号）。
-- □ 已告知参与者：问答内容（问题/答案/引用）会**以明文 HTTP 传输**并记录在案，不得提问敏感数据。
-
-**进入正式使用前必须完成**
-- □ **HTTPS**：前置反向代理/网关终结 TLS（如内网 CA 或公司证书），并把 `RAG_COOKIE_SECURE=true` 写入 `.env`；入口地址与 `RAG_PUBLIC_ORIGIN` 一致。
-- □ **更换初始弱口令**（root 及所有账号；不得复用测试代码中的默认值）；启用最小可用账号集，长期不用的账号停用（`is_active=false`）。
-- □ **配置强 `RAG_SECRET_KEY`**（§4.2），确认启动日志不再出现开发密钥告警。
-- □ 复核网络白名单（§2）：RAG 只能访问指定内网 Ollama 地址，服务器不保存有效公网模型 Key，运行网络无多余公网外联。
-- □ 端口 8088 仅对需要访问的网段开放。
-
-**日常管理**
-- □ 人员变更即日处理：离职/转岗账号停用（`PATCH /api/admin/users/{id}`，`is_active=false`）；root 账号数保持最少（系统强制至少保留 1 个启用 root，且不能停用/降级自己）。
-- □ 定期（如每周）查看审计：root 登录后 `GET /api/admin/audit`（或管理端页面）核对异常登录（`login_failed` 集中出现=可能撞库）、`doc_upload`、`llm_query`、`settings_update`；异常行为有 IP 可追（`app/routers/*` 均记录客户端 IP 到 `audit_logs.ip`）。
-- □ 数据按公司分类分级管理：本系统不提供敏感级加密存储（SQLite 落盘明文、无字段加密），敏感资料应等 §8 门禁全部通过后再考虑。
-- □ 定期备份（§7.2）并至少演练一次恢复。
-
-**已知限制（勿超出使用）**：仅 PDF/DOC/DOCX/XLSX/TXT/MD、无 OCR；无 SSO/多因素；HTTP 试点级防线（Cookie + 同源校验）；单进程（限流/并发闸门/内存索引在进程内），不得多副本横向扩展。
-
-## 9. 容量与升级路线
-
-- **试点容量上限**（经验目标）：约 **20 人 / 1000 文档 / 5 万切片**。内存向量索引 5 万切片（512 维 float32）约 100MB（`app/index.py` 注释）；SQLite 单写进程在批量并发上传时排队（入库全程 `ingest_lock` 串行）。
-- **触发升级的信号**：切片数接近 5 万 / 并发问答排队明显 / 文档管理批量操作变慢 / 需要高可用。
-- **升级路线（到 PostgreSQL + pgvector）**：
-  1. 向量与 Top-K 检索迁至 PostgreSQL + pgvector（替换内存 numpy 索引 `app/index.py`）；
-  2. **多进程改造**：进程内滑动窗口限流与并发闸门（`app/ratelimit.py`）换 Redis 等共享组件；`ingest_lock` 换分布式锁；
-  3. 会话（现落 SQLite `sessions`）可平滑迁入同一 PostgreSQL；
-  4. 前端页面补齐、HTTPS/SSO 视需要纳入。
-- 迁移前备份（§7.2）并按发布说明执行；本仓库未含迁移工具。
-
-## 10. 交接核对表（汇总）
-
-- □ §2 前置条件全部满足（Docker、8088、磁盘/内存、出网策略）
-- □ §3 DHCP 保留的实际固定 IP 已生效；DNS A 记录可解析；`.env` 已填最终 `RAG_PUBLIC_ORIGIN`
-- □ §4 `.env` 中 Ollama 内网地址、`RAG_ROOT_PASSWORD`、`RAG_SECRET_KEY` 就位；不存在有效公网模型 Key；`docker compose up -d` 后 healthy
-- □ 无法访问 HF 时已完成 §4.4 离线模型挂载并验证日志
-- □ §8 门禁：是否已 HTTPS / 已更换弱口令 / 已配强密钥 / 出网白名单核对（未完成则系统仅限隔离试点用途并书面知会）
-- □ §7 备份任务已配置并演练过一次恢复
-- □ 企业微信 / 飞书入口按 §5 配置并由试点用户实际点击验证
-- □ 交付人签字：____________　接收人（IT）签字：____________　日期：____________
-
----
-
-> 开发者向：完整环境变量表、API 一览、权限模型、表结构、FAQ 见仓库根目录 `README.md`。
+新增功能要同时更新现行指南与限制，不复制历史机器 IP、密码或未经复验的“已上线”结论。静态审核、模拟测试、目标冷安装和真实业务验收分别记录。部署记录归档，不替代当前发布清单。
