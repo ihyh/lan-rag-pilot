@@ -451,7 +451,8 @@ class Smoke:
         check(n == 0, "新用户无需部门分配")
         r = self.c.post("/api/query", json={"question": "出差住宿上限是多少？"})
         check(r.status_code == 200 and r.json().get("sources"), "无部门用户可检索统一文档库")
-        check(all(s.get("excerpt") for s in r.json()["sources"]), "普通用户仍可查看引用片段")
+        detail = self.c.get(f"/api/chats/{r.json()['chat_id']}")
+        check(detail.status_code == 200 and all(s.get("excerpt") for s in detail.json()["sources"]), "普通用户仍可查看引用片段")
         r = self.c.get(f"/api/documents/{self.txt_doc['id']}/file")
         check(r.status_code == 403, "普通用户不能直接打开原属其它部门的完整原文")
 
