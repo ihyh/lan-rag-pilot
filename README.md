@@ -18,6 +18,10 @@
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
+py install 3.12
+py -3.12 --version
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ollama pull qwen3:1.7b
