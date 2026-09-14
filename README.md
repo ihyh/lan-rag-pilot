@@ -40,6 +40,14 @@ HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
 
+模型准备说明：上面最后一条 BGE 命令需要访问 Hugging Face。若出现 `WinError 10060` 或连接超时，请按 `Ctrl+C` 停止重试；这不是 Python 依赖错误。可在能访问 Hugging Face 的准备机执行该命令，再将 `models\bge-small-zh-v1.5` 整个目录复制到当前电脑的 `C:\rag\models\bge-small-zh-v1.5`。目标机只使用本地模型时，确认 `.env` 中的 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，并运行以下命令验证：
+
+```powershell
+.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
+```
+
+这两个离线变量只用于启动服务；联网准备模型时不要将它们设为 `1`。
+
 确认 Ollama 已启动，在 `C:\rag` 执行：
 
 ```powershell

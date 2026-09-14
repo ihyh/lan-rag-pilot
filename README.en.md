@@ -40,6 +40,14 @@ HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
 
+Model preparation note: the final BGE command above must reach Hugging Face. If it reports `WinError 10060` or a connection timeout, press `Ctrl+C`; this is a network failure, not a Python dependency failure. On a connected preparation machine, run that command and copy the entire `models\bge-small-zh-v1.5` directory to `C:\rag\models\bge-small-zh-v1.5` on the target machine. For an offline target, keep `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` in `.env`, then verify the local model with:
+
+```powershell
+.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
+```
+
+These offline variables apply when starting the service; do not set them to `1` while downloading the model.
+
 With Ollama running, execute this from `C:\rag`:
 
 ```powershell
