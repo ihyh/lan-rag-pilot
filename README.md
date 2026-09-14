@@ -13,17 +13,14 @@
 
 ## Windows：个人知识库
 
-准备 Windows、Python 3.12、PowerShell 和 [Ollama](https://ollama.com/download/windows)。在 PowerShell 执行，IDE 打开整个 `C:\rag` 文件夹：
+准备 Windows、Python 3.12、PowerShell 和 [Ollama](https://ollama.com/download/windows)。如果 `py -3.12 --version` 提示没有匹配的运行时，请先从 [python.org](https://www.python.org/downloads/windows/) 安装 Python 3.12，重新打开 PowerShell 后再继续。在 PowerShell 执行，IDE 打开整个 `C:\rag` 文件夹：
 
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
-py install 3.12
 py -3.12 --version
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
+.\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 ollama pull qwen3:1.7b
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
 ```
