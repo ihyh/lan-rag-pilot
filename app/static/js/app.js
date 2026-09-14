@@ -148,16 +148,17 @@ function deviceDocumentIds(documents, device) {
     }
     var cards = items.map(function (group) {
       var s = group.source;
+      var meta = [h('span', { class: 's-loc' }, [sourceLoc(s)])];
+      if (S.me && (S.me.role === 'root' || S.me.role === 'kb_admin')) {
+        meta.push(h('a', { class: 's-open', href: sourceUrl(s), target: '_blank', rel: 'noopener noreferrer' }, ['打开原文']));
+      }
       return h('div', { class: 'source-card' }, [
         h('div', { class: 'doc-ic', html: icon('doc') }),
         h('div', { class: 's-main' }, [
           h('div', { class: 's-top' }, [
             h('span', { class: 's-name', title: s.filename || '' }, [group.numbers.map(function (n) { return '[' + n + ']'; }).join('') + ' ' + (s.filename || '未知文档')])
           ]),
-          h('div', { class: 's-meta' }, [
-            h('span', { class: 's-loc' }, [sourceLoc(s)]),
-            h('a', { class: 's-open', href: sourceUrl(s), target: '_blank', rel: 'noopener noreferrer' }, ['打开原文'])
-          ]),
+          h('div', { class: 's-meta' }, meta),
           h('div', { class: 's-excerpt' }, [group.excerpts.join('\n\n') || '（未保存原文摘录）'])
         ])
       ]);

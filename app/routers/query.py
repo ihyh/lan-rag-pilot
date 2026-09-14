@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from .. import audit, runtime as rt
 from ..config import settings
 from ..db import connect, get_db, now_iso
-from ..deps import require_user
+from ..deps import require_kb_admin, require_user
 from ..embeddings import EmbeddingUnavailable, embedding_service
 from ..gate import llm_gate
 from ..index import vector_index
@@ -140,7 +140,7 @@ def open_document(
     document_id: int,
     request: Request,
     db: sqlite3.Connection = Depends(get_db),
-    user=Depends(require_user),
+    user=Depends(require_kb_admin),
 ):
     row = db.execute(
         "SELECT id, filename, stored_name, content_type FROM documents "
