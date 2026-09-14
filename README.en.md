@@ -13,13 +13,14 @@ Both paths follow “import source → create a virtual environment → prepare 
 
 ## Windows: personal knowledge base
 
-Prepare Windows, Python 3.12, PowerShell, and [Ollama](https://ollama.com/download/windows). Run these commands in PowerShell and open the entire `C:\rag` folder in your IDE:
+Prepare Windows, Python 3.12, PowerShell, and [Ollama](https://ollama.com/download/windows). If `py -3.12 --version` reports that no matching runtime is installed, install Python 3.12 from [python.org](https://www.python.org/downloads/windows/), reopen PowerShell, and continue. Run these commands in PowerShell and open the entire `C:\rag` folder in your IDE:
 
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+py -3.12 --version
+if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
+.\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 ollama pull qwen3:1.7b
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
 ```
