@@ -24,10 +24,28 @@ if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
 .\.venv\Scripts\python.exe -m pip check
 ollama pull qwen3:1.7b
-.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
 ```
 
 Large dependencies such as PyTorch and SciPy can spend several minutes installing without new output. Keep waiting while Python still shows CPU or disk activity in Task Manager. If pip reports `Read timed out`, rerun the same command with `--timeout 120 --retries 10`; pip reuses its download cache.
+
+Before downloading BGE, choose the network setup that applies to this computer. Do not copy one computer's proxy port to another; these variables affect only the current PowerShell session:
+
+```powershell
+# This computer can reach Hugging Face directly or does not use a proxy
+Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY -ErrorAction SilentlyContinue
+
+# When a proxy is required, enter the complete proxy URL available to this computer; use the LAN IP if the proxy runs on another computer
+$ProxyUrl=Read-Host 'Proxy URL (format: http://address:port)'
+$env:HTTP_PROXY=$ProxyUrl
+$env:HTTPS_PROXY=$ProxyUrl
+$env:NO_PROXY='127.0.0.1,localhost'
+```
+
+Run only the applicable setup above, then download and save a self-contained model directory:
+
+```powershell
+.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
+```
 
 Set the IDE interpreter to `C:\rag\.venv\Scripts\python.exe`. Create `C:\rag\.env` with the following values, replacing both `REPLACE` placeholders. Run `py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"` twice for independent random values. Do not reuse the old model URL in `.env.example`.
 
@@ -45,7 +63,7 @@ HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
 
-Model preparation note: the final BGE command above must reach Hugging Face. If it reports `WinError 10060` or a connection timeout, press `Ctrl+C`; this is a network failure, not a Python dependency failure. On a connected preparation machine, run that command and copy the entire `models\bge-small-zh-v1.5` directory to `C:\rag\models\bge-small-zh-v1.5` on the target machine. For an offline target, keep `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` in `.env`, then verify the local model with:
+Model preparation note: the BGE download command must reach Hugging Face. If it reports `WinError 10060` or a connection timeout, press `Ctrl+C`; this is a network failure, not a Python dependency failure. If the target has neither direct access nor a usable proxy, run that command on a connected preparation machine and copy the entire `models\bge-small-zh-v1.5` directory to `C:\rag\models\bge-small-zh-v1.5` on the target. For an offline target, keep `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` in `.env`, then verify the local model with:
 
 ```powershell
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"

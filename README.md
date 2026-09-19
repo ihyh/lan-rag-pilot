@@ -24,10 +24,28 @@ if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
 .\.venv\Scripts\python.exe -m pip check
 ollama pull qwen3:1.7b
-.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
 ```
 
 PyTorch、SciPy 等依赖较大，安装时可能数分钟没有新输出；只要任务管理器中 Python 仍有 CPU 或磁盘活动就继续等待。若出现 `Read timed out`，重新执行同一条带 `--timeout 120 --retries 10` 的安装命令，pip 会复用已下载的缓存。
+
+下载 BGE 前，根据当前电脑选择一种网络方式。不要把某台电脑的代理端口复制给其他电脑；下面的变量只对当前 PowerShell 生效：
+
+```powershell
+# 能直接访问 Hugging Face，或这台电脑不使用代理
+Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY -ErrorAction SilentlyContinue
+
+# 需要代理时，输入这台电脑实际可用的完整代理 URL；如果代理在另一台电脑，使用其局域网 IP
+$ProxyUrl=Read-Host '代理 URL（格式：http://地址:端口）'
+$env:HTTP_PROXY=$ProxyUrl
+$env:HTTPS_PROXY=$ProxyUrl
+$env:NO_PROXY='127.0.0.1,localhost'
+```
+
+两种方式只执行对应的一段设置，然后下载并保存自包含模型目录：
+
+```powershell
+.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
+```
 
 将 IDE 解释器设为 `C:\rag\.venv\Scripts\python.exe`。在 `C:\rag\.env` 新建以下配置，分别替换两个 `REPLACE`；可运行 `py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"` 两次生成独立的随机值。不要直接使用 `.env.example` 中的旧模型地址。
 
@@ -45,7 +63,7 @@ HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
 
-模型准备说明：上面最后一条 BGE 命令需要访问 Hugging Face。若出现 `WinError 10060` 或连接超时，请按 `Ctrl+C` 停止重试；这不是 Python 依赖错误。可在能访问 Hugging Face 的准备机执行该命令，再将 `models\bge-small-zh-v1.5` 整个目录复制到当前电脑的 `C:\rag\models\bge-small-zh-v1.5`。目标机只使用本地模型时，确认 `.env` 中的 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，并运行以下命令验证：
+模型准备说明：BGE 下载命令需要访问 Hugging Face。若出现 `WinError 10060` 或连接超时，请按 `Ctrl+C` 停止重试；这不是 Python 依赖错误。如果目标机既不能直连，也没有可用代理，可在能访问 Hugging Face 的准备机执行该命令，再将 `models\bge-small-zh-v1.5` 整个目录复制到目标机的 `C:\rag\models\bge-small-zh-v1.5`。目标机只使用本地模型时，确认 `.env` 中的 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，并运行以下命令验证：
 
 ```powershell
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
