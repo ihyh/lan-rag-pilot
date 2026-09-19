@@ -24,40 +24,12 @@ if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
 .\.venv\Scripts\python.exe -m pip check
 ollama pull qwen3:1.7b
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_bge.ps1
 ```
 
 PyTorch、SciPy 等依赖较大，安装时可能数分钟没有新输出；只要任务管理器中 Python 仍有 CPU 或磁盘活动就继续等待。若出现 `Read timed out`，重新执行同一条带 `--timeout 120 --retries 10` 的安装命令，pip 会复用已下载的缓存。
 
-推荐从本项目的 [BGE 离线模型 Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 下载；只需能访问 GitHub，不需要访问 Hugging Face，也不需要 Hugging Face 代理：
-
-```powershell
-$BgeZip="$env:TEMP\bge-small-zh-v1.5-7999e1d.zip"
-Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ihyh/lan-rag-pilot/releases/download/bge-small-zh-v1.5-7999e1d/bge-small-zh-v1.5-7999e1d.zip' -OutFile $BgeZip
-$ExpectedSha256='0edacc059c0d792466da7b83569c0406aef88b334f6b297d11f5ee5bbf4499c2'
-if ((Get-FileHash -Algorithm SHA256 -LiteralPath $BgeZip).Hash.ToLowerInvariant() -ne $ExpectedSha256) { throw 'BGE 模型包校验失败，请删除后重新下载' }
-New-Item -ItemType Directory -Path .\models -Force | Out-Null
-Expand-Archive -LiteralPath $BgeZip -DestinationPath .\models -Force
-.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
-```
-
-成功应输出 `512`。压缩包包含上游版本信息和 MIT 许可证。如果 GitHub Release 无法访问，也可以直接从 Hugging Face 准备模型；根据当前电脑选择一种网络方式，不要把某台电脑的代理端口复制给其他电脑：
-
-```powershell
-# 能直接访问 Hugging Face，或这台电脑不使用代理
-Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY -ErrorAction SilentlyContinue
-
-# 需要代理时，输入这台电脑实际可用的完整代理 URL；如果代理在另一台电脑，使用其局域网 IP
-$ProxyUrl=Read-Host '代理 URL（格式：http://地址:端口）'
-$env:HTTP_PROXY=$ProxyUrl
-$env:HTTPS_PROXY=$ProxyUrl
-$env:NO_PROXY='127.0.0.1,localhost'
-```
-
-两种方式只执行对应的一段设置，然后下载并保存自包含模型目录：
-
-```powershell
-.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
-```
+`install_bge.ps1` 会从 [GitHub Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 自动下载、校验并解压模型，不需要 Hugging Face 代理；重复执行时，已验证的模型不会重新下载。若目标机无法访问 GitHub，可在其他电脑运行同一脚本，再复制整个 `models\bge-small-zh-v1.5` 目录。
 
 将 IDE 解释器设为 `C:\rag\.venv\Scripts\python.exe`。在 `C:\rag\.env` 新建以下配置，分别替换两个 `REPLACE`；可运行 `py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"` 两次生成独立的随机值。不要直接使用 `.env.example` 中的旧模型地址。
 
