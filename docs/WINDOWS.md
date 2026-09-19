@@ -83,6 +83,7 @@ RAG_MODELS_DIR=C:/rag/models
 RAG_EMBED_MODEL=C:/rag/models/bge-small-zh-v1.5
 RAG_EMBED_BACKEND=st
 RAG_MAX_CONCURRENT_LLM=1
+NO_PROXY=127.0.0.1,localhost
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
@@ -99,10 +100,10 @@ C:\rag\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(
 
 ```powershell
 Set-Location C:\rag
-powershell -NoProfile -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
 ```
 
-保持窗口打开。组织策略若禁止脚本，请 IT 审核签名/允许方式，不要全局关闭执行策略。脚本默认 Python 路径是历史测试路径，正常安装必须指定 `-Python`。
+保持窗口打开。这里的 Bypass 只作用于本次子进程，不修改全局执行策略；组织策略若仍禁止脚本，请 IT 审核签名/允许方式。脚本默认 Python 路径是历史测试路径，正常安装必须指定 `-Python`。
 
 另开 PowerShell：
 

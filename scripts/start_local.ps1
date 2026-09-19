@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Python = "$env:TEMP\rag-pilot-test-venv\Scripts\python.exe"
 )
 

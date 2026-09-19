@@ -13,17 +13,21 @@
 
 ## Windows：个人知识库
 
-准备 Windows、Python 3.12、PowerShell 和 [Ollama](https://ollama.com/download/windows)。如果 `py -3.12 --version` 提示没有匹配的运行时，请先从 [python.org](https://www.python.org/downloads/windows/) 安装 Python 3.12，重新打开 PowerShell 后再继续。在 PowerShell 执行，IDE 打开整个 `C:\rag` 文件夹：
+准备 Windows、[Git for Windows](https://git-scm.com/download/win)、Python 3.12、PowerShell 和 [Ollama](https://ollama.com/download/windows)。如果 `git --version` 或 `py -3.12 --version` 失败，先安装对应程序并重新打开 PowerShell。在 PowerShell 执行，IDE 打开整个 `C:\rag` 文件夹：
 
 ```powershell
+git --version
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
 py -3.12 --version
 if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
-.\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
+.\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
+.\.venv\Scripts\python.exe -m pip check
 ollama pull qwen3:1.7b
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
 ```
+
+PyTorch、SciPy 等依赖较大，安装时可能数分钟没有新输出；只要任务管理器中 Python 仍有 CPU 或磁盘活动就继续等待。若出现 `Read timed out`，重新执行同一条带 `--timeout 120 --retries 10` 的安装命令，pip 会复用已下载的缓存。
 
 将 IDE 解释器设为 `C:\rag\.venv\Scripts\python.exe`。在 `C:\rag\.env` 新建以下配置，分别替换两个 `REPLACE`；可运行 `py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"` 两次生成独立的随机值。不要直接使用 `.env.example` 中的旧模型地址。
 
@@ -36,6 +40,7 @@ RAG_SECRET_KEY=REPLACE_WITH_RANDOM_SECRET
 RAG_ROOT_PASSWORD=REPLACE_WITH_STRONG_INITIAL_PASSWORD
 RAG_HOST=127.0.0.1
 RAG_PUBLIC_ORIGIN=http://127.0.0.1:8088
+NO_PROXY=127.0.0.1,localhost
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
@@ -48,11 +53,17 @@ TRANSFORMERS_OFFLINE=1
 
 这两个离线变量只用于启动服务；联网准备模型时不要将它们设为 `1`。
 
-确认 Ollama 已启动，在 `C:\rag` 执行：
+从开始菜单启动 Ollama，然后在新 PowerShell 中确认本机接口和模型都可用。若电脑设置过 `HTTP_PROXY`，先设置当前进程的 `NO_PROXY`，避免本机请求被发到代理：
 
 ```powershell
-powershell -NoProfile -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
+$env:NO_PROXY='127.0.0.1,localhost'
+Invoke-RestMethod http://127.0.0.1:11434/api/tags
+ollama list
+Set-Location C:\rag
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
 ```
+
+`-ExecutionPolicy Bypass` 只作用于这次子进程，不修改系统或用户的全局执行策略。若组织策略仍阻止脚本，应由管理员审核并允许该脚本。
 
 打开 [http://127.0.0.1:8088](http://127.0.0.1:8088)。全新数据库用 `root` 和上述初始密码登录，上传测试文档，按设备提问并展开“查看引用来源”；停止时在启动窗口按 Ctrl+C。
 

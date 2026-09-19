@@ -13,17 +13,21 @@ Both paths follow “import source → create a virtual environment → prepare 
 
 ## Windows: personal knowledge base
 
-Prepare Windows, Python 3.12, PowerShell, and [Ollama](https://ollama.com/download/windows). If `py -3.12 --version` reports that no matching runtime is installed, install Python 3.12 from [python.org](https://www.python.org/downloads/windows/), reopen PowerShell, and continue. Run these commands in PowerShell and open the entire `C:\rag` folder in your IDE:
+Prepare Windows, [Git for Windows](https://git-scm.com/download/win), Python 3.12, PowerShell, and [Ollama](https://ollama.com/download/windows). If `git --version` or `py -3.12 --version` fails, install the missing program and reopen PowerShell. Run these commands in PowerShell and open the entire `C:\rag` folder in your IDE:
 
 ```powershell
+git --version
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
 py -3.12 --version
 if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
-.\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
+.\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
+.\.venv\Scripts\python.exe -m pip check
 ollama pull qwen3:1.7b
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
 ```
+
+Large dependencies such as PyTorch and SciPy can spend several minutes installing without new output. Keep waiting while Python still shows CPU or disk activity in Task Manager. If pip reports `Read timed out`, rerun the same command with `--timeout 120 --retries 10`; pip reuses its download cache.
 
 Set the IDE interpreter to `C:\rag\.venv\Scripts\python.exe`. Create `C:\rag\.env` with the following values, replacing both `REPLACE` placeholders. Run `py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"` twice for independent random values. Do not reuse the old model URL in `.env.example`.
 
@@ -36,6 +40,7 @@ RAG_SECRET_KEY=REPLACE_WITH_RANDOM_SECRET
 RAG_ROOT_PASSWORD=REPLACE_WITH_STRONG_INITIAL_PASSWORD
 RAG_HOST=127.0.0.1
 RAG_PUBLIC_ORIGIN=http://127.0.0.1:8088
+NO_PROXY=127.0.0.1,localhost
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
@@ -48,11 +53,17 @@ Model preparation note: the final BGE command above must reach Hugging Face. If 
 
 These offline variables apply when starting the service; do not set them to `1` while downloading the model.
 
-With Ollama running, execute this from `C:\rag`:
+Start Ollama from the Start menu, then open a new PowerShell and verify both its local API and the model. If the computer uses `HTTP_PROXY`, set `NO_PROXY` for the current process so localhost requests do not go through that proxy:
 
 ```powershell
-powershell -NoProfile -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
+$env:NO_PROXY='127.0.0.1,localhost'
+Invoke-RestMethod http://127.0.0.1:11434/api/tags
+ollama list
+Set-Location C:\rag
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
 ```
+
+`-ExecutionPolicy Bypass` applies only to this child process; it does not change the system or user execution policy. If an organization policy still blocks the script, ask the administrator to review and allow it.
 
 Open [http://127.0.0.1:8088](http://127.0.0.1:8088). For a new database, sign in as `root` with the initial password above. Upload a test document, select a device, ask a question, and expand “查看引用来源” (View citations). Stop the service with Ctrl+C in its terminal.
 
