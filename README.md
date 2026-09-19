@@ -13,15 +13,49 @@
 
 ## Windows：个人知识库
 
-准备 Windows、Python 3.12、PowerShell 和 [Ollama](https://ollama.com/download/windows)。如果 `py -3.12 --version` 提示没有匹配的运行时，请先从 [python.org](https://www.python.org/downloads/windows/) 安装 Python 3.12，重新打开 PowerShell 后再继续。在 PowerShell 执行，IDE 打开整个 `C:\rag` 文件夹：
+准备 Windows、[Git for Windows](https://git-scm.com/download/win)、Python 3.12、PowerShell 和 [Ollama](https://ollama.com/download/windows)。如果 `git --version` 或 `py -3.12 --version` 失败，先安装对应程序并重新打开 PowerShell。在 PowerShell 执行，IDE 打开整个 `C:\rag` 文件夹：
 
 ```powershell
+git --version
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
 py -3.12 --version
 if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
-.\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
+.\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
+.\.venv\Scripts\python.exe -m pip check
 ollama pull qwen3:1.7b
+```
+
+PyTorch、SciPy 等依赖较大，安装时可能数分钟没有新输出；只要任务管理器中 Python 仍有 CPU 或磁盘活动就继续等待。若出现 `Read timed out`，重新执行同一条带 `--timeout 120 --retries 10` 的安装命令，pip 会复用已下载的缓存。
+
+推荐从本项目的 [BGE 离线模型 Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 下载；只需能访问 GitHub，不需要访问 Hugging Face，也不需要 Hugging Face 代理：
+
+```powershell
+$BgeZip="$env:TEMP\bge-small-zh-v1.5-7999e1d.zip"
+Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ihyh/lan-rag-pilot/releases/download/bge-small-zh-v1.5-7999e1d/bge-small-zh-v1.5-7999e1d.zip' -OutFile $BgeZip
+$ExpectedSha256='0edacc059c0d792466da7b83569c0406aef88b334f6b297d11f5ee5bbf4499c2'
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $BgeZip).Hash.ToLowerInvariant() -ne $ExpectedSha256) { throw 'BGE 模型包校验失败，请删除后重新下载' }
+New-Item -ItemType Directory -Path .\models -Force | Out-Null
+Expand-Archive -LiteralPath $BgeZip -DestinationPath .\models -Force
+.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
+```
+
+成功应输出 `512`。压缩包包含上游版本信息和 MIT 许可证。如果 GitHub Release 无法访问，也可以直接从 Hugging Face 准备模型；根据当前电脑选择一种网络方式，不要把某台电脑的代理端口复制给其他电脑：
+
+```powershell
+# 能直接访问 Hugging Face，或这台电脑不使用代理
+Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY -ErrorAction SilentlyContinue
+
+# 需要代理时，输入这台电脑实际可用的完整代理 URL；如果代理在另一台电脑，使用其局域网 IP
+$ProxyUrl=Read-Host '代理 URL（格式：http://地址:端口）'
+$env:HTTP_PROXY=$ProxyUrl
+$env:HTTPS_PROXY=$ProxyUrl
+$env:NO_PROXY='127.0.0.1,localhost'
+```
+
+两种方式只执行对应的一段设置，然后下载并保存自包含模型目录：
+
+```powershell
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
 ```
 
@@ -36,11 +70,12 @@ RAG_SECRET_KEY=REPLACE_WITH_RANDOM_SECRET
 RAG_ROOT_PASSWORD=REPLACE_WITH_STRONG_INITIAL_PASSWORD
 RAG_HOST=127.0.0.1
 RAG_PUBLIC_ORIGIN=http://127.0.0.1:8088
+NO_PROXY=127.0.0.1,localhost
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
 
-模型准备说明：上面最后一条 BGE 命令需要访问 Hugging Face。若出现 `WinError 10060` 或连接超时，请按 `Ctrl+C` 停止重试；这不是 Python 依赖错误。可在能访问 Hugging Face 的准备机执行该命令，再将 `models\bge-small-zh-v1.5` 整个目录复制到当前电脑的 `C:\rag\models\bge-small-zh-v1.5`。目标机只使用本地模型时，确认 `.env` 中的 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，并运行以下命令验证：
+模型准备说明：BGE 下载命令需要访问 Hugging Face。若出现 `WinError 10060` 或连接超时，请按 `Ctrl+C` 停止重试；这不是 Python 依赖错误。如果目标机既不能直连，也没有可用代理，可在能访问 Hugging Face 的准备机执行该命令，再将 `models\bge-small-zh-v1.5` 整个目录复制到目标机的 `C:\rag\models\bge-small-zh-v1.5`。目标机只使用本地模型时，确认 `.env` 中的 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，并运行以下命令验证：
 
 ```powershell
 .\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
@@ -48,11 +83,17 @@ TRANSFORMERS_OFFLINE=1
 
 这两个离线变量只用于启动服务；联网准备模型时不要将它们设为 `1`。
 
-确认 Ollama 已启动，在 `C:\rag` 执行：
+从开始菜单启动 Ollama，然后在新 PowerShell 中确认本机接口和模型都可用。若电脑设置过 `HTTP_PROXY`，先设置当前进程的 `NO_PROXY`，避免本机请求被发到代理：
 
 ```powershell
-powershell -NoProfile -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
+$env:NO_PROXY='127.0.0.1,localhost'
+Invoke-RestMethod http://127.0.0.1:11434/api/tags
+ollama list
+Set-Location C:\rag
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
 ```
+
+`-ExecutionPolicy Bypass` 只作用于这次子进程，不修改系统或用户的全局执行策略。若组织策略仍阻止脚本，应由管理员审核并允许该脚本。
 
 打开 [http://127.0.0.1:8088](http://127.0.0.1:8088)。全新数据库用 `root` 和上述初始密码登录，上传测试文档，按设备提问并展开“查看引用来源”；停止时在启动窗口按 Ctrl+C。
 
