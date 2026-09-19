@@ -28,7 +28,19 @@ ollama pull qwen3:1.7b
 
 Large dependencies such as PyTorch and SciPy can spend several minutes installing without new output. Keep waiting while Python still shows CPU or disk activity in Task Manager. If pip reports `Read timed out`, rerun the same command with `--timeout 120 --retries 10`; pip reuses its download cache.
 
-Before downloading BGE, choose the network setup that applies to this computer. Do not copy one computer's proxy port to another; these variables affect only the current PowerShell session:
+Prefer the project's [offline BGE model release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d). It requires access to GitHub only, without access to Hugging Face or a Hugging Face proxy:
+
+```powershell
+$BgeZip="$env:TEMP\bge-small-zh-v1.5-7999e1d.zip"
+Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ihyh/lan-rag-pilot/releases/download/bge-small-zh-v1.5-7999e1d/bge-small-zh-v1.5-7999e1d.zip' -OutFile $BgeZip
+$ExpectedSha256='0edacc059c0d792466da7b83569c0406aef88b334f6b297d11f5ee5bbf4499c2'
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $BgeZip).Hash.ToLowerInvariant() -ne $ExpectedSha256) { throw 'BGE package checksum failed; delete it and download again' }
+New-Item -ItemType Directory -Path .\models -Force | Out-Null
+Expand-Archive -LiteralPath $BgeZip -DestinationPath .\models -Force
+.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
+```
+
+The expected output is `512`. The archive includes its upstream revision and MIT license. If the GitHub release is unavailable, prepare the model directly from Hugging Face instead. Choose the network setup that applies to this computer, and do not copy one computer's proxy port to another:
 
 ```powershell
 # This computer can reach Hugging Face directly or does not use a proxy

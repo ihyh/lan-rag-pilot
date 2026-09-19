@@ -28,7 +28,19 @@ ollama pull qwen3:1.7b
 
 PyTorch、SciPy 等依赖较大，安装时可能数分钟没有新输出；只要任务管理器中 Python 仍有 CPU 或磁盘活动就继续等待。若出现 `Read timed out`，重新执行同一条带 `--timeout 120 --retries 10` 的安装命令，pip 会复用已下载的缓存。
 
-下载 BGE 前，根据当前电脑选择一种网络方式。不要把某台电脑的代理端口复制给其他电脑；下面的变量只对当前 PowerShell 生效：
+推荐从本项目的 [BGE 离线模型 Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 下载；只需能访问 GitHub，不需要访问 Hugging Face，也不需要 Hugging Face 代理：
+
+```powershell
+$BgeZip="$env:TEMP\bge-small-zh-v1.5-7999e1d.zip"
+Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ihyh/lan-rag-pilot/releases/download/bge-small-zh-v1.5-7999e1d/bge-small-zh-v1.5-7999e1d.zip' -OutFile $BgeZip
+$ExpectedSha256='0edacc059c0d792466da7b83569c0406aef88b334f6b297d11f5ee5bbf4499c2'
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $BgeZip).Hash.ToLowerInvariant() -ne $ExpectedSha256) { throw 'BGE 模型包校验失败，请删除后重新下载' }
+New-Item -ItemType Directory -Path .\models -Force | Out-Null
+Expand-Archive -LiteralPath $BgeZip -DestinationPath .\models -Force
+.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
+```
+
+成功应输出 `512`。压缩包包含上游版本信息和 MIT 许可证。如果 GitHub Release 无法访问，也可以直接从 Hugging Face 准备模型；根据当前电脑选择一种网络方式，不要把某台电脑的代理端口复制给其他电脑：
 
 ```powershell
 # 能直接访问 Hugging Face，或这台电脑不使用代理
