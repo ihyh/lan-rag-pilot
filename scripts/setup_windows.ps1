@@ -60,7 +60,17 @@ function Find-Python312 {
         return $uvPython.FullName
     }
 
-    throw "Python 3.12 was not found. Install it from https://www.python.org/downloads/ and run setup_windows.cmd again."
+    $standardPaths = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:ProgramFiles "Python312\python.exe")
+    )
+    foreach ($standardPath in $standardPaths) {
+        if (Test-Path -LiteralPath $standardPath) {
+            return $standardPath
+        }
+    }
+
+    return ""
 }
 
 function Invoke-Checked {
@@ -90,8 +100,51 @@ function Test-PortAvailable {
     }
 }
 
+function Install-Python312 {
+    $pythonManager = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($pythonManager) {
+        $previousErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "SilentlyContinue"
+            $managerHelp = & $pythonManager.Source help install 2>$null
+            $managerExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+        if ($managerExitCode -eq 0 -and ($managerHelp -match "Python installation manager")) {
+            Write-Host "Python 3.12 was not found. Installing it with Python Installation Manager..."
+            Invoke-Checked $pythonManager.Source @("install", "-y", "3.12") "Python Installation Manager could not install Python 3.12."
+            return
+        }
+    }
+
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        throw "Python 3.12 was not found and winget is unavailable. Install Python 3.12 from https://www.python.org/downloads/ and run setup_windows.cmd again."
+    }
+
+    Write-Host "Python 3.12 was not found. Installing it with winget..."
+    Invoke-Checked $winget.Source @(
+        "install",
+        "--id", "Python.Python.3.12",
+        "--exact",
+        "--source", "winget",
+        "--scope", "user",
+        "--silent",
+        "--accept-package-agreements",
+        "--accept-source-agreements"
+    ) "winget could not install Python 3.12. Install it from https://www.python.org/downloads/ and run setup_windows.cmd again."
+}
+
 Write-Host "[1/6] Checking prerequisites..."
 $basePython = Find-Python312
+if (-not $basePython) {
+    Install-Python312
+    $basePython = Find-Python312
+}
+if (-not $basePython) {
+    throw "Python 3.12 installation completed but Python could not be located. Close this window and run setup_windows.cmd again."
+}
 if ((Get-PythonVersion $basePython) -ne "3.12") {
     throw "Python 3.12 is required. Selected interpreter: $basePython"
 }
