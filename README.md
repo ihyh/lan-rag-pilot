@@ -9,7 +9,7 @@
 | Windows 个人知识库 | 三个组件都在自己的 Windows 电脑 | 本机浏览器 `http://127.0.0.1:8088` |
 | Linux 企业知识库 | 三个组件都在 Linux 服务器 | 员工连接公司 Wi-Fi，访问固定内网 HTTPS 地址（通常为 443 端口） |
 
-源码仓库不包含模型、密码或业务文档；Windows 安装脚本会在首次运行时下载依赖和模型。
+源码仓库不包含模型、密码或业务文档；Windows 和 Linux 安装脚本会在首次运行时下载依赖和模型。
 
 ## Windows：个人知识库
 
@@ -29,27 +29,19 @@ Set-Location C:\rag
 
 ## Linux：企业知识库
 
-由 IT 在 Linux 服务器准备 Python 3.12、[Ollama](https://docs.ollama.com/linux)、内网域名及 HTTPS 证书。下面以 Ubuntu 和 `/opt/rag` 为例；先由 IT 创建可写的项目目录。以下下载命令仅在获准联网的安装阶段执行；如果服务器始终禁止公网，不要在服务器执行这些下载命令，应由 IT 按 [Ubuntu 指南](docs/UBUNTU.md)准备材料。
+由 IT 在 Linux 服务器准备 Python 3.12（含 venv 模块）、[Ollama](https://docs.ollama.com/linux)、内网域名及 HTTPS 证书。下面以 Ubuntu 和 `/opt/rag` 为例；先由 IT 创建可写的项目目录。在获准联网的安装阶段只需：
 
 ```bash
 git clone https://github.com/ihyh/lan-rag-pilot.git /opt/rag
 cd /opt/rag
-python3.12 -m venv .venv
-./.venv/bin/python -m pip install -r requirements.txt
-ollama pull qwen3:1.7b
-./.venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
+./setup_linux.sh
 ```
 
-在 `/opt/rag/.env` 设置与 Windows 相同的本机 Ollama 地址和模型名，但把 `RAG_EMBED_MODEL` 改为 `/opt/rag/models/bge-small-zh-v1.5`，将 `RAG_PUBLIC_ORIGIN` 设为实际内网 HTTPS 地址，另设 `RAG_COOKIE_SECURE=true`。分别生成并填写新的 `RAG_SECRET_KEY` 与 `RAG_ROOT_PASSWORD`。先在服务器本机验证启动：
+`setup_linux.sh` 会自动创建 `.venv`、安装并校验依赖、拉取 `qwen3:1.7b`、从 GitHub Release 下载并校验 BGE、生成权限为 600 的 `.env` 和随机初始密码，然后在回环地址启动服务。已有 `.env` 不会被覆盖。若 `/opt/rag` 已存在，跳过 `git clone`，进入目录运行 `git pull --ff-only` 后再执行脚本。
 
-```bash
-set -a
-. ./.env
-set +a
-./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8088
-```
+记下窗口中的 root 初始密码，按脚本显示的本机地址完成验收；停止时按 Ctrl+C。如果服务器始终禁止公网，不要运行该脚本的联网准备流程，应由 IT 按 [Ubuntu 指南](docs/UBUNTU.md)准备离线材料。
 
-此命令仅供本机验收。员工访问前，IT 还须将应用设为受管服务，并通过 Nginx 等反向代理提供**内网 HTTPS**；只允许专用员工 Wi-Fi 网段访问入口，禁止公网到达，8088 和 Ollama 的 11434 端口不直接向员工设备开放。固定网址不能代替登录：root 为员工创建个人账号并授予角色，离职时停用。服务器部署、安全及备份步骤分别见 [Ubuntu 指南](docs/UBUNTU.md)、[安全要求](docs/SECURITY.md)和[运维指南](docs/OPERATIONS.md)。
+脚本启动的进程仅供本机验收。员工访问前，IT 必须修改 `.env` 中的 `RAG_PUBLIC_ORIGIN` 为实际内网 HTTPS 地址并设置 `RAG_COOKIE_SECURE=true`，将应用设为受管服务，再通过 Nginx 等反向代理提供**内网 HTTPS**；只允许专用员工 Wi-Fi 网段访问入口，禁止公网到达，8088 和 Ollama 的 11434 端口不直接向员工设备开放。固定网址不能代替登录：root 为员工创建个人账号并授予角色，离职时停用。服务器部署、安全及备份步骤分别见 [Ubuntu 指南](docs/UBUNTU.md)、[安全要求](docs/SECURITY.md)和[运维指南](docs/OPERATIONS.md)。
 
 | 管理员授予的角色 | 当前权限 |
 | --- | --- |
