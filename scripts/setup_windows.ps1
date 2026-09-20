@@ -168,11 +168,8 @@ $env:NO_PROXY = "127.0.0.1,localhost"
 Invoke-Checked $ollama.Source @("pull", "qwen3:1.7b") "Ollama could not download qwen3:1.7b. Start Ollama, check its network access, and run setup_windows.cmd again."
 
 Write-Host "[4/6] Preparing BGE model..."
-$installBge = Join-Path $PSScriptRoot "install_bge.ps1"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installBge -Python $venvPython
-if ($LASTEXITCODE -ne 0) {
-    throw "BGE model installation failed. Check GitHub access and run setup_windows.cmd again."
-}
+$installBge = Join-Path $PSScriptRoot "install_bge.py"
+Invoke-Checked $venvPython @($installBge, "--project", $project) "BGE model installation failed. Check GitHub access and run setup_windows.cmd again."
 
 Write-Host "[5/6] Preparing local configuration..."
 $createdPassword = ""
