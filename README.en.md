@@ -13,7 +13,13 @@ The repository does not include model files, passwords, or business documents. T
 
 ## Windows: personal knowledge base
 
-Install [Git for Windows](https://git-scm.com/download/win) and [Ollama](https://ollama.com/download/windows), then start Ollama from the Start menu. Open PowerShell and run only:
+### 1. Prepare the required software
+
+Install [Git for Windows](https://git-scm.com/download/win) and [Ollama](https://ollama.com/download/windows), then start Ollama from the Start menu.
+
+### 2. Install for the first time
+
+Open PowerShell and run these three commands:
 
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
@@ -21,11 +27,30 @@ Set-Location C:\rag
 .\setup_windows.cmd
 ```
 
-If Python 3.12 is missing, the script installs it through Windows Python Installation Manager or `winget`. It then creates `.venv`, installs and checks the Python dependencies, pulls `qwen3:1.7b`, downloads and verifies BGE from the [GitHub release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d), creates `.env` and a random initial password, and starts the app. The first run downloads large dependencies and models. If the network is interrupted, run the same command again to reuse downloaded files. An existing `.env` is preserved.
+The first run downloads large dependencies and models. Keep the PowerShell window open and wait for the script to finish. When you run the same command again, the script reuses files that have already been downloaded.
 
-If `C:\rag` already exists, do not run `git clone` again. Enter that directory, run `git pull --ff-only`, and then run `setup_windows.cmd`.
+### 3. Wait for setup to finish
 
-Save the initial `root` password shown in the window, then open the URL printed by the script (normally [http://127.0.0.1:8088](http://127.0.0.1:8088)). Press Ctrl+C to stop. Run `setup_windows.cmd` again for later starts. The IDE interpreter is `C:\rag\.venv\Scripts\python.exe`. See the [Windows guide](docs/WINDOWS.md) and [troubleshooting guide](docs/TROUBLESHOOTING.md) (Chinese only) for offline or manual setup.
+The script automatically:
+
+1. Installs Python 3.12 through Windows Python Installation Manager or `winget` if it is missing.
+2. Creates `.venv`, then installs and checks the Python dependencies.
+3. Pulls `qwen3:1.7b`.
+4. Downloads and verifies BGE from the [GitHub release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d).
+5. Creates `.env` and a random initial password; an existing `.env` is preserved.
+6. Starts the app.
+
+### 4. Confirm that the installation works
+
+When the terminal shows that the app has started, keep the window open. Save the initial `root` password and the URL printed in the window, normally [http://127.0.0.1:8088](http://127.0.0.1:8088).
+
+Open the URL in a browser and sign in as `root` with the initial password. Upload a test document and ask a question. The installation and complete question-answering flow are ready when you can see both the generated answer and its citations. To stop the app, press Ctrl+C in the running window.
+
+### 5. Start or update an existing installation
+
+If `C:\rag` already exists, do not run `git clone` again. Enter that directory, run `git pull --ff-only` when you want to update, and then run `setup_windows.cmd`. Use `setup_windows.cmd` for later starts as well, and make sure Ollama is already running.
+
+The IDE interpreter is `C:\rag\.venv\Scripts\python.exe`. See the [Windows guide](docs/WINDOWS.md) and [troubleshooting guide](docs/TROUBLESHOOTING.md) (Chinese only) for offline installation, manual configuration, and troubleshooting.
 
 ## Linux: enterprise knowledge base
 
