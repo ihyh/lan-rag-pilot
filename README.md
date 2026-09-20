@@ -9,65 +9,21 @@
 | Windows 个人知识库 | 三个组件都在自己的 Windows 电脑 | 本机浏览器 `http://127.0.0.1:8088` |
 | Linux 企业知识库 | 三个组件都在 Linux 服务器 | 员工连接公司 Wi-Fi，访问固定内网 HTTPS 地址（通常为 443 端口） |
 
-两种方式都先完成“导入源码 → 创建虚拟环境 → 准备模型”，再按对应系统配置和启动。源码仓库不包含模型、密码或业务文档；允许联网的准备阶段可直接下载依赖和模型。
+源码仓库不包含模型、密码或业务文档；Windows 安装脚本会在首次运行时下载依赖和模型。
 
 ## Windows：个人知识库
 
-准备 Windows、[Git for Windows](https://git-scm.com/download/win)、Python 3.12、PowerShell 和 [Ollama](https://ollama.com/download/windows)。如果 `git --version` 或 `py -3.12 --version` 失败，先安装对应程序并重新打开 PowerShell。在 PowerShell 执行，IDE 打开整个 `C:\rag` 文件夹：
+先安装 [Git for Windows](https://git-scm.com/download/win)、[Python 3.12](https://www.python.org/downloads/) 和 [Ollama](https://ollama.com/download/windows)，然后从开始菜单启动 Ollama。打开 PowerShell，只需执行：
 
 ```powershell
-git --version
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
-py -3.12 --version
-if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
-.\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
-.\.venv\Scripts\python.exe -m pip check
-ollama pull qwen3:1.7b
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_bge.ps1
+.\setup_windows.cmd
 ```
 
-PyTorch、SciPy 等依赖较大，安装时可能数分钟没有新输出；只要任务管理器中 Python 仍有 CPU 或磁盘活动就继续等待。若出现 `Read timed out`，重新执行同一条带 `--timeout 120 --retries 10` 的安装命令，pip 会复用已下载的缓存。
+脚本会自动创建 `.venv`、安装并校验 Python 依赖、拉取 `qwen3:1.7b`、从 [GitHub Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 下载并校验 BGE、生成 `.env` 和随机初始密码，然后启动服务。首次安装需要下载较大的依赖和模型；网络中断后重新运行同一命令即可复用已下载内容。已有 `.env` 不会被覆盖。
 
-`install_bge.ps1` 会从 [GitHub Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 自动下载、校验并解压模型，不需要 Hugging Face 代理；重复执行时，已验证的模型不会重新下载。若目标机无法访问 GitHub，可在其他电脑运行同一脚本，再复制整个 `models\bge-small-zh-v1.5` 目录。
-
-将 IDE 解释器设为 `C:\rag\.venv\Scripts\python.exe`。在 `C:\rag\.env` 新建以下配置，分别替换两个 `REPLACE`；可运行 `py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"` 两次生成独立的随机值。不要直接使用 `.env.example` 中的旧模型地址。
-
-```dotenv
-DEEPSEEK_API_KEY=ollama
-DEEPSEEK_BASE_URL=http://127.0.0.1:11434/v1
-DEEPSEEK_MODEL=qwen3:1.7b
-RAG_EMBED_MODEL=models/bge-small-zh-v1.5
-RAG_SECRET_KEY=REPLACE_WITH_RANDOM_SECRET
-RAG_ROOT_PASSWORD=REPLACE_WITH_STRONG_INITIAL_PASSWORD
-RAG_HOST=127.0.0.1
-RAG_PUBLIC_ORIGIN=http://127.0.0.1:8088
-NO_PROXY=127.0.0.1,localhost
-HF_HUB_OFFLINE=1
-TRANSFORMERS_OFFLINE=1
-```
-
-模型准备说明：BGE 下载命令需要访问 Hugging Face。若出现 `WinError 10060` 或连接超时，请按 `Ctrl+C` 停止重试；这不是 Python 依赖错误。如果目标机既不能直连，也没有可用代理，可在能访问 Hugging Face 的准备机执行该命令，再将 `models\bge-small-zh-v1.5` 整个目录复制到目标机的 `C:\rag\models\bge-small-zh-v1.5`。目标机只使用本地模型时，确认 `.env` 中的 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1`，并运行以下命令验证：
-
-```powershell
-.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
-```
-
-这两个离线变量只用于启动服务；联网准备模型时不要将它们设为 `1`。
-
-从开始菜单启动 Ollama，然后在新 PowerShell 中确认本机接口和模型都可用。若电脑设置过 `HTTP_PROXY`，先设置当前进程的 `NO_PROXY`，避免本机请求被发到代理：
-
-```powershell
-$env:NO_PROXY='127.0.0.1,localhost'
-Invoke-RestMethod http://127.0.0.1:11434/api/tags
-ollama list
-Set-Location C:\rag
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
-```
-
-`-ExecutionPolicy Bypass` 只作用于这次子进程，不修改系统或用户的全局执行策略。若组织策略仍阻止脚本，应由管理员审核并允许该脚本。
-
-打开 [http://127.0.0.1:8088](http://127.0.0.1:8088)。全新数据库用 `root` 和上述初始密码登录，上传测试文档，按设备提问并展开“查看引用来源”；停止时在启动窗口按 Ctrl+C。
+记下窗口中显示的 `root` 初始密码，打开脚本显示的网址（通常为 [http://127.0.0.1:8088](http://127.0.0.1:8088)）登录。停止时按 Ctrl+C；以后启动仍运行 `setup_windows.cmd`。IDE 解释器是 `C:\rag\.venv\Scripts\python.exe`。离线安装、手动配置及故障处理见 [Windows 指南](docs/WINDOWS.md)和[故障排查](docs/TROUBLESHOOTING.md)。
 
 ## Linux：企业知识库
 

@@ -9,65 +9,21 @@ Upload documents, select a device, and ask a question. The app retrieves relevan
 | Windows personal knowledge base | All three components on your Windows computer | Local browser at `http://127.0.0.1:8088` |
 | Linux enterprise knowledge base | All three components on a Linux server | Employees join company Wi-Fi and open a fixed internal HTTPS URL (usually port 443) |
 
-Both paths follow “import source → create a virtual environment → prepare models”, then configure and start the selected system. The repository does not include model files, passwords, or business documents. Dependencies and models may be downloaded during an approved connected preparation phase.
+The repository does not include model files, passwords, or business documents. The Windows setup script downloads dependencies and models on its first run.
 
 ## Windows: personal knowledge base
 
-Prepare Windows, [Git for Windows](https://git-scm.com/download/win), Python 3.12, PowerShell, and [Ollama](https://ollama.com/download/windows). If `git --version` or `py -3.12 --version` fails, install the missing program and reopen PowerShell. Run these commands in PowerShell and open the entire `C:\rag` folder in your IDE:
+Install [Git for Windows](https://git-scm.com/download/win), [Python 3.12](https://www.python.org/downloads/), and [Ollama](https://ollama.com/download/windows), then start Ollama from the Start menu. Open PowerShell and run only:
 
 ```powershell
-git --version
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
 Set-Location C:\rag
-py -3.12 --version
-if (-not (Test-Path .\.venv\Scripts\python.exe)) { py -3.12 -m venv .venv }
-.\.venv\Scripts\python.exe -m pip install --timeout 120 --retries 10 -r .\requirements.txt
-.\.venv\Scripts\python.exe -m pip check
-ollama pull qwen3:1.7b
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_bge.ps1
+.\setup_windows.cmd
 ```
 
-Large dependencies such as PyTorch and SciPy can spend several minutes installing without new output. Keep waiting while Python still shows CPU or disk activity in Task Manager. If pip reports `Read timed out`, rerun the same command with `--timeout 120 --retries 10`; pip reuses its download cache.
+The script creates `.venv`, installs and checks the Python dependencies, pulls `qwen3:1.7b`, downloads and verifies BGE from the [GitHub release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d), creates `.env` and a random initial password, and starts the app. The first run downloads large dependencies and models. If the network is interrupted, run the same command again to reuse downloaded files. An existing `.env` is preserved.
 
-`install_bge.ps1` downloads, verifies, and extracts the model from the [GitHub release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d), without requiring a Hugging Face proxy. Re-running it skips the download when the existing model passes validation. If the target cannot reach GitHub, run the same script on another computer and copy the entire `models\bge-small-zh-v1.5` directory.
-
-Set the IDE interpreter to `C:\rag\.venv\Scripts\python.exe`. Create `C:\rag\.env` with the following values, replacing both `REPLACE` placeholders. Run `py -3.12 -c "import secrets; print(secrets.token_urlsafe(48))"` twice for independent random values. Do not reuse the old model URL in `.env.example`.
-
-```dotenv
-DEEPSEEK_API_KEY=ollama
-DEEPSEEK_BASE_URL=http://127.0.0.1:11434/v1
-DEEPSEEK_MODEL=qwen3:1.7b
-RAG_EMBED_MODEL=models/bge-small-zh-v1.5
-RAG_SECRET_KEY=REPLACE_WITH_RANDOM_SECRET
-RAG_ROOT_PASSWORD=REPLACE_WITH_STRONG_INITIAL_PASSWORD
-RAG_HOST=127.0.0.1
-RAG_PUBLIC_ORIGIN=http://127.0.0.1:8088
-NO_PROXY=127.0.0.1,localhost
-HF_HUB_OFFLINE=1
-TRANSFORMERS_OFFLINE=1
-```
-
-Model preparation note: the BGE download command must reach Hugging Face. If it reports `WinError 10060` or a connection timeout, press `Ctrl+C`; this is a network failure, not a Python dependency failure. If the target has neither direct access nor a usable proxy, run that command on a connected preparation machine and copy the entire `models\bge-small-zh-v1.5` directory to `C:\rag\models\bge-small-zh-v1.5` on the target. For an offline target, keep `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` in `.env`, then verify the local model with:
-
-```powershell
-.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer; m=SentenceTransformer('models/bge-small-zh-v1.5', local_files_only=True, device='cpu'); print(m.get_sentence_embedding_dimension())"
-```
-
-These offline variables apply when starting the service; do not set them to `1` while downloading the model.
-
-Start Ollama from the Start menu, then open a new PowerShell and verify both its local API and the model. If the computer uses `HTTP_PROXY`, set `NO_PROXY` for the current process so localhost requests do not go through that proxy:
-
-```powershell
-$env:NO_PROXY='127.0.0.1,localhost'
-Invoke-RestMethod http://127.0.0.1:11434/api/tags
-ollama list
-Set-Location C:\rag
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_local.ps1 -Python C:\rag\.venv\Scripts\python.exe
-```
-
-`-ExecutionPolicy Bypass` applies only to this child process; it does not change the system or user execution policy. If an organization policy still blocks the script, ask the administrator to review and allow it.
-
-Open [http://127.0.0.1:8088](http://127.0.0.1:8088). For a new database, sign in as `root` with the initial password above. Upload a test document, select a device, ask a question, and expand “查看引用来源” (View citations). Stop the service with Ctrl+C in its terminal.
+Save the initial `root` password shown in the window, then open the URL printed by the script (normally [http://127.0.0.1:8088](http://127.0.0.1:8088)). Press Ctrl+C to stop. Run `setup_windows.cmd` again for later starts. The IDE interpreter is `C:\rag\.venv\Scripts\python.exe`. See the [Windows guide](docs/WINDOWS.md) and [troubleshooting guide](docs/TROUBLESHOOTING.md) (Chinese only) for offline or manual setup.
 
 ## Linux: enterprise knowledge base
 
