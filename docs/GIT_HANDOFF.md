@@ -38,4 +38,4 @@ Get-FileHash -Algorithm SHA256 C:\rag-source.zip
 
 接收核验过的包，按 [运维升级](OPERATIONS.md)在独立实例演练并备份。运行机不保存 GitHub 令牌、SSH 私钥或公网 API 凭据，也不直接构建需要下载的镜像。
 
-[历史部署记录](../DEPLOYMENT_HANDOFF.md)只用于追溯，不能照抄其中实验地址或实时状态。
+历史部署快照只保留在 Git 版本历史中，不能照抄其中实验地址或实时状态。
