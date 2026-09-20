@@ -9,7 +9,7 @@ Upload documents, select a device, and ask a question. The app retrieves relevan
 | Windows personal knowledge base | All three components on your Windows computer | Local browser at `http://127.0.0.1:8088` |
 | Linux enterprise knowledge base | All three components on a Linux server | Employees join company Wi-Fi and open a fixed internal HTTPS URL (usually port 443) |
 
-The repository does not include model files, passwords, or business documents. The Windows setup script downloads dependencies and models on its first run.
+The repository does not include model files, passwords, or business documents. The Windows and Linux setup scripts download dependencies and models on their first run.
 
 ## Windows: personal knowledge base
 
@@ -29,27 +29,19 @@ Save the initial `root` password shown in the window, then open the URL printed 
 
 ## Linux: enterprise knowledge base
 
-IT prepares Python 3.12, [Ollama](https://docs.ollama.com/linux), an internal DNS name, and an HTTPS certificate on the Linux server. This Ubuntu example uses `/opt/rag`; IT must create a writable project directory first. Run the download commands below only during an approved connected installation phase. If the server must never reach the internet, IT must prepare the materials using the [Ubuntu guide](docs/UBUNTU.md) (Chinese only) instead of running these downloads there.
+IT prepares Python 3.12 with its venv module, [Ollama](https://docs.ollama.com/linux), an internal DNS name, and an HTTPS certificate on the Linux server. This Ubuntu example uses `/opt/rag`; IT must create a writable project directory first. During an approved connected installation phase, run only:
 
 ```bash
 git clone https://github.com/ihyh/lan-rag-pilot.git /opt/rag
 cd /opt/rag
-python3.12 -m venv .venv
-./.venv/bin/python -m pip install -r requirements.txt
-ollama pull qwen3:1.7b
-./.venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5', device='cpu').save('models/bge-small-zh-v1.5')"
+./setup_linux.sh
 ```
 
-Create `/opt/rag/.env` with the same local Ollama URL and model as in the Windows example, but set `RAG_EMBED_MODEL=/opt/rag/models/bge-small-zh-v1.5`, set `RAG_PUBLIC_ORIGIN` to the actual internal HTTPS URL, and add `RAG_COOKIE_SECURE=true`. Generate separate new values for `RAG_SECRET_KEY` and `RAG_ROOT_PASSWORD`. Verify startup locally on the server first:
+`setup_linux.sh` creates `.venv`, installs and checks dependencies, pulls `qwen3:1.7b`, downloads and verifies BGE from the GitHub release, creates a mode-600 `.env` with a random initial password, and starts the app on loopback. It preserves an existing `.env`. If `/opt/rag` already exists, skip `git clone`, enter the directory, run `git pull --ff-only`, and then run the script.
 
-```bash
-set -a
-. ./.env
-set +a
-./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8088
-```
+Save the initial root password and use the local URL printed by the script for acceptance testing. Press Ctrl+C to stop. If the server must never reach the internet, do not run this connected preparation flow; IT must use the [Ubuntu guide](docs/UBUNTU.md) (Chinese only).
 
-This command is for local acceptance only. Before employees connect, IT must manage the app as a service and provide **internal HTTPS** through a reverse proxy such as Nginx. Allow only the dedicated employee Wi-Fi subnet to reach the entry point; block public internet access. Do not expose ports 8088 or 11434 directly to employee devices. A fixed URL does not replace login: root creates individual employee accounts, assigns roles, and deactivates leavers. See the [Ubuntu guide](docs/UBUNTU.md), [security requirements](docs/SECURITY.md), and [operations guide](docs/OPERATIONS.md) (Chinese only) for server deployment, hardening, and backup.
+The process started by the script is for local acceptance only. Before employees connect, IT must set `RAG_PUBLIC_ORIGIN` to the actual internal HTTPS URL, set `RAG_COOKIE_SECURE=true`, manage the app as a service, and provide **internal HTTPS** through a reverse proxy such as Nginx. Allow only the dedicated employee Wi-Fi subnet to reach the entry point; block public internet access. Do not expose ports 8088 or 11434 directly to employee devices. A fixed URL does not replace login: root creates individual employee accounts, assigns roles, and deactivates leavers. See the [Ubuntu guide](docs/UBUNTU.md), [security requirements](docs/SECURITY.md), and [operations guide](docs/OPERATIONS.md) (Chinese only) for server deployment, hardening, and backup.
 
 | Role assigned by an administrator | Current permissions |
 | --- | --- |
