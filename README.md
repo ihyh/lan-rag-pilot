@@ -13,7 +13,13 @@
 
 ## Windows：个人知识库
 
-先安装 [Git for Windows](https://git-scm.com/download/win) 和 [Ollama](https://ollama.com/download/windows)，然后从开始菜单启动 Ollama。打开 PowerShell，只需执行：
+### 1. 准备软件
+
+安装 [Git for Windows](https://git-scm.com/download/win) 和 [Ollama](https://ollama.com/download/windows)，然后从开始菜单启动 Ollama。
+
+### 2. 首次安装
+
+打开 PowerShell，执行以下三条命令：
 
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
@@ -21,11 +27,30 @@ Set-Location C:\rag
 .\setup_windows.cmd
 ```
 
-如果电脑没有 Python 3.12，脚本会通过 Windows Python Installation Manager 或 `winget` 自动安装。随后它会自动创建 `.venv`、安装并校验 Python 依赖、拉取 `qwen3:1.7b`、从 [GitHub Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 下载并校验 BGE、生成 `.env` 和随机初始密码，然后启动服务。首次安装需要下载较大的依赖和模型；网络中断后重新运行同一命令即可复用已下载内容。已有 `.env` 不会被覆盖。
+首次安装需要下载较大的依赖和模型，请保持 PowerShell 窗口打开并等待脚本完成。再次运行同一命令时，脚本会复用已经下载的内容。
 
-如果 `C:\rag` 已经存在，不要重复执行 `git clone`；直接进入该目录运行 `git pull --ff-only`，再运行 `setup_windows.cmd`。
+### 3. 等待脚本完成
 
-记下窗口中显示的 `root` 初始密码，打开脚本显示的网址（通常为 [http://127.0.0.1:8088](http://127.0.0.1:8088)）登录。停止时按 Ctrl+C；以后启动仍运行 `setup_windows.cmd`。IDE 解释器是 `C:\rag\.venv\Scripts\python.exe`。离线安装、手动配置及故障处理见 [Windows 指南](docs/WINDOWS.md)和[故障排查](docs/TROUBLESHOOTING.md)。
+脚本会自动完成以下操作：
+
+1. 如果没有 Python 3.12，通过 Windows Python Installation Manager 或 `winget` 安装。
+2. 创建 `.venv`，安装并校验 Python 依赖。
+3. 拉取 `qwen3:1.7b`。
+4. 从 [GitHub Release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d) 下载并校验 BGE。
+5. 生成 `.env` 和随机初始密码；已有 `.env` 不会被覆盖。
+6. 启动服务。
+
+### 4. 确认安装成功
+
+终端显示服务启动完成后，不要关闭窗口。记下窗口中的 `root` 初始密码和访问网址，通常为 [http://127.0.0.1:8088](http://127.0.0.1:8088)。
+
+在浏览器中打开网址，使用 `root` 和初始密码登录。上传一份测试资料并提问；能够看到生成的回答和引用来源，才表示安装及完整问答流程可用。停止服务时，在运行窗口按 Ctrl+C。
+
+### 5. 后续启动与更新
+
+如果 `C:\rag` 已经存在，不要再次执行 `git clone`。进入该目录，需要更新时先运行 `git pull --ff-only`，然后运行 `setup_windows.cmd`。以后启动也运行 `setup_windows.cmd`，并保持 Ollama 已启动。
+
+IDE 解释器是 `C:\rag\.venv\Scripts\python.exe`。离线安装、手动配置及故障处理见 [Windows 指南](docs/WINDOWS.md)和[故障排查](docs/TROUBLESHOOTING.md)。
 
 ## Linux：企业知识库
 
