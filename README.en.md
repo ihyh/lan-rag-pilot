@@ -13,7 +13,7 @@ The repository does not include model files, passwords, or business documents. T
 
 ## Windows: personal knowledge base
 
-Install [Git for Windows](https://git-scm.com/download/win), [Python 3.12](https://www.python.org/downloads/), and [Ollama](https://ollama.com/download/windows), then start Ollama from the Start menu. Open PowerShell and run only:
+Install [Git for Windows](https://git-scm.com/download/win) and [Ollama](https://ollama.com/download/windows), then start Ollama from the Start menu. Open PowerShell and run only:
 
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
@@ -21,7 +21,9 @@ Set-Location C:\rag
 .\setup_windows.cmd
 ```
 
-The script creates `.venv`, installs and checks the Python dependencies, pulls `qwen3:1.7b`, downloads and verifies BGE from the [GitHub release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d), creates `.env` and a random initial password, and starts the app. The first run downloads large dependencies and models. If the network is interrupted, run the same command again to reuse downloaded files. An existing `.env` is preserved.
+If Python 3.12 is missing, the script installs it through Windows Python Installation Manager or `winget`. It then creates `.venv`, installs and checks the Python dependencies, pulls `qwen3:1.7b`, downloads and verifies BGE from the [GitHub release](https://github.com/ihyh/lan-rag-pilot/releases/tag/bge-small-zh-v1.5-7999e1d), creates `.env` and a random initial password, and starts the app. The first run downloads large dependencies and models. If the network is interrupted, run the same command again to reuse downloaded files. An existing `.env` is preserved.
+
+If `C:\rag` already exists, do not run `git clone` again. Enter that directory, run `git pull --ff-only`, and then run `setup_windows.cmd`.
 
 Save the initial `root` password shown in the window, then open the URL printed by the script (normally [http://127.0.0.1:8088](http://127.0.0.1:8088)). Press Ctrl+C to stop. Run `setup_windows.cmd` again for later starts. The IDE interpreter is `C:\rag\.venv\Scripts\python.exe`. See the [Windows guide](docs/WINDOWS.md) and [troubleshooting guide](docs/TROUBLESHOOTING.md) (Chinese only) for offline or manual setup.
 
