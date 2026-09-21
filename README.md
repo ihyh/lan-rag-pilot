@@ -54,7 +54,15 @@ IDE 解释器是 `C:\rag\.venv\Scripts\python.exe`。离线安装、手动配置
 
 ## Linux：企业知识库
 
-由 IT 在 Linux 服务器准备 Python 3.12（含 venv 模块）、[Ollama](https://docs.ollama.com/linux)、内网域名及 HTTPS 证书。下面以 Ubuntu 和 `/opt/rag` 为例；先由 IT 创建可写的项目目录。在获准联网的安装阶段只需：
+### 1. 准备服务器
+
+由 IT 在 Linux 服务器准备 Python 3.12（含 venv 模块）、[Ollama](https://docs.ollama.com/linux)、内网域名及 HTTPS 证书。下面以 Ubuntu 和 `/opt/rag` 为例；先由 IT 创建可写的项目目录。
+
+如果服务器始终禁止公网，不要运行下面的联网准备流程。由 IT 按 [Ubuntu 指南](docs/UBUNTU.md)准备离线材料。
+
+### 2. 首次安装
+
+在获准联网的安装阶段，执行以下三条命令：
 
 ```bash
 git clone https://github.com/ihyh/lan-rag-pilot.git /opt/rag
@@ -62,9 +70,29 @@ cd /opt/rag
 ./setup_linux.sh
 ```
 
-`setup_linux.sh` 会自动创建 `.venv`、安装并校验依赖、拉取 `qwen3:1.7b`、从 GitHub Release 下载并校验 BGE、生成权限为 600 的 `.env` 和随机初始密码，然后在回环地址启动服务。已有 `.env` 不会被覆盖。若 `/opt/rag` 已存在，跳过 `git clone`，进入目录运行 `git pull --ff-only` 后再执行脚本。
+首次安装需要下载较大的依赖和模型，请保持终端窗口打开并等待脚本完成。
 
-记下窗口中的 root 初始密码，按脚本显示的本机地址完成验收；停止时按 Ctrl+C。如果服务器始终禁止公网，不要运行该脚本的联网准备流程，应由 IT 按 [Ubuntu 指南](docs/UBUNTU.md)准备离线材料。
+### 3. 等待脚本完成
+
+`setup_linux.sh` 会自动完成以下操作：
+
+1. 创建 `.venv`，安装并校验依赖。
+2. 拉取 `qwen3:1.7b`。
+3. 从 GitHub Release 下载并校验 BGE。
+4. 生成权限为 600 的 `.env` 和随机初始密码；已有 `.env` 不会被覆盖。
+5. 在回环地址启动服务。
+
+### 4. 确认安装成功
+
+终端显示服务启动完成后，不要关闭窗口。记下窗口中的 `root` 初始密码和脚本显示的本机地址。
+
+打开该地址，使用 `root` 和初始密码登录。上传一份测试资料并提问；能够看到生成的回答和引用来源，才表示安装及完整问答流程可用。停止服务时，在运行窗口按 Ctrl+C。
+
+### 5. 后续启动与更新
+
+如果 `/opt/rag` 已经存在，不要再次执行 `git clone`。进入该目录，需要更新时先运行 `git pull --ff-only`，然后运行 `setup_linux.sh`。以后启动也运行 `setup_linux.sh`，并保持 Ollama 已启动。
+
+### 6. 准备员工访问
 
 脚本启动的进程仅供本机验收。员工访问前，IT 必须修改 `.env` 中的 `RAG_PUBLIC_ORIGIN` 为实际内网 HTTPS 地址并设置 `RAG_COOKIE_SECURE=true`，将应用设为受管服务，再通过 Nginx 等反向代理提供**内网 HTTPS**；只允许专用员工 Wi-Fi 网段访问入口，禁止公网到达，8088 和 Ollama 的 11434 端口不直接向员工设备开放。固定网址不能代替登录：root 为员工创建个人账号并授予角色，离职时停用。服务器部署、安全及备份步骤分别见 [Ubuntu 指南](docs/UBUNTU.md)、[安全要求](docs/SECURITY.md)和[运维指南](docs/OPERATIONS.md)。
 
