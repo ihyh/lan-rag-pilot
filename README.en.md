@@ -54,7 +54,15 @@ The IDE interpreter is `C:\rag\.venv\Scripts\python.exe`. See the [Windows guide
 
 ## Linux: enterprise knowledge base
 
-IT prepares Python 3.12 with its venv module, [Ollama](https://docs.ollama.com/linux), an internal DNS name, and an HTTPS certificate on the Linux server. This Ubuntu example uses `/opt/rag`; IT must create a writable project directory first. During an approved connected installation phase, run only:
+### 1. Prepare the server
+
+IT prepares Python 3.12 with its venv module, [Ollama](https://docs.ollama.com/linux), an internal DNS name, and an HTTPS certificate on the Linux server. This Ubuntu example uses `/opt/rag`; IT must create a writable project directory first.
+
+If the server must never reach the internet, do not run the connected preparation flow below. IT must prepare offline materials by following the [Ubuntu guide](docs/UBUNTU.md) (Chinese only).
+
+### 2. Install for the first time
+
+During an approved connected installation phase, run these three commands:
 
 ```bash
 git clone https://github.com/ihyh/lan-rag-pilot.git /opt/rag
@@ -62,9 +70,29 @@ cd /opt/rag
 ./setup_linux.sh
 ```
 
-`setup_linux.sh` creates `.venv`, installs and checks dependencies, pulls `qwen3:1.7b`, downloads and verifies BGE from the GitHub release, creates a mode-600 `.env` with a random initial password, and starts the app on loopback. It preserves an existing `.env`. If `/opt/rag` already exists, skip `git clone`, enter the directory, run `git pull --ff-only`, and then run the script.
+The first run downloads large dependencies and models. Keep the terminal open and wait for the script to finish.
 
-Save the initial root password and use the local URL printed by the script for acceptance testing. Press Ctrl+C to stop. If the server must never reach the internet, do not run this connected preparation flow; IT must use the [Ubuntu guide](docs/UBUNTU.md) (Chinese only).
+### 3. Wait for setup to finish
+
+`setup_linux.sh` automatically:
+
+1. Creates `.venv`, then installs and checks the dependencies.
+2. Pulls `qwen3:1.7b`.
+3. Downloads and verifies BGE from the GitHub release.
+4. Creates a mode-600 `.env` and a random initial password; an existing `.env` is preserved.
+5. Starts the app on the loopback address.
+
+### 4. Confirm that the installation works
+
+When the terminal shows that the app has started, keep the window open. Save the initial `root` password and the local URL printed by the script.
+
+Open the URL and sign in as `root` with the initial password. Upload a test document and ask a question. The installation and complete question-answering flow are ready when you can see both the generated answer and its citations. To stop the app, press Ctrl+C in the running window.
+
+### 5. Start or update an existing installation
+
+If `/opt/rag` already exists, do not run `git clone` again. Enter that directory, run `git pull --ff-only` when you want to update, and then run `setup_linux.sh`. Use `setup_linux.sh` for later starts as well, and make sure Ollama is already running.
+
+### 6. Prepare employee access
 
 The process started by the script is for local acceptance only. Before employees connect, IT must set `RAG_PUBLIC_ORIGIN` to the actual internal HTTPS URL, set `RAG_COOKIE_SECURE=true`, manage the app as a service, and provide **internal HTTPS** through a reverse proxy such as Nginx. Allow only the dedicated employee Wi-Fi subnet to reach the entry point; block public internet access. Do not expose ports 8088 or 11434 directly to employee devices. A fixed URL does not replace login: root creates individual employee accounts, assigns roles, and deactivates leavers. See the [Ubuntu guide](docs/UBUNTU.md), [security requirements](docs/SECURITY.md), and [operations guide](docs/OPERATIONS.md) (Chinese only) for server deployment, hardening, and backup.
 
