@@ -537,7 +537,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
     background: var(--nav-bg-2); padding: 10px 12px 14px;
     box-shadow: 0 14px 24px rgba(11, 21, 38, .35);
   }
-  .nav.open .nav-menu { display: flex; }
+  /* JS 把 open 类加在实际的 .topnav 元素上（common.js 的导航折叠逻辑）；
+     这里同时保留 .nav.open 写法以避免其它页面结构不匹配。 */
+  .nav.open .nav-menu,
+  .topnav.open .nav-menu { display: flex; }
   .nav-links { flex-direction: column; align-items: stretch; gap: 2px; }
   .nav-link { justify-content: flex-start; height: 40px; }
   .nav-user { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 0 0; margin-top: 8px;

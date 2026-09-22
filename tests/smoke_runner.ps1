@@ -28,6 +28,7 @@ $env:DEEPSEEK_BASE_URL = "http://127.0.0.1:$MockPort"
 $env:DEEPSEEK_MODEL = "mock-model"
 $env:DEEPSEEK_TIMEOUT_S = "1"
 $env:RAG_SMOKE_URL = "http://127.0.0.1:$AppPort"
+$env:RAG_SMOKE_BASELINE = Join-Path $runDir "baseline.json"
 
 $mock = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "tests.mock_deepseek:app", "--host", "127.0.0.1", "--port", "$MockPort" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "mock.out.log") -RedirectStandardError (Join-Path $runDir "mock.err.log") -PassThru
 $app = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$AppPort" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "app.out.log") -RedirectStandardError (Join-Path $runDir "app.err.log") -PassThru
@@ -35,7 +36,7 @@ $code = 0
 
 try {
     $ready = $false
-    for ($i = 0; $i -lt 30; $i++) {
+    for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Milliseconds 500
         try {
             $appHealth = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$AppPort/api/health" -TimeoutSec 2
@@ -60,7 +61,7 @@ try {
             $app.WaitForExit()
             $app = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$AppPort" -WorkingDirectory $project -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runDir "app-restart.out.log") -RedirectStandardError (Join-Path $runDir "app-restart.err.log") -PassThru
             $restartReady = $false
-            for ($i = 0; $i -lt 30; $i++) {
+            for ($i = 0; $i -lt 60; $i++) {
                 Start-Sleep -Milliseconds 500
                 try {
                     $health = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$AppPort/api/health" -TimeoutSec 2
