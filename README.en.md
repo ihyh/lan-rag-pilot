@@ -136,3 +136,15 @@ For company access, follow the [Ubuntu guide](docs/UBUNTU.md) to provide interna
 Device selection scopes retrieval by filename; unmatched files need manual selection. It is **not access control**. All authorized users can still ask about the shared document library; department-level and per-person isolation are not implemented. Regular users cannot download a complete file directly, but a short file may fit in one citation excerpt, and repeated questions may reveal much of its content. Do not use this version unchanged where users must be prevented from learning one another's documents.
 
 If runtime internet access must be prohibited after model download, enforce this with host and network egress policy; `.env` offline flags are not a firewall. [First use](docs/GETTING_STARTED.md) (Chinese only) · [Troubleshooting](docs/TROUBLESHOOTING.md) (Chinese only)
+
+## Startup configuration guard
+
+At startup the application validates key configuration and **refuses to start** when it is missing or unsafe, instead of only logging a warning:
+
+- `RAG_SECRET_KEY` must be a random value (otherwise session tokens fall back to a development key that is public in the source);
+- the `DEEPSEEK_BASE_URL` host must be internal (private range, loopback, a single-label host such as `ollama`, an internal suffix, or listed explicitly in `RAG_LLM_TRUSTED_HOSTS`); public addresses are rejected;
+- `RAG_PUBLIC_ORIGIN` must not contradict the transport settings (for example an HTTPS origin with `RAG_COOKIE_SECURE=false`).
+
+The error message names the missing item and how to fix it. For local debugging only, `RAG_ALLOW_INSECURE_START=1` skips every check and the startup banner prints a prominent **INSECURE MODE** warning.
+
+The bundled `docker-compose.yml` publishes port 8088 on loopback only (`127.0.0.1:8088`); external access must go through a host reverse proxy, see the [Ubuntu guide](docs/UBUNTU.md) (Chinese only).

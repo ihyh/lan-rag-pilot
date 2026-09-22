@@ -1,4 +1,4 @@
-const CACHE = 'rag-shell-v1';
+const CACHE = 'rag-shell-v2';
 const SHELL = [
   '/login', '/app', '/admin',
   '/static/css/app.css', '/static/js/common.js', '/static/js/app.js', '/static/js/admin.js',

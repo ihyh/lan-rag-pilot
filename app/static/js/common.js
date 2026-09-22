@@ -170,9 +170,16 @@ async function api(path, opts) {
       method: method,
       headers: headers,
       body: body,
-      credentials: 'same-origin'
+      credentials: 'same-origin',
+      signal: opts.signal
     });
   } catch (e) {
+    // 用户主动取消（AbortController）不是网络故障，单独标记以便调用方区分处理。
+    if (e && (e.name === 'AbortError' || e.code === 20)) {
+      var aborted = new Error('已停止生成');
+      aborted.aborted = true;
+      throw aborted;
+    }
     var netErr = new Error('无法连接服务器，请检查网络后重试');
     netErr.network = true;
     throw netErr;
@@ -371,7 +378,7 @@ function openModal(opts) {
  */
 function formModal(opts) {
   opts = opts || {};
-  var form = h('form', { novalidate: false });
+  var form = h('form', {});
   var errBox = h('div', { class: 'modal-err hidden' }, [
     h('span', { class: 'err-ic', html: icon('alert') }),
     h('span', { class: 'err-text' })
@@ -589,19 +596,19 @@ function bindNavActions() {
 
 function openMyPermissionsModal(me) {
   var roles = {
-    root: ['系统管理员', [
+    root: [ROLE_LABELS.root, [
       '知识库问答、查看文档和引用原文、管理自己的对话并提交反馈',
       '上传、重新处理和删除文档',
       '管理用户（创建、停用、重置密码和设置角色）',
       '查看和删除全部对话、查看反馈、审计与系统概览',
       '修改运行参数'
     ]],
-    kb_admin: ['文档管理员', [
+    kb_admin: [ROLE_LABELS.kb_admin, [
       '知识库问答、查看文档和引用原文、管理自己的对话并提交反馈',
       '上传、重新处理和删除文档',
       '不能管理用户、查看全局记录或修改运行参数'
     ]],
-    user: ['普通用户', [
+    user: [ROLE_LABELS.user, [
       '知识库问答、查看引用片段、管理自己的对话并提交反馈',
       '不能打开或下载完整文档',
       '不能管理文档、用户或系统设置'
@@ -640,6 +647,16 @@ function openChangePasswordModal() {
   });
 }
 
+/* ---------------- 角色 ---------------- */
+
+/* 角色 slug -> 中文名。唯一来源：此前在权限弹层、用户表等处各写一份，容易出现
+   同一角色在不同页面显示不一致（例如用户表直接显示英文 slug）。 */
+var ROLE_LABELS = { root: '系统管理员', kb_admin: '文档管理员', user: '普通用户' };
+
+function roleLabel(role) {
+  return ROLE_LABELS[role] || role || '—';
+}
+
 /* ---------------- 导出 ---------------- */
 
 window.KB = {
@@ -647,5 +664,6 @@ window.KB = {
   fmtMs: fmtMs, excerpt: excerpt, toast: toast, busy: busy, icon: icon,
   h: h, clear: clear, qs: qs, qsa: qsa, openModal: openModal, formModal: formModal,
   registerSW: registerSW, initSession: initSession, detailText: detailText,
-  openChangePasswordModal: openChangePasswordModal, wireGlobalErrors: wireGlobalErrors
+  openChangePasswordModal: openChangePasswordModal, wireGlobalErrors: wireGlobalErrors,
+  roleLabel: roleLabel, ROLE_LABELS: ROLE_LABELS
 };

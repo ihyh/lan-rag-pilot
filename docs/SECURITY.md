@@ -39,7 +39,7 @@ Docker 的端口发布与防火墙要检查实际生效结果，不能只看 UFW
 
 使用个人账号、唯一强口令、最少管理员；离职/调岗及时停用并复核历史可见性。当前没有 MFA/SSO，不宣称企业身份体系已接入。
 
-必须设置随机 RAG_SECRET_KEY。代码缺失时会回退固定开发密钥并警告，不会自动拒绝启动。RAG_ROOT_PASSWORD 只初始化空库，修改环境不能重置已有账号。
+必须设置随机 RAG_SECRET_KEY。代码在缺失时会**直接拒绝启动**（错误信息给出生成命令），不再回退固定开发密钥。同一轮校验还会拒绝指向公网的模型地址，以及 HTTPS 来源配 `RAG_COOKIE_SECURE=false` 之类的矛盾配置；`RAG_ALLOW_INSECURE_START=1` 可显式跳过全部校验，只允许用于本机调试。RAG_ROOT_PASSWORD 只初始化空库，修改环境不能重置已有账号。
 
 LAN 用 HTTPS 与受信任内部 CA，RAG_COOKIE_SECURE=true；限制会话时长。HTTP 回环例外仅用于个人同机部署。不要把长期登录误认为不会被盗用。TLS 是传输保护，不是文档访问授权。[OWASP TLS 指南](https://cheatsheetseries.owasp.org/cheatsheets/Transport_Layer_Security_Cheat_Sheet.html)
 

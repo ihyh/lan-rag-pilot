@@ -136,3 +136,15 @@ sudo docker compose --project-directory /opt/rag -f "$RAG_COMPOSE" exec ollama o
 设备选择依据文件名缩小检索范围，未匹配的资料需手动选择；它**不是访问授权**。当前所有获授权用户仍可问答共享文档库，未实现按部门/个人隔离。普通用户不能直接下载完整文件，但短文档可能完整落在一个引用片段中，多次问答也可能逐步获知内容。若业务要求不同人员不能获知同一资料，必须先实现文档级权限，不可直接作为满足该要求的正式系统使用。
 
 模型下载后若要求运行时禁止公网，需由系统和网络出口策略实际阻断；`.env` 中的离线开关不等于防火墙。[第一次使用](docs/GETTING_STARTED.md) · [故障排查](docs/TROUBLESHOOTING.md)
+
+## 启动安全校验
+
+程序在启动时会检查关键配置，**不合格直接拒绝启动**（而不是只打一条警告）：
+
+- `RAG_SECRET_KEY` 是否已设置为随机值（缺失会让会话密钥退化为代码内公开的开发密钥）；
+- `DEEPSEEK_BASE_URL` 的主机是否属于内网（私有网段、回环、单标签主机名如 `ollama`、内网后缀，或显式列入 `RAG_LLM_TRUSTED_HOSTS`）；指向公网的地址会被拒绝；
+- `RAG_PUBLIC_ORIGIN` 与实际传输配置是否自相矛盾（例如 HTTPS 来源配 `RAG_COOKIE_SECURE=false`）。
+
+被拒绝时错误信息会指出缺哪一项以及如何修复。仅在确认无风险的本机调试场景，可用 `RAG_ALLOW_INSECURE_START=1` 临时跳过全部校验，此时启动横幅会显著提示 **INSECURE MODE**。
+
+仓库自带的 `docker-compose.yml` 只把 8088 发布到回环地址 `127.0.0.1:8088`；对外访问必须经由宿主机反向代理，见 [Ubuntu 指南](docs/UBUNTU.md)。

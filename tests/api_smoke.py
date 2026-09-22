@@ -18,6 +18,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -578,23 +579,94 @@ class Smoke:
             json={"top_k": 4, "queries_per_minute": 11, "max_concurrent_llm": 2},
         )
         check(r.status_code == 200 and r.json()["settings"]["top_k"] == 4, "root 可修改并持久化运行参数")
+        check(
+            self.c.get("/api/admin/settings").json()["settings"]["top_k"] == 4,
+            "运行参数写入后可回读一致",
+        )
+        # top_k 必须真的改变检索条数，而不只是响应里回显一个数字。
+        with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
+            ready_chunks = db.execute(
+                "SELECT COUNT(*) FROM chunks c JOIN documents d ON d.id=c.document_id "
+                "WHERE d.status='ready'"
+            ).fetchone()[0]
+        check(ready_chunks >= 3, f"可检索切片足以验证 top_k（实际 {ready_chunks} 条）")
+        source_counts: dict[int, int] = {}
+        for k in (1, 3):
+            r = self.c.patch("/api/admin/settings", json={"top_k": k})
+            check(r.status_code == 200, f"运行参数可设为 top_k={k}")
+            r = self.c.post("/api/query", json={"question": "住宿标准是多少"})
+            check(r.status_code == 200, f"top_k={k} 时问答成功")
+            source_counts[k] = len(r.json().get("sources", [])) if r.status_code == 200 else -1
+        check(
+            source_counts.get(1) == 1,
+            f"top_k=1 时只返回 1 条来源（实际 {source_counts.get(1)}）",
+        )
+        check(
+            source_counts.get(1, 0) < source_counts.get(3, 0) <= 3,
+            f"top_k=3 时来源条数随之增加且不超过 3（实际 top_k=1 -> "
+            f"{source_counts.get(1)}, top_k=3 -> {source_counts.get(3)}）",
+        )
+        r = self.c.patch("/api/admin/settings", json={"top_k": 4})
+        check(r.status_code == 200, "恢复 top_k=4，避免影响后续用例")
 
     # ---------- 6. 限流 ----------
     def test_rate_limit(self) -> None:
+        """严格断言：前 N 次必须 200、第 N+1 次必须 429，使用户不受影响。
+
+        不再接受“出现过一次 429 就算通过”——那种写法下，一个恒返回 429 的限流器
+        也能让用例变绿，且无法证明运行时参数生效。
+        通过读取当前生效值来推导 N，因此本用例不需要改动运行参数、也不需要恢复。
+        """
         print("\n== 限流 ==")
+        r = self.c.get("/api/admin/settings")
+        check(r.status_code == 200, "读取当前运行参数")
+        limit = r.json()["settings"]["queries_per_minute"] if r.status_code == 200 else 0
+        check(1 <= limit <= 60, f"限流值可判定（queries_per_minute={limit}）")
+
         r = self.c.post(
             "/api/admin/users",
             json={"username": "bob", "password": "bob123456", "role": "user"},
         )
         check(r.status_code == 201, "创建 bob")
-        self.c.post("/api/login", json={"username": "bob", "password": "bob123456"})
-        hit = False
-        for i in range(12):
-            r = self.c.post("/api/query", json={"question": f"第 {i} 次测试问题"})
-            if r.status_code == 429:
-                hit = True
-                break
-        check(hit, "第 11 次问答触发 429 限流")
+        r = self.c.post(
+            "/api/admin/users",
+            json={"username": "carol", "password": "carol123456", "role": "user"},
+        )
+        check(r.status_code == 201, "创建 carol（用于验证限流隔离）")
+
+        # 独立客户端：carol 的窗口是全新的，因此隔离断言是确定性的。
+        isolated = httpx.Client(base_url=BASE_URL, timeout=60.0)
+        try:
+            iso_login = isolated.post(
+                "/api/login", json={"username": "carol", "password": "carol123456"}
+            )
+            check(iso_login.status_code == 200, "carol 独立会话登录")
+
+            self.c.post("/api/login", json={"username": "bob", "password": "bob123456"})
+            started = time.monotonic()
+            statuses: list[int] = []
+            for i in range(1, limit + 2):
+                resp = self.c.post("/api/query", json={"question": f"第 {i} 次测试问题"})
+                statuses.append(resp.status_code)
+            elapsed = time.monotonic() - started
+
+            check(
+                statuses[:limit] == [200] * limit,
+                f"前 {limit} 次问答必须全部成功（实际 {statuses[:limit]}）",
+            )
+            check(
+                statuses[limit] == 429,
+                f"第 {limit + 1} 次问答必须返回 429（实际 {statuses[limit]}）",
+            )
+            iso_status = isolated.post("/api/query", json={"question": "carol 的独立提问"}).status_code
+            check(iso_status == 200, f"另一用户不受限流影响（实际 {iso_status}）")
+
+            # 滑动窗口固定 60 秒；若本用例自身耗时跨过窗口，结论不再成立，
+            # 必须显式报 SKIP 并使整个冒烟失败，绝不允许静默通过。
+            if elapsed >= 60.0:
+                check(False, f"[SKIP] 限流用例耗时 {elapsed:.1f}s 已跨过 60s 滑动窗口，结论不可信")
+        finally:
+            isolated.close()
 
     def test_concurrency(self) -> None:
         print("\n== 5 用户并发问答 ==")
@@ -629,7 +701,7 @@ class Smoke:
             ("[[mock:http500]]", "llm_upstream"),
             ("[[mock:http401]]", "llm_auth"),
             ("[[mock:http429]]", "llm_rate_limited"),
-            ("[[mock:sleep:2]]", "llm_timeout"),
+            ("[[mock:sleep:3]]", "llm_timeout"),
         ]:
             r = self.c.post("/api/query", json={"question": trigger})
             body = r.json().get("detail", {})
@@ -674,6 +746,7 @@ class Smoke:
 
     def finish(self) -> None:
         r = self.login("root", ROOT_PW)
+        self._write_baseline()
         r = self.c.post("/api/logout")
         self.c.close()
         print(f"\n结果: {len(PASS)} 通过, {len(FAIL)} 失败")
@@ -682,6 +755,69 @@ class Smoke:
             for f in FAIL:
                 print(f"  - {f}")
             sys.exit(1)
+
+    def _write_baseline(self) -> None:
+        """记录重启前的可核对状态，供 persistence_check.py 在重启后逐项比对。
+
+        没有这份基线，重启持久化检查只能证明“接口还活着”，无法证明
+        切片、向量和运行参数真的留下来了。
+        """
+        baseline_path = Path(
+            os.environ.get("RAG_SMOKE_BASELINE")
+            or (Path(os.environ.get("RAG_DATA_DIR", ".")) / "baseline.json")
+        )
+        probe_question = "住宿标准是多少"
+        baseline: dict = {
+            "probe_question": probe_question,
+            "counts": {},
+            "settings": {},
+            "probe": {},
+        }
+
+        settings_resp = self.c.get("/api/admin/settings")
+        if settings_resp.status_code == 200:
+            baseline["settings"] = settings_resp.json().get("settings", {})
+
+        # 先跑探针问答，再统计行数：探针本身会新增 1 个对话、1 个问答和若干引用，
+        # 顺序反过来会让基线永远比重启后的实际值少一条。
+        probe = self.c.post("/api/query", json={"question": probe_question})
+        if probe.status_code == 200:
+            body = probe.json()
+            baseline["probe"] = {
+                "chat_id": body.get("chat_id"),
+                "conversation_id": body.get("conversation_id"),
+                "chunk_ids": [s.get("chunk_id") for s in body.get("sources", [])],
+                "document_ids": sorted({s.get("document_id") for s in body.get("sources", [])}),
+            }
+        else:
+            print(f"  [WARN] 基线探针问答未成功（HTTP {probe.status_code}），将跳过探针比对")
+
+        with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
+            for key, sql in (
+                ("users", "SELECT COUNT(*) FROM users"),
+                ("documents_ready", "SELECT COUNT(*) FROM documents WHERE status='ready'"),
+                ("chunks", "SELECT COUNT(*) FROM chunks"),
+                (
+                    "chunks_with_vector",
+                    "SELECT COUNT(*) FROM chunks WHERE length(vector) > 0",
+                ),
+                ("conversations", "SELECT COUNT(*) FROM conversations"),
+                ("chats", "SELECT COUNT(*) FROM chats"),
+                ("chat_sources", "SELECT COUNT(*) FROM chat_sources"),
+            ):
+                baseline["counts"][key] = db.execute(sql).fetchone()[0]
+
+        if not baseline["counts"]["chunks"] or not baseline["probe"]:
+            check(
+                False,
+                "重启前基线必须包含切片与成功的探针问答"
+                f"（chunks={baseline['counts']['chunks']}，probe={'有' if baseline['probe'] else '无'}）",
+            )
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(
+            json.dumps(baseline, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"  [INFO] 已写入重启基线: {baseline_path}")
 
 
 def main() -> None:

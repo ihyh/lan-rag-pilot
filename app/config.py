@@ -5,11 +5,16 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import math
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 允许的“内网”主机名后缀；不在此列且带点的公网域名会被启动校验拒绝。
+_INTRANET_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa")
 
 
 def _int(name: str, default: int) -> int:
@@ -39,6 +44,38 @@ def _bool(name: str, default: bool) -> bool:
     if raw == "":
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def _host_of(url: str) -> str:
+    return (urlparse(url).hostname or "").strip().strip("[]").lower()
+
+
+def _is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host in {"localhost", "localhost.localdomain"}
+
+
+def _is_intranet_host(host: str, trusted: set[str] | None = None) -> bool:
+    """判断模型服务主机是否属于内网。
+
+    放行：显式信任列表、回环/私有/链路本地 IP、单标签主机名（如 Docker 服务名
+    ``ollama``）、以及 ``.local``/``.internal`` 等内网后缀。
+    拒绝：其余带点的域名，例如 ``api.deepseek.com``。
+    """
+    if not host:
+        return False
+    if trusted and host in trusted:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        pass
+    if "." not in host:
+        return True
+    return host.endswith(_INTRANET_SUFFIXES)
 
 
 class Settings:
@@ -94,9 +131,82 @@ class Settings:
         # 上传
         self.max_upload_mb = _int("RAG_MAX_UPLOAD_MB", 25)
 
+        # 启动安全校验（见 Settings.validate_or_raise）
+        self.allow_insecure_start = _bool("RAG_ALLOW_INSECURE_START", False)
+        self.llm_trusted_hosts = {
+            item.strip().lower()
+            for item in (os.environ.get("RAG_LLM_TRUSTED_HOSTS") or "").split(",")
+            if item.strip()
+        }
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    def validate_or_raise(self) -> None:
+        """启动前校验关键配置；不安全或缺失时拒绝启动（除非显式开启逃生开关）。
+
+        docs/SECURITY_AUDIT.md 第 2、3 条指出：模型地址缺失会回退公网、SESSION 密钥
+        缺失只警告不阻止启动，等于把数据边界交给运维的细心程度。这里把两条都改为
+        fail-closed：宁可起不来，也不要带着错误边界对外服务。
+        """
+        problems: list[str] = []
+
+        if not self.secret_key:
+            problems.append(
+                "未设置 RAG_SECRET_KEY：会话令牌会退化为代码内公开的开发密钥。\n"
+                '        生成一个：python -c "import secrets; print(secrets.token_urlsafe(48))"'
+            )
+
+        if not self.deepseek_api_key:
+            problems.append(
+                "未设置 DEEPSEEK_API_KEY：连接内网 Ollama 时也需要一个非空占位值（例如 ollama）。"
+            )
+
+        llm_host = _host_of(self.deepseek_base_url)
+        if not _is_intranet_host(llm_host, self.llm_trusted_hosts):
+            problems.append(
+                f"DEEPSEEK_BASE_URL 指向非内网地址 {self.deepseek_base_url!r}"
+                f"（解析出的主机为 {llm_host or '(空)'}）：检索片段会被发送到内网之外。\n"
+                "        改用内网 Ollama 地址（如 http://ollama:11434/v1）；若该主机确实是"
+                "受控内网机，请加入 RAG_LLM_TRUSTED_HOSTS。"
+            )
+
+        origin = self.public_origin
+        if origin.startswith("https://") and not self.cookie_secure:
+            problems.append(
+                f"RAG_PUBLIC_ORIGIN 是 HTTPS（{origin}）但 RAG_COOKIE_SECURE 为 false："
+                "会话 Cookie 可能在明文链路上传输。请设置 RAG_COOKIE_SECURE=true。"
+            )
+        if origin.startswith("http://") and self.cookie_secure:
+            origin_host = _host_of(origin)
+            if not _is_loopback_host(origin_host):
+                problems.append(
+                    f"RAG_PUBLIC_ORIGIN 是 HTTP（{origin}）但 RAG_COOKIE_SECURE 为 true："
+                    "浏览器不会回传该 Cookie，登录会陷入循环。"
+                )
+
+        if not problems:
+            return
+
+        detail = "\n".join(f"  - {item}" for item in problems)
+        if self.allow_insecure_start:
+            print(
+                "\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                "  INSECURE MODE：RAG_ALLOW_INSECURE_START=1，已跳过启动校验\n"
+                f"{detail}\n"
+                "  以上问题依然存在，仅可用于本机调试，禁止用于共享或企业环境。\n"
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+            )
+            return
+
+        raise RuntimeError(
+            "启动被拒绝：以下配置不安全或缺失。修复后重新启动，"
+            "或仅在确认无风险时设置 RAG_ALLOW_INSECURE_START=1 临时跳过：\n"
+            f"{detail}\n"
+            "  配置项说明见 docs/IT_handover.md；企业部署见 docs/UBUNTU.md。"
+        )
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

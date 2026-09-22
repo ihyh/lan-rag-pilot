@@ -29,6 +29,8 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 def _bootstrap() -> None:
     """启动期一次性初始化（幂等，容器重启安全）。"""
+    # 先做配置校验：不安全或缺失的关键配置必须让进程起不来，而不是只打一条警告。
+    settings.validate_or_raise()
     init_db()
     db = connect()
     try:
@@ -56,10 +58,6 @@ def _bootstrap() -> None:
                 detail="首次启动创建初始 root 账号",
             )
             logger.info("已用 RAG_ROOT_PASSWORD 创建初始 root 账号（建议尽快在界面修改密码）")
-        if not settings.secret_key:
-            logger.warning(
-                "未设置 RAG_SECRET_KEY：会话令牌哈希使用内置开发密钥，接入正式环境前必须配置"
-            )
         vector_index.reload(db)
     finally:
         db.close()
