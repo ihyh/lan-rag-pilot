@@ -18,7 +18,27 @@
 
 每个平台单独制作一个包，记录完整源码 commit、打包时间、OS/架构、安装器版本/签名、依赖锁定文件、镜像 ID、模型标签/摘要/来源版本、许可证、测试结果。参考 [清单模板](../deploy/MODEL_MANIFEST.md)。
 
-源码从 [项目仓库](https://github.com/ihyh/lan-rag-pilot)取得，在准备机选定审核通过的 commit，用 `git archive` 导出，不携带开发机的 `.env`、data、会话、备份或虚拟环境。具体过程见 [源码交付](GIT_HANDOFF.md)。
+源码从 [项目仓库](https://github.com/ihyh/lan-rag-pilot)取得。仅在获准联网的准备机操作，选定审核通过的完整 commit 后导出；运行机不直接 `git pull`。
+
+准备机 PowerShell，在新空目录执行：
+
+```powershell
+git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag-source
+Set-Location C:\rag-source
+git status --short
+git log -5 --oneline
+$releaseCommit = 'REPLACE_WITH_APPROVED_FULL_COMMIT'
+if ($releaseCommit -like 'REPLACE*') { throw '先填写已审核的源码 commit' }
+git show --no-patch --format=fuller $releaseCommit
+git archive --format=zip --output=C:\rag-source.zip $releaseCommit
+Get-FileHash -Algorithm SHA256 C:\rag-source.zip
+```
+
+核对导出内容包含 app、scripts、requirements.txt，再将源码放入包的 project 目录。`git archive` 只导出已提交文件；构建镜像、制包和文档必须对应同一批准提交。未提交的修改不会包含在归档中；如需交付另行批准的补丁，单独记录 patch 和摘要。
+
+实际 `.env`、data、models、会话、备份、凭据、虚拟环境、私人评测和本地规划记录不随源码交付。运行机不保存 GitHub 令牌、SSH 私钥或公网 API 凭据。软件包接收后按[运维升级](OPERATIONS.md)备份并在独立实例演练。
+
+本地修改、GitHub 合并、离线包交付和服务器验收分别记录。GitHub 更新不代表运行服务已更新；历史快照保留在 Git 中，不作为现行部署状态。
 
 推荐包布局（这是管理员要制作的目录，不是仓库已附带的文件）：
 
