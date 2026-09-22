@@ -33,7 +33,8 @@ function deviceDocumentIds(documents, device) {
   var patterns = {
     PLM: /(^|[^a-z0-9])plm(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i,
     PLUSPRO: /(^|[^a-z0-9])plus[\s_-]*pro(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i,
-    PLUS500: /(^|[^a-z0-9])plus[\s_-]*500(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i
+    PLUS500: /(^|[^a-z0-9])plus[\s_-]*500(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i,
+    LP: /(^|[^a-z0-9])lp(?:v?\d+(?:\.\d+)+)?(?=$|[^a-z0-9])/i
   };
   if (!patterns[device]) { return []; }
   return (documents || []).filter(function (doc) {
