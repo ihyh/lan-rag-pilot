@@ -34,13 +34,23 @@ jobs:
           node --check app/static/js/app.js
           node --check app/static/js/admin.js
           node --check app/static/js/common.js
+          bash -n setup_linux.sh scripts/backup_data.sh scripts/restore_check.sh scripts/install_backup_cron.sh tests/smoke_runner.sh
+
+      - name: Unit and contract checks
+        shell: bash
+        run: |
+          # 每个文件都显式列出：此前 device_scope_check.js 只因被 citations_check 间接
+          # require 才执行，失败信息会混在其它用例里；conversation_scope_check.py 则完全没跑。
           node tests/form_modal_check.js
           node tests/citations_check.js
-          bash -n scripts/backup_data.sh scripts/restore_check.sh scripts/install_backup_cron.sh tests/smoke_runner.sh
+          node tests/device_scope_check.js
           python tests/eval_runner_check.py
           python tests/llm_request_check.py
           python tests/retrieval_quality_check.py
+          python tests/hybrid_retrieval_check.py
           python tests/doc_parsing_check.py
+          python tests/conversation_scope_check.py
+          python tests/config_guard_check.py
 
       - name: Compose syntax
         shell: bash
@@ -48,6 +58,6 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
 
-      - name: End-to-end smoke
+      - name: End-to-end smoke（含重启持久化）
         shell: bash
         run: bash tests/smoke_runner.sh
