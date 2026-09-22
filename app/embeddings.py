@@ -71,8 +71,9 @@ class EmbeddingService:
             self.state = "error"
             self.message = (
                 f"嵌入模型加载失败：{exc}。若服务器无法访问 Hugging Face，"
-                "请在有网机器运行 scripts/predownload_models.py 后，"
-                "把 models 目录挂载到 /rag/models 再重启。"
+                "请在联网准备机运行 python scripts/install_bge.py --project .，"
+                "把生成的 models/bge-small-zh-v1.5 目录复制到目标机，"
+                "将 RAG_EMBED_MODEL 指向该目录后再重启。"
             )
 
     # ---------- 对外接口 ----------
