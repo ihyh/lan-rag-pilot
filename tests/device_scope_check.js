@@ -20,7 +20,7 @@ function element() {
   };
 }
 const elements = {};
-const buttons = ['PLM', 'PLUSPRO', 'PLUS500'].map(device => {
+const buttons = ['PLM', 'PLUSPRO', 'PLUS500', 'LP'].map(device => {
   assert.match(html, new RegExp('data-device="' + device + '"'));
   const btn = element(); btn.dataset.device = device; return btn;
 });
@@ -44,7 +44,13 @@ const docs = [
   { id: 14, filename: 'PLUSPROv2.1维修手册.pdf' },
   { id: 15, filename: 'PLUSPRO20.pdf' },
   { id: 16, filename: 'PLUS5002.0操作说明.pdf' },
-  { id: 17, filename: 'PLUS500v2.1维修手册.pdf' }
+  { id: 17, filename: 'PLUS500v2.1维修手册.pdf' },
+  { id: 18, filename: 'Fortrend LP PxM Software Manual.pdf' },
+  { id: 19, filename: 'LP2.0操作说明.pdf' },
+  { id: 20, filename: 'LPv2.1维修手册.pdf' },
+  { id: 21, filename: 'XLP.pdf' },
+  { id: 22, filename: 'LP20.pdf' },
+  { id: 23, filename: 'LP_PLM合订.pdf' }
 ];
 let failDocuments = false;
 const context = vm.createContext({
@@ -77,6 +83,7 @@ const ids = device => Array.from(context.deviceDocumentIds(docs, device));
 assert.deepEqual(ids('PLM'), [1, 10, 11]);
 assert.deepEqual(ids('PLUSPRO'), [2, 3, 13, 14]);
 assert.deepEqual(ids('PLUS500'), [4, 16, 17]);
+assert.deepEqual(ids('LP'), [18, 19, 20]);
 assert.deepEqual(ids('UNKNOWN'), []);
 async function main() {
   const t = context.testScope;
