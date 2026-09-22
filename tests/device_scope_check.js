@@ -92,6 +92,9 @@ async function main() {
   buttons[1].events.click();
   assert.equal(t.S.newDocumentIds.length, 0, 'loading cannot select');
   await t.loadDocuments();
+  assert.equal(buttons[3].disabled, false, 'LP document enables LP button');
+  buttons[3].events.click();
+  assert.deepEqual(Array.from(t.S.newDocumentIds), [18, 19, 20]);
   buttons[1].events.click();
   assert.deepEqual(Array.from(t.S.newDocumentIds), [2, 3, 13, 14]);
   assert.equal(buttons[1].attrs['aria-pressed'], 'true');
