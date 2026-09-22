@@ -201,6 +201,6 @@ curl --fail http://127.0.0.1:8088/api/ready
 - 执行 [备份与恢复演练](OPERATIONS.md)，记录模型摘要和问题验收结果。
 - 所有账号是否允许读取同一个资料库？如果不是，**停止上线**。
 
-仓库原 Compose 的 8088 发布到所有接口，旧 HTTPS override 的 ports 可能叠加而非替换。不要用它们替代本页独立配置；Compose 合并机制见 [官方规则](https://docs.docker.com/reference/compose-file/merge/)。Docker 发布端口可能绕过普通 UFW 规则，必须核对实际转发路径，见 [Docker 防火墙说明](https://docs.docker.com/engine/install/ubuntu/)。
+仓库原 Compose 现在只把 8088 发布到回环地址（`127.0.0.1:8088:8088`），可安全地与本页的 Nginx 反代配合；但企业部署仍应使用本页的独立配置。历史上那份 HTTPS override 示例已从仓库删除，此处仅作说明，不要再去寻找或自行叠加 override 文件——Compose 的 ports 是叠加而非替换，合并机制见 [官方规则](https://docs.docker.com/reference/compose-file/merge/)。Docker 发布端口可能绕过普通 UFW 规则，必须核对实际转发路径，见 [Docker 防火墙说明](https://docs.docker.com/engine/install/ubuntu/)。
 
 本页配置经过文档级核对，尚未在本次编写环境做 Ubuntu 冷启动、HTTPS 或 GPU 验收。完成上述检查才可将本地交付清单标记为通过。

@@ -77,7 +77,7 @@
         </div>
         <p class="small" id="deviceScopeHint" role="status">正在加载设备文档…</p>
       </div>
-      <div class="messages hidden" id="messages"></div>
+      <div class="messages hidden" id="messages" aria-live="polite" aria-atomic="false"></div>
     </div>
 
     <div class="composer card">
@@ -93,6 +93,7 @@
                 placeholder="请输入问题（Enter 发送，Ctrl+Enter 换行）"></textarea>
       <div class="composer-bar">
         <span class="composer-hint">Enter 发送 · Ctrl+Enter 换行 · <span id="questionCount">0 / 2000</span></span>
+        <button class="btn hidden" id="stopBtn" type="button">停止生成</button>
         <button class="btn btn-primary btn-send" id="sendBtn" type="button">发送</button>
       </div>
     </div>

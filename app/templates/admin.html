@@ -73,6 +73,10 @@
           <form id="settingsForm">
             <div class="settings-grid">
               <label class="field">
+                <span class="field-label">检索片段条数 top_k（1–20）</span>
+                <input class="input" type="number" id="cfg-top_k" name="top_k" min="1" max="20" step="1" required>
+              </label>
+              <label class="field">
                 <span class="field-label">每分钟问答上限（1–120）</span>
                 <input class="input" type="number" id="cfg-queries_per_minute" name="queries_per_minute" min="1" max="120" step="1" required>
               </label>

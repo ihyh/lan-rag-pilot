@@ -56,6 +56,8 @@
         h('div', { class: 'kv-grid' }, [
           kv('应用版本', m.version), kv('嵌入模型', m.embed_model), kv('嵌入后端', m.embed_backend),
           kv('生成模型', m.llm_model),
+          kv('切片上限', m.chunk_max_tokens + ' token'), kv('切片重叠', m.chunk_overlap_tokens + ' token'),
+          kv('拒答阈值', m.min_relevance_score),
           kv('对外地址', m.public_origin || '未配置')
         ])
       ]));
@@ -142,7 +144,7 @@
         actions.appendChild(actionButton(u.is_active ? '停用' : '启用', u.is_active ? 'btn-danger' : 'btn-outline', function () { patchUser(u.id, { is_active: !u.is_active }); }));
         actions.appendChild(actionButton('设置角色', 'btn-outline', function () { setUserRole(u); }));
         return h('tr', {}, [
-          cell(u.username, 'cell-main'), h('td', {}, [h('span', { class: 'tag-role tag-' + u.role }, [u.role])]),
+          cell(u.username, 'cell-main'), h('td', {}, [h('span', { class: 'tag-role tag-' + u.role }, [roleLabel(u.role)])]),
           h('td', {}, [badge(u.is_active ? '启用' : '停用', u.is_active ? 'b-ok' : 'b-muted')]),
           cell(fmtTime(u.last_login_at)), cell(fmtTime(u.created_at)), actions
         ]);
@@ -243,6 +245,7 @@
       ev.preventDefault(); var btn = qs('#saveSettingsBtn'); busy(btn, true, '保存中…');
       try {
         var body = {
+          top_k: Number(qs('#cfg-top_k').value),
           queries_per_minute: Number(qs('#cfg-queries_per_minute').value),
           max_concurrent_llm: Number(qs('#cfg-max_concurrent_llm').value)
         };

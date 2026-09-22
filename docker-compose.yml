@@ -8,9 +8,13 @@ services:
     image: rag-pilot:local
     container_name: rag-pilot
     restart: unless-stopped
+    # 本服务始终使用本机构建的镜像，避免从 registry 意外拉到同名镜像。
+    pull_policy: never
     env_file:
       - .env
     environment:
+      # 注意：容器内的监听地址/端口由 Dockerfile 的 CMD 固定为 0.0.0.0:8088，
+      # 这两个变量只影响 app/main.py 打印的启动横幅；宿主模式脚本才真正使用它们。
       RAG_HOST: "0.0.0.0"
       RAG_PORT: "8088"
       RAG_DATA_DIR: "/rag/data"
@@ -20,7 +24,9 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     ports:
-      - "8088:8088"
+      # 只发布到回环地址：本应用不提供 TLS，直接发布到所有网卡会把明文入口
+      # 暴露给整个网段。对外访问请走宿主机反向代理（见 docs/UBUNTU.md）。
+      - "127.0.0.1:8088:8088"
     volumes:
       - rag_data:/rag/data
       - rag_models:/rag/models

@@ -30,11 +30,11 @@ Windows 脚本不移除值两侧引号或行尾注释；Compose 则有自己的�
 
 | 变量 | 代码默认或作用 | 离线部署注意 |
 |---|---|---|
-| DEEPSEEK_BASE_URL | 缺失/空值回退公共 DeepSeek URL | 必须显式本机/内网兼容接口 /v1 |
+| DEEPSEEK_BASE_URL | 缺失/空值回退公共 DeepSeek URL | 必须显式本机/内网兼容接口 /v1；**主机非内网时拒绝启动** |
 | DEEPSEEK_MODEL | 缺失回退公共服务模型名 | 填已离线导入的精确本地标签 |
 | DEEPSEEK_API_KEY | 默认空；模型调用要求非空 | 本文 Ollama 示例为 ollama，不是真正接口鉴权 |
 | DEEPSEEK_TIMEOUT_S | 60 秒 | 教程 180，需与代理超时协调 |
-| RAG_SECRET_KEY | 默认空，代码会用固定开发密钥 | 必须随机配置，缺失不自动阻止启动 |
+| RAG_SECRET_KEY | 默认空，**缺失时拒绝启动**（不再回退开发密钥） | 必须随机配置；错误信息内含生成命令 |
 | RAG_ROOT_PASSWORD | 空库没有初始密码时启动失败 | 只初始化首个 root，不重置已有用户 |
 | RAG_COOKIE_SECURE | false | LAN HTTPS 必须 true |
 | RAG_SESSION_TTL_HOURS | 168 小时 | 教程 8，由组织审定 |

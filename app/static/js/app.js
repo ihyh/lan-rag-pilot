@@ -54,7 +54,8 @@ function deviceDocumentIds(documents, device) {
     documents: [],
     documentsLoaded: false,
     newDocumentIds: [],    // 新对话限定范围；空数组表示全库
-    currentDocumentIds: []
+    currentDocumentIds: [],
+    abortController: null  // 生成中用于“停止生成”；非生成期为 null
   };
 
   var els = {};
@@ -64,6 +65,7 @@ function deviceDocumentIds(documents, device) {
     els.greeting = document.getElementById('chatGreeting');
     els.input = document.getElementById('questionInput');
     els.sendBtn = document.getElementById('sendBtn');
+    els.stopBtn = document.getElementById('stopBtn');
     els.newChatBtn = document.getElementById('newChatBtn');
     els.deleteChatBtn = document.getElementById('deleteChatBtn');
     els.historyList = document.getElementById('historyList');
@@ -455,6 +457,16 @@ function deviceDocumentIds(documents, device) {
     S.typingEl = null;
   }
 
+  /** 生成中：显示“停止生成”并让读屏知道正在输出 */
+  function setGenerating(on) {
+    if (els.stopBtn) { els.stopBtn.classList.toggle('hidden', !on); }
+    if (els.messages) { els.messages.setAttribute('aria-busy', on ? 'true' : 'false'); }
+  }
+
+  function stopGenerating() {
+    if (S.abortController) { S.abortController.abort(); }
+  }
+
   async function sendQuestion() {
     if (S.busy) { return; }
     var q = els.input.value.trim();
@@ -465,6 +477,8 @@ function deviceDocumentIds(documents, device) {
     }
     var conversationId = S.currentId;
     S.busy = true;
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    S.abortController = controller;
     updateDeleteButton();
     updateScopeControls();
     hideGreeting();
@@ -472,6 +486,7 @@ function deviceDocumentIds(documents, device) {
     els.input.value = '';
     autoSize();
     busy(els.sendBtn, true, '生成中…');
+    setGenerating(true);
 
     // 新对话清空欢迎页；继续追问时保留之前的轮次。
     if (conversationId === null) { clear(els.messages); }
@@ -487,6 +502,7 @@ function deviceDocumentIds(documents, device) {
       else { body.document_ids = S.newDocumentIds.slice(); }
       var res = await api('/api/query?stream=true', {
         method: 'POST', body: body,
+        signal: controller ? controller.signal : undefined,
         onDelta: function (text) {
           if (!liveText) {
             removeTyping();
@@ -498,14 +514,31 @@ function deviceDocumentIds(documents, device) {
           scrollBottom();
         }
       });
-      S.currentId = res.conversation_id;
+      // 先把详情取回来再认领 currentId：否则详情请求失败时状态会停在“已切换”，
+      // 左侧历史列表和“限定文档”提示都会与实际不一致。
       var conversation = await api('/api/conversations/' + res.conversation_id);
+      S.currentId = res.conversation_id;
       renderConversation(conversation);
       await loadHistoryOnly();
     } catch (e) {
       removeTyping();
+      if (e && e.status === 401) {
+        if (liveBubble && liveBubble.parentNode) { liveBubble.parentNode.removeChild(liveBubble); }
+        return;
+      }
+      if (e && e.aborted) {
+        // 用户主动停止：保留已经生成的内容并明确标注，不算错误。
+        if (liveText && liveText.textContent) {
+          liveText.textContent += '\n（已停止生成）';
+        } else if (liveBubble && liveBubble.parentNode) {
+          liveBubble.parentNode.removeChild(liveBubble);
+          els.messages.appendChild(errorBubble('已停止生成。'));
+        }
+        S.currentId = conversationId;
+        try { await loadHistoryOnly(); } catch (e2) { /* 历史刷新失败不影响已停止的事实 */ }
+        return;
+      }
       if (liveBubble && liveBubble.parentNode) { liveBubble.parentNode.removeChild(liveBubble); }
-      if (e && e.status === 401) { return; }
       // 后端 502 时 detail 里带 conversation_id，可回拉失败对话展示
       var failedConversationId = e && e.data && e.data.detail && e.data.detail.conversation_id;
       if (failedConversationId) {
@@ -514,19 +547,20 @@ function deviceDocumentIds(documents, device) {
           S.currentId = failedConversation.id;
           renderConversation(failedConversation);
           await loadHistoryOnly();
-        } catch (e2) {
-          clear(els.messages);
-          els.messages.appendChild(askBubble(q));
-          els.messages.appendChild(errorBubble('回答失败：' + (e.message || '未知错误')));
-        }
-      } else {
-        if (conversationId === null) {
-          clear(els.messages);
-          els.messages.appendChild(askBubble(q));
-        }
-        els.messages.appendChild(errorBubble('回答失败：' + (e.message || '未知错误')));
+          return;
+        } catch (e2) { /* 拉取失败：继续走下方通用失败展示 */ }
       }
+      // 通用失败：回滚会话状态到本轮开始之前，保持界面与实际一致。
+      S.currentId = conversationId;
+      if (conversationId === null) {
+        clear(els.messages);
+        els.messages.appendChild(askBubble(q));
+      }
+      els.messages.appendChild(errorBubble('回答失败：' + (e.message || '未知错误')));
+      try { await loadHistoryOnly(); } catch (e3) { /* 历史刷新失败不影响错误提示 */ }
     } finally {
+      S.abortController = null;
+      setGenerating(false);
       busy(els.sendBtn, false);
       S.busy = false;
       updateDeleteButton();
@@ -565,6 +599,7 @@ function deviceDocumentIds(documents, device) {
     if (gi) { gi.innerHTML = icon('chat'); }
 
     els.sendBtn.addEventListener('click', function () { sendQuestion(); });
+    if (els.stopBtn) { els.stopBtn.addEventListener('click', stopGenerating); }
     els.deleteChatBtn.addEventListener('click', deleteSelectedChat);
     els.newChatBtn.addEventListener('click', function () {
       if (S.busy) { toast('正在生成回答，请稍候', 'warn'); return; }
