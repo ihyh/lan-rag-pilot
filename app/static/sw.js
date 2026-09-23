@@ -1,7 +1,7 @@
-const CACHE = 'rag-shell-v2';
+const CACHE = 'rag-shell-v3';
 const SHELL = [
   '/login', '/app', '/admin',
-  '/static/css/app.css', '/static/js/common.js', '/static/js/app.js', '/static/js/admin.js',
+  '/static/css/app.css', '/static/js/common.js', '/static/js/app.js?v=lp-device-2', '/static/js/admin.js',
   '/static/manifest.webmanifest', '/static/favicon.svg', '/static/icons/icon.svg'
 ];
 

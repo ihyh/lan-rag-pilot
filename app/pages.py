@@ -35,7 +35,9 @@ def login_page(request: Request, user=Depends(current_user_or_none)):
 def app_page(request: Request, user=Depends(current_user_or_none)):
     if user is None:
         return RedirectResponse("/login")
-    return templates.TemplateResponse(request, "app.html")
+    response = templates.TemplateResponse(request, "app.html")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/admin")
