@@ -114,7 +114,7 @@ volumes:
 
 只有 Ollama 容器内部监听所有接口，并无对主机/LAN 的 11434 映射。internal 网络是附加限制，不替代宿主机和网络出口控制。
 
-GPU：在驱动、Toolkit 和 Compose 版本通过验证后，可在 ollama 服务级增加 `gpus: all`（至少 Compose 2.30，见 [官方字段说明](https://docs.docker.com/reference/compose-file/services/#gpus)）。这是部署管理员可选修改，不是上面 CPU 示例已启用 GPU。使用 `ollama ps` 验证实际占用，不为多用户盲目增加并发。
+GPU：在驱动、Toolkit 和 Compose 版本通过验证后，可在 `ollama` 服务级增加 `gpus: all`（至少 Compose 2.30，见 [官方字段说明](https://docs.docker.com/reference/compose-file/services/#gpus)）。若还要让 BGE 嵌入使用 GPU，`rag` 服务也必须增加 `gpus: all`，并使用装有匹配 CUDA 版 PyTorch 的 RAG 镜像，再设置 `RAG_EMBED_DEVICE=cuda`。这是部署管理员可选修改，不是上面 CPU 示例已启用 GPU。使用 `ollama ps` 与 `/api/ready` 的 `embed_device` 分别验证生成和嵌入的实际设备，不为多用户盲目增加并发。
 
 ## 4. 创建 .env
 

@@ -103,9 +103,11 @@
         }
         var state = d.status === 'ready' ? badge('就绪', 'b-ok') : d.status === 'failed' ? badge('失败', 'b-err') : badge('处理中', 'b-warn');
         var restricted = d.visibility === 'restricted';
+        var grantSummary = (d.granted_user_count || 0) + ' 个账号 / ' +
+          (d.granted_group_count || 0) + ' 个组';
         var scope = h('td', {}, [
           h('span', { class: restricted ? 'doc-scope-restricted' : '' },
-            [restricted ? ('仅授权 ' + (d.granted_user_count || 0) + ' 人') : '所有人'])
+            [restricted ? ('仅授权 ' + grantSummary) : '所有人'])
         ]);
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
         if (d.error) { name.appendChild(h('div', { class: 'doc-err', title: d.error }, [d.error])); }
@@ -135,12 +137,12 @@
           name: 'visibility', label: '可见范围', type: 'select', value: detail.visibility,
           options: [
             { value: 'shared', label: '所有人可见（默认）' },
-            { value: 'restricted', label: '仅下列账号可见' }
+            { value: 'restricted', label: '仅下列账号或用户组可见' }
           ]
         },
         {
           name: 'user_ids', type: 'checkboxes', numeric: true,
-          label: '可见账号（选择「仅下列账号可见」时生效）',
+          label: '可见账号（选择受限范围时生效）',
           value: detail.granted_user_ids,
           emptyText: '暂无可授权的账号，请先在“用户管理”里创建',
           options: (detail.candidates || []).map(function (u) {

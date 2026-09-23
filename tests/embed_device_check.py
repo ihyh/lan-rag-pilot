@@ -15,11 +15,12 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
-from app.embeddings import device_available  # noqa: E402
+from app.embeddings import EmbeddingService, device_available  # noqa: E402
 
 PASS: list[str] = []
 FAIL: list[str] = []
@@ -123,6 +124,30 @@ def main() -> None:
     check(
         ok_mps or bool(reason_mps.strip()),
         "mps 不可用时必须给出非空原因",
+    )
+
+    real_import = __import__
+
+    def fail_torch_import(name, *args, **kwargs):
+        if name == "torch":
+            raise OSError("simulated missing DLL")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=fail_torch_import):
+        ok_broken, reason_broken = device_available("cuda")
+    check(
+        not ok_broken and "PyTorch 无法加载" in reason_broken,
+        "PyTorch 因 DLL/运行库错误无法导入时返回可诊断结果，不让加载线程卡住",
+    )
+
+    with patch("app.embeddings.settings.embed_device", "cuda"), patch(
+        "builtins.__import__", side_effect=fail_torch_import
+    ):
+        service = EmbeddingService()
+        service._load_real()
+    check(
+        service.state == "error" and service.device == "cuda" and "PyTorch 无法加载" in service.message,
+        "PyTorch 加载失败时嵌入服务进入 error 状态并保留请求设备",
     )
 
     # 越界序号不应崩溃

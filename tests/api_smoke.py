@@ -86,8 +86,16 @@ class Smoke:
         # 密码不以明文落库：登录用任意大密码不应成功且不泄露
         r = self.c.get("/api/health")
         check(r.status_code == 200, "健康检查 200")
+        check(
+            r.json().get("embed_device") == "mock" and r.json().get("embed_backend") == "mock",
+            "健康检查报告实际嵌入设备与后端",
+        )
         r = self.c.get("/api/ready")
         check(r.status_code == 200 and r.json().get("status") == "ready", "就绪检查 200")
+        check(
+            r.json().get("embed_device") == "mock" and r.json().get("embed_backend") == "mock",
+            "就绪检查报告实际嵌入设备与后端",
+        )
         with sqlite3.connect(os.environ["RAG_DB_PATH"]) as db:
             password_hash = db.execute(
                 "SELECT password_hash FROM users WHERE username='root'"
@@ -574,6 +582,10 @@ class Smoke:
         check(self.c.get("/api/admin/departments").status_code == 404, "root 后台部门接口已移除")
         r = self.c.get("/api/admin/overview")
         check(r.status_code == 200 and r.json()["counts"]["users"] >= 2, "概览计数正常")
+        check(
+            r.json().get("model", {}).get("embed_device") == "mock",
+            "管理概览报告实际嵌入设备",
+        )
         r = self.c.patch(
             "/api/admin/settings",
             json={"top_k": 4, "queries_per_minute": 11, "max_concurrent_llm": 2},

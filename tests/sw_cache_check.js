@@ -19,12 +19,18 @@ const adminSource = fs.readFileSync(path.join(__dirname, '../app/static/js/admin
 const listeners = {};
 const precached = [];
 const putUrls = [];
+const failedPrecache = '/static/favicon.svg';
 let fetchOk = true;
 
 function makeCache() {
   return {
-    addAll: async urls => { precached.push(...urls); },
-    put: async request => { putUrls.push(request.url); },
+    add: async url => {
+      if (url === failedPrecache) { throw new Error('simulated missing static resource'); }
+      precached.push(url);
+    },
+    put: request => new Promise(resolve => {
+      setTimeout(() => { putUrls.push(request.url); resolve(); }, 0);
+    }),
     match: async () => null
   };
 }
@@ -82,6 +88,11 @@ async function main() {
     );
   }
   assert.ok(precached.length > 0, '预缓存清单非空');
+  assert.ok(!precached.includes(failedPrecache), '单个缺失资源不会被误记为已缓存');
+  assert.ok(
+    precached.includes('/static/css/app.css') && precached.includes('/static/js/common.js'),
+    '单个资源预缓存失败后，其余静态资源仍会完成缓存'
+  );
   for (const url of precached) {
     assert.ok(url.startsWith('/static/'), `预缓存项应全部位于 /static/ 下，实际出现 ${url}`);
   }

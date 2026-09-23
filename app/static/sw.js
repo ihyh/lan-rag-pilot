@@ -29,7 +29,9 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE)
       // 单个资源缺失不应让整个 Service Worker 安装失败。
-      .then(cache => cache.addAll(PRECACHE).catch(() => {}))
+      .then(cache => Promise.all(PRECACHE.map(
+        url => cache.add(url).catch(() => null)
+      )))
   );
   self.skipWaiting();
 });
@@ -56,9 +58,9 @@ self.addEventListener('fetch', event => {
 
   event.respondWith(
     caches.open(CACHE).then(cache =>
-      fetch(request).then(response => {
+      fetch(request).then(async response => {
         // 只缓存成功响应：错误页、重定向都不应该进缓存。
-        if (response && response.ok) { cache.put(request, response.clone()); }
+        if (response && response.ok) { await cache.put(request, response.clone()); }
         return response;
       }).catch(() => cache.match(request).then(hit => hit || Response.error()))
     )

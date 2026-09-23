@@ -124,15 +124,23 @@ def _feedback_for_chat(db: sqlite3.Connection, chat_id: int, user_id: int) -> di
     return dict(row) if row else None
 
 
-def _conversation_history(db: sqlite3.Connection, conversation_id: int) -> list[dict]:
+def _conversation_history(
+    db: sqlite3.Connection,
+    conversation_id: int,
+    allowed: set[int] | None,
+) -> list[dict]:
     rows = db.execute(
-        "SELECT question, answer FROM chats WHERE conversation_id=? AND status='ok' "
+        "SELECT id, question, answer FROM chats WHERE conversation_id=? AND status='ok' "
         "ORDER BY turn_index DESC, id DESC LIMIT ?",
         (conversation_id, HISTORY_TURNS),
     ).fetchall()
     kept: list[dict] = []
     remaining = HISTORY_CHAR_LIMIT
     for row in rows:
+        # 历史答案可能逐字包含后来被撤权的文档内容，不能继续送入模型。
+        _, hidden = _sources_for_chat(db, int(row["id"]), allowed)
+        if hidden:
+            continue
         question = (row["question"] or "").strip()
         answer = (row["answer"] or "").strip()
         if remaining <= 0:
@@ -294,12 +302,13 @@ def query(
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         if body.document_ids is not None and body.document_ids != document_ids:
             raise HTTPException(status_code=409, detail="已有对话不能改变限定文档范围，请新建对话")
-        history = _conversation_history(db, conversation_id)
     _require_ready_documents(db, document_ids, user)
     # 检索范围 = 用户请求的范围 ∩ 他实际可见的范围。
     # 注意 set() 与 None 语义不同：None 表示不限定，空集合表示"没有任何可见文档"，
     # 后者会让检索直接返回空（进而拒答），而不是退化成全库检索。
     scope = acl.effective_scope(db, user, document_ids)
+    if conversation_id is not None:
+        history = _conversation_history(db, conversation_id, acl.visible_document_ids(db, user))
 
     rt_values = rt.get_all(db)
     ok, retry = query_limiter.allow(
@@ -655,7 +664,16 @@ def list_chats(
         "FROM chats WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
         (user.id, limit, offset),
     ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": total}
+    allowed = acl.visible_document_ids(db, user)
+    items = []
+    for row in rows:
+        item = dict(row)
+        _, hidden = _sources_for_chat(db, int(row["id"]), allowed)
+        if hidden:
+            item["answer"] = "（该问答引用的文档已不再对你可见，内容已隐藏）"
+            item["redacted"] = True
+        items.append(item)
+    return {"items": items, "total": total}
 
 
 @router.get("/chats/{chat_id}")

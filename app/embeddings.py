@@ -40,10 +40,10 @@ def device_available(requested: str) -> tuple[bool, str]:
 
     try:
         import torch
-    except ImportError:
+    except Exception as exc:  # noqa: BLE001 - DLL/运行库损坏时也必须返回可诊断状态
         return False, (
-            f"未安装 PyTorch，无法使用 {device}；"
-            "CPU 部署不受影响，或按 docs/MODELS.md 安装对应 CUDA 版 torch"
+            f"PyTorch 无法加载（{type(exc).__name__}），无法使用 {device}；"
+            "请检查 PyTorch、显卡驱动与运行库是否匹配，或按 docs/MODELS.md 改回 CPU"
         )
 
     if device.startswith("cuda"):

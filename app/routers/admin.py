@@ -81,7 +81,9 @@ def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) 
     rows = db.execute(
         f"SELECT d.*, u.username AS uploaded_by_name, "
         f"(SELECT COUNT(*) FROM document_acl a "
-        f" WHERE a.document_id = d.id AND a.subject_type = 'user') AS granted_user_count "
+        f" WHERE a.document_id = d.id AND a.subject_type = 'user') AS granted_user_count, "
+        f"(SELECT COUNT(*) FROM document_acl a "
+        f" WHERE a.document_id = d.id AND a.subject_type = 'group') AS granted_group_count "
         f"FROM documents d "
         f"LEFT JOIN users u ON u.id = d.uploaded_by "
         f"{where} ORDER BY d.id DESC",

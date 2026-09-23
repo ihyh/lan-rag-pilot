@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import acl  # noqa: E402
+from app.routers import query as query_router  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import get_db, init_db, now_iso  # noqa: E402
 from app.deps import CurrentUser, current_user_or_none  # noqa: E402
@@ -180,6 +181,15 @@ def main() -> None:
             check(single.get("redacted") is True, "单条问答接口同样被隐藏")
             check("缺陷A" not in single["answer"], "单条问答的答案正文不再返回")
 
+            listed = as_user("alice").get("/api/chats").json()["items"]
+            listed_chat = next(item for item in listed if item["id"] == chat_id)
+            check(listed_chat.get("redacted") is True, "问答列表接口同样标记为已隐藏")
+            check("缺陷A" not in listed_chat["answer"], "问答列表不再返回撤权文档的答案正文")
+
+            allowed = acl.visible_document_ids(db, people["alice"])
+            history = query_router._conversation_history(db, conversation_id, allowed)
+            check(history == [], "后续提问不会把撤权答案重新送入模型历史")
+
             # ---------- F. 权限管理接口的角色校验（真实依赖链） ----------
             print("\n== 可见范围管理：角色校验必须真的生效 ==")
             r = as_user("kbadmin").put(
@@ -271,6 +281,11 @@ def main() -> None:
                 r.status_code == 200 and r.json()["granted_group_ids"] == [group_id],
                 "只授权给用户组（不带任何个人账号）也被接受",
             )
+
+            rows = as_user("root").get("/api/admin/documents").json()["items"]
+            secret_row = next(item for item in rows if item["id"] == secret_doc)
+            check(secret_row["granted_user_count"] == 0, "管理页接口正确统计个人授权数")
+            check(secret_row["granted_group_count"] == 1, "管理页接口正确统计用户组授权数")
 
             r = as_user("bob").get("/api/documents")
             check(
