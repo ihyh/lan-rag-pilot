@@ -54,6 +54,7 @@ jobs:
           python tests/config_guard_check.py
           python tests/embed_device_check.py
           python tests/parse_limits_check.py
+          python tests/document_acl_check.py
 
       - name: Compose syntax
         shell: bash

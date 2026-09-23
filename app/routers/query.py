@@ -8,7 +8,7 @@ from contextlib import closing
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .. import audit, runtime as rt
+from .. import acl, audit, runtime as rt
 from ..config import settings
 from ..db import connect, get_db, now_iso
 from ..deps import require_kb_admin, require_user
@@ -47,9 +47,14 @@ def _stored_document_ids(raw: str | None) -> list[int]:
     return sorted(set(values))
 
 
-def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int]) -> None:
+def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int], user) -> None:
     if not document_ids:
         return
+    # 先判可见性：不可见的文档一律按"不存在"处理（404），
+    # 否则可以通过限定一个受限文档来探测它是否存在。
+    allowed = acl.visible_document_ids(db, user)
+    if allowed is not None and not set(document_ids) <= allowed:
+        raise HTTPException(status_code=404, detail="限定文档不存在")
     placeholders = ",".join("?" * len(document_ids))
     rows = db.execute(
         f"SELECT id FROM documents WHERE status='ready' AND id IN ({placeholders})",
@@ -73,25 +78,42 @@ def _select_sources(sources: list[dict], k: int) -> list[dict]:
     return [src for src in sources if src["chunk_id"] in ids][:k]
 
 
-def _sources_for_chat(db: sqlite3.Connection, chat_id: int) -> list[dict]:
+def _sources_for_chat(
+    db: sqlite3.Connection,
+    chat_id: int,
+    allowed: set[int] | None = None,
+) -> tuple[list[dict], bool]:
+    """返回 (当前可见的来源, 是否存在被隐藏的来源)。
+
+    第二个返回值用来判定"该轮是否引用了现在已不可见的文档"。仅过滤来源是不够的：
+    答案正文里可能逐字引用了原文，所以调用方需要据此整轮隐藏。
+    """
     rows = db.execute(
         "SELECT s.chunk_id, s.document_id, s.score, s.page, s.paragraph, s.excerpt, d.filename "
         "FROM chat_sources s JOIN documents d ON d.id = s.document_id "
         "WHERE s.chat_id=? ORDER BY s.id",
         (chat_id,),
     ).fetchall()
-    return [
-        {
-            "chunk_id": r["chunk_id"],
-            "document_id": r["document_id"],
-            "filename": r["filename"],
-            "score": r["score"],
-            "page": r["page"],
-            "paragraph": r["paragraph"],
-            "excerpt": r["excerpt"],
-        }
-        for r in rows
-    ]
+    sources: list[dict] = []
+    hidden = False
+    for r in rows:
+        # 读取历史时按**当前**权限重新判定，而不是沿用当时的授权。
+        # 否则被撤销权限后，旧对话会继续把撤权资料交出去。
+        if allowed is not None and int(r["document_id"]) not in allowed:
+            hidden = True
+            continue
+        sources.append(
+            {
+                "chunk_id": r["chunk_id"],
+                "document_id": r["document_id"],
+                "filename": r["filename"],
+                "score": r["score"],
+                "page": r["page"],
+                "paragraph": r["paragraph"],
+                "excerpt": r["excerpt"],
+            }
+        )
+    return sources, hidden
 
 
 def _feedback_for_chat(db: sqlite3.Connection, chat_id: int, user_id: int) -> dict | None:
@@ -127,12 +149,18 @@ def _conversation_history(db: sqlite3.Connection, conversation_id: int) -> list[
 @router.get("/documents")
 def list_query_documents(
     db: sqlite3.Connection = Depends(get_db),
-    _=Depends(require_user),
+    user=Depends(require_user),
 ):
     rows = db.execute(
         "SELECT id, filename, version FROM documents WHERE status='ready' ORDER BY filename, id"
     ).fetchall()
-    return {"items": [dict(row) for row in rows], "total": len(rows)}
+    # 受限文档不出现在可选项里：否则等于告诉用户"存在一份你看不到的资料"。
+    allowed = acl.visible_document_ids(db, user)
+    items = [
+        dict(row) for row in rows
+        if allowed is None or int(row["id"]) in allowed
+    ]
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/documents/{document_id}/file", response_class=FileResponse)
@@ -160,7 +188,9 @@ def open_document(
         action="document_open",
         user_id=user.id,
         username=user.username,
-        detail=f"doc:{document_id} 文件:{row['filename']}",
+        # 管理员可以打开受限原文（否则无法管理这些文档），但必须留下可核查的例外记录。
+        detail=f"doc:{document_id} 文件:{row['filename']}"
+        + (" [受限文档·管理员例外]" if acl.is_restricted(db, document_id) else ""),
         ip=_ip(request),
     )
     return FileResponse(
@@ -265,7 +295,11 @@ def query(
         if body.document_ids is not None and body.document_ids != document_ids:
             raise HTTPException(status_code=409, detail="已有对话不能改变限定文档范围，请新建对话")
         history = _conversation_history(db, conversation_id)
-    _require_ready_documents(db, document_ids)
+    _require_ready_documents(db, document_ids, user)
+    # 检索范围 = 用户请求的范围 ∩ 他实际可见的范围。
+    # 注意 set() 与 None 语义不同：None 表示不限定，空集合表示"没有任何可见文档"，
+    # 后者会让检索直接返回空（进而拒答），而不是退化成全库检索。
+    scope = acl.effective_scope(db, user, document_ids)
 
     rt_values = rt.get_all(db)
     ok, retry = query_limiter.allow(
@@ -313,6 +347,13 @@ def query(
     if vector_index.size() == 0:
         return refuse(EMPTY_KB_ANSWER, "query_refused_empty")
 
+    if scope == set():
+        # 该账号当前没有任何可见文档。明确说明原因，而不是含糊地回一句"未找到"。
+        return refuse(
+            "你当前没有可访问的文档。请联系管理员为本账号开通权限。",
+            "query_refused_no_access",
+        )
+
     try:
         retrieval_question = f"{history[-1]['question']}\n{question}" if history else question
         qvec = embedding_service.embed_query(retrieval_question)
@@ -321,7 +362,7 @@ def query(
         hits = vector_index.search(
             qvec,
             min(200, rt_values["top_k"] * 20),
-            document_ids=set(document_ids) or None,
+            document_ids=scope,
             min_score=min_score,
             query_text=question,
         )
@@ -553,10 +594,20 @@ def get_conversation(
         item["document_ids"] = _stored_document_ids(item.get("document_ids"))
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    allowed = acl.visible_document_ids(db, user)
+    if allowed is not None:
+        # 不把已不可见的文档 id 回显给用户，避免暴露"存在一份你看不到的资料"。
+        item["document_ids"] = [d for d in item["document_ids"] if d in allowed]
     item["turns"] = []
     for turn in turns:
         record = dict(turn)
-        record["sources"] = _sources_for_chat(db, turn["id"])
+        sources, hidden = _sources_for_chat(db, turn["id"], allowed)
+        if hidden:
+            # 该轮引用的文档已不再对该账号可见。答案正文里可能逐字引用了原文，
+            # 因此整轮隐藏，而不是只删掉引用来源。
+            record["answer"] = "（该轮引用的文档已不再对你可见，内容已隐藏）"
+            record["redacted"] = True
+        record["sources"] = sources
         record["feedback"] = _feedback_for_chat(db, turn["id"], user.id)
         item["turns"].append(record)
     return item
@@ -622,7 +673,13 @@ def get_chat(
         raise HTTPException(status_code=404, detail="问答记录不存在")
     item = dict(chat)
     item["username"] = item.pop("owner_username")
-    item["sources"] = _sources_for_chat(db, chat_id)
+    allowed = acl.visible_document_ids(db, user)
+    sources, hidden = _sources_for_chat(db, chat_id, allowed)
+    if hidden:
+        # 与对话详情一致：撤权后连单条问答也不能继续交出内容。
+        item["answer"] = "（该问答引用的文档已不再对你可见，内容已隐藏）"
+        item["redacted"] = True
+    item["sources"] = sources
     item["feedback"] = _feedback_for_chat(db, chat_id, user.id)
     return item
 

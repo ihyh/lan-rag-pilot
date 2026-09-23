@@ -306,6 +306,18 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .chip.chip-block .chip-name { max-width: 100%; white-space: normal; }
 .chip .chip-reason { flex-basis: 100%; font-size: 12px; line-height: 1.5; color: var(--red); word-break: break-word; }
 
+/* 多选清单（弹层内使用） */
+.check-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 220px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+}
+.check-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; cursor: pointer; }
+.check-item input { width: 15px; height: 15px; margin: 0; }
+.check-empty { margin: 6px 0; font-size: 13px; color: var(--muted); }
+/* 受限文档在文档表里需要一眼可辨 */
+.doc-scope-restricted { color: var(--red); font-weight: 600; }
+
 /* 加载失败必须与「暂无数据」区分开，并给出重试入口 */
 .load-error {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px;

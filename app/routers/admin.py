@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 
-from .. import audit, ingest, runtime as rt
+from .. import acl, audit, ingest, runtime as rt
 from ..config import settings
 from ..db import get_db, now_iso
 from ..deps import require_kb_admin, require_root, stored_role_fields
@@ -19,6 +19,7 @@ from ..embeddings import EmbeddingUnavailable, embedding_service
 from ..gate import llm_gate
 from ..ingest import IngestError
 from ..schemas import (
+    DocumentAccessBody,
     SettingsPatch,
     UserCreate,
     UserPatch,
@@ -76,12 +77,21 @@ def _require_manageable_document(db: sqlite3.Connection, doc_id: int) -> None:
 
 def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) -> list[dict]:
     rows = db.execute(
-        f"SELECT d.*, u.username AS uploaded_by_name FROM documents d "
+        f"SELECT d.*, u.username AS uploaded_by_name, "
+        f"(SELECT COUNT(*) FROM document_acl a "
+        f" WHERE a.document_id = d.id AND a.subject_type = 'user') AS granted_user_count "
+        f"FROM documents d "
         f"LEFT JOIN users u ON u.id = d.uploaded_by "
         f"{where} ORDER BY d.id DESC",
         params,
     ).fetchall()
-    return [dict(r) for r in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        # fail-closed：任何非 shared 的取值都按受限显示。
+        item["visibility"] = acl.normalize_visibility(item.get("visibility"))
+        items.append(item)
+    return items
 
 
 # ---------------- 文档管理 ----------------
@@ -119,11 +129,14 @@ def upload_document(
     request: Request,
     file: UploadFile = File(...),
     version: str = Form(default="1.0"),
+    visibility: str = Form(default="shared"),
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_kb_admin),
 ):
     filename = _clean_filename(file.filename)
     version = _clean_version(version)
+    visibility = acl.normalize_visibility(visibility)
+    _require_visibility_permission(user, visibility)
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
         raise HTTPException(
@@ -142,6 +155,7 @@ def upload_document(
             data=data,
             user_id=user.id,
             version=version,
+            visibility=visibility,
         )
         doc = ingest.index_registered_document(db, doc["id"], kind)
     except IngestError as exc:
@@ -223,6 +237,89 @@ def reindex_document(
         ip=_ip(request),
     )
     return doc
+
+
+# ---------------- 文档可见范围（只有 root 能决定"谁能看到什么"） ----------------
+#
+# 权限划分口径：kb_admin 负责**文档内容**（上传/重建/删除），root 负责**访问控制**。
+# 这样既符合既有的角色契约（文档管理员不管理用户与系统配置），也避免出现
+# "文档管理员先把机密文件当共享传上去，事后再改"的暴露窗口。
+
+def _require_visibility_permission(user, visibility: str) -> None:
+    if visibility != acl.SHARED and user.role != "root":
+        raise HTTPException(
+            status_code=403,
+            detail="只有 root 能设置文档可见范围；文档管理员上传的文档默认对全员可见。",
+        )
+
+
+@router.get("/admin/documents/{doc_id}/access")
+def get_document_access(
+    doc_id: int,
+    db: sqlite3.Connection = Depends(get_db),
+    _=Depends(require_root),
+):
+    row = db.execute(
+        "SELECT id, filename, visibility FROM documents WHERE id=?", (doc_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {
+        "document_id": int(row["id"]),
+        "filename": row["filename"],
+        "visibility": acl.normalize_visibility(row["visibility"]),
+        "granted_user_ids": acl.granted_user_ids(db, doc_id),
+        "candidates": acl.grantable_users(db),
+    }
+
+
+@router.put("/admin/documents/{doc_id}/access")
+def update_document_access(
+    doc_id: int,
+    body: DocumentAccessBody,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_root),
+):
+    row = db.execute(
+        "SELECT id, filename, visibility FROM documents WHERE id=?", (doc_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    valid_ids = {item["id"] for item in acl.grantable_users(db)}
+    unknown = sorted(set(body.user_ids) - valid_ids)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"以下用户不存在或不可被单独授权（root 本来就不受限）：{unknown}",
+        )
+
+    if body.visibility == acl.RESTRICTED and not body.user_ids:
+        # 受限但一个授权人都没有，等于"只有管理员能看"，几乎总是误操作，
+        # 而且会让设置的人自己也用不了。直接拒绝并给出两种正确做法。
+        raise HTTPException(
+            status_code=422,
+            detail="受限文档必须至少指定一名可见用户；若希望全员可见，请选择 shared。",
+        )
+
+    acl.set_document_access(db, doc_id, body.visibility, body.user_ids, user.id, now_iso())
+    audit.log_audit(
+        db,
+        action="document_access_update",
+        user_id=user.id,
+        username=user.username,
+        detail=(
+            f"doc:{doc_id} 文件:{row['filename']} "
+            f"可见范围:{body.visibility} 授权人数:{len(body.user_ids)}"
+        ),
+        ip=_ip(request),
+    )
+    return {
+        "document_id": doc_id,
+        "visibility": acl.normalize_visibility(body.visibility),
+        "granted_user_ids": acl.granted_user_ids(db, doc_id),
+    }
 
 
 # ---------------- 用户管理 ----------------

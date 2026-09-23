@@ -133,7 +133,11 @@ For company access, follow the [Ubuntu guide](docs/UBUNTU.md) to provide interna
 | Document administrator `kb_admin` | Above, plus open full files, upload, reindex, and delete documents |
 | System administrator `root` | All of the above, plus accounts, roles, settings, and audit management |
 
-Device selection scopes retrieval by filename; unmatched files need manual selection. It is **not access control**. All authorized users can still ask about the shared document library; department-level and per-person isolation are not implemented. Regular users cannot download a complete file directly, but a short file may fit in one citation excerpt, and repeated questions may reveal much of its content. Do not use this version unchanged where users must be prevented from learning one another's documents.
+Device selection scopes retrieval by filename; unmatched files need manual selection. It is **not access control**.
+
+Per-document visibility is set by `root`: the default is "everyone", and a document can be switched to "only the accounts listed here". A restricted document is invisible to unauthorized accounts across **retrieval, the document list, original-file access and conversation history** — it cannot be retrieved at all, and after a grant is revoked the turn that cited it is hidden as well. `root` and `kb_admin` are exempt (otherwise restricted documents could not be managed); opening a restricted original as an administrator is written to the audit log.
+
+Note the library is still **shared by default and there is no department/group isolation**. Regular users cannot download a complete file directly, but an **unrestricted** short file may fit in one citation excerpt, and repeated questions may reveal much of its content — so mark anything confidential as restricted instead of relying on "no download".
 
 If runtime internet access must be prohibited after model download, enforce this with host and network egress policy; `.env` offline flags are not a firewall. [First use](docs/GETTING_STARTED.md) (Chinese only) · [Troubleshooting](docs/TROUBLESHOOTING.md) (Chinese only)
 

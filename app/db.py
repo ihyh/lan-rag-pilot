@@ -43,10 +43,27 @@ CREATE TABLE IF NOT EXISTS documents (
     version      TEXT    NOT NULL DEFAULT '1.0',
     effective_date TEXT,
     tags         TEXT    NOT NULL DEFAULT '[]',
+    -- 可见范围：shared = 所有启用账号可见（默认，保持原有共享库行为）；
+    -- 其它任何取值都视为受限，必须显式授权才可见（fail-closed）。
+    visibility   TEXT    NOT NULL DEFAULT 'shared',
     uploaded_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
 );
+
+-- 文档级授权。subject_type/subject_id 建成通用主体，当前只用 'user'；
+-- 将来若要支持按组授权，只需新增 subject_type 取值，不必再改表结构。
+-- subject_id 不声明外键：它指向的表随 subject_type 变化。用户只停用不删除，
+-- 因此这里不存在悬空授权的问题。
+CREATE TABLE IF NOT EXISTS document_acl (
+    document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    subject_type TEXT    NOT NULL DEFAULT 'user',
+    subject_id   INTEGER NOT NULL,
+    granted_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TEXT    NOT NULL,
+    PRIMARY KEY (document_id, subject_type, subject_id)
+);
+CREATE INDEX IF NOT EXISTS idx_document_acl_subject ON document_acl(subject_type, subject_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,8 +216,20 @@ def init_db() -> None:
         _ensure_document_metadata_columns(conn)
         _ensure_user_permission_columns(conn)
         _ensure_conversation_columns(conn)
+        _ensure_document_visibility_column(conn)
     finally:
         conn.close()
+
+
+def _ensure_document_visibility_column(conn: sqlite3.Connection) -> None:
+    """为旧版数据库补齐可见范围列，迁移可重复执行。
+
+    默认值 'shared' 意味着**升级后现有文档保持全员可见**，不会把已有用户挡在外面。
+    这是刻意的：权限收紧必须由管理员显式操作，不能因为一次升级而静默发生。
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "visibility" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'")
 
 
 def _ensure_document_metadata_columns(conn: sqlite3.Connection) -> None:

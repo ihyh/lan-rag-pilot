@@ -97,14 +97,69 @@
         var actions = h('td', { class: 'cell-actions' });
         actions.appendChild(actionButton('重建索引', 'btn-outline', function (btn) { reindexDoc(d.id, d.filename, btn); }));
         actions.appendChild(actionButton('删除', 'btn-danger', function (btn) { removeDoc(d.id, d.filename, btn); }));
+        // 可见范围属于访问控制，只由 root 决定（kb_admin 管内容、不管权限）。
+        if (currentUser && currentUser.role === 'root') {
+          actions.appendChild(actionButton('设置访问', 'btn-outline', function (btn) { setDocumentAccess(d, btn); }));
+        }
         var state = d.status === 'ready' ? badge('就绪', 'b-ok') : d.status === 'failed' ? badge('失败', 'b-err') : badge('处理中', 'b-warn');
+        var restricted = d.visibility === 'restricted';
+        var scope = h('td', {}, [
+          h('span', { class: restricted ? 'doc-scope-restricted' : '' },
+            [restricted ? ('仅授权 ' + (d.granted_user_count || 0) + ' 人') : '所有人'])
+        ]);
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
         if (d.error) { name.appendChild(h('div', { class: 'doc-err', title: d.error }, [d.error])); }
-        return h('tr', {}, [name, cell(d.version || '1.0'), cell(fmtBytes(d.size_bytes)), h('td', {}, [state]), cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
+        return h('tr', {}, [name, cell(d.version || '1.0'), cell(fmtBytes(d.size_bytes)), h('td', {}, [state]), scope, cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
       });
-      body.appendChild(table(['文件', '版本', '大小', '状态', '上传者', '上传日期', '操作'], rows));
+      body.appendChild(table(['文件', '版本', '大小', '状态', '可见范围', '上传者', '上传日期', '操作'], rows));
     } catch (e) { body.appendChild(loadError(e.message || '文档加载失败', loadDocs)); }
     finally { loading.classList.add('hidden'); }
+  }
+
+  /* 设置单份文档的可见范围与授权名单（仅 root） */
+  async function setDocumentAccess(doc, btn) {
+    busy(btn, true, '读取中…');
+    var detail;
+    try {
+      detail = await api('/api/admin/documents/' + doc.id + '/access');
+    } catch (e) {
+      toast(e.message || '读取可见范围失败', 'error');
+      return;
+    } finally { busy(btn, false); }
+
+    return formModal({
+      title: '设置《' + doc.filename + '》的可见范围',
+      submitText: '保存',
+      fields: [
+        {
+          name: 'visibility', label: '可见范围', type: 'select', value: detail.visibility,
+          options: [
+            { value: 'shared', label: '所有人可见（默认）' },
+            { value: 'restricted', label: '仅下列账号可见' }
+          ]
+        },
+        {
+          name: 'user_ids', type: 'checkboxes', numeric: true,
+          label: '可见账号（选择「仅下列账号可见」时生效）',
+          value: detail.granted_user_ids,
+          emptyText: '暂无可授权的账号，请先在“用户管理”里创建',
+          options: (detail.candidates || []).map(function (u) {
+            return {
+              value: u.id,
+              label: u.username + '（' + roleLabel(u.role) + '）' + (u.is_active ? '' : ' · 已停用')
+            };
+          })
+        }
+      ],
+      onSubmit: async function (v) {
+        await api('/api/admin/documents/' + doc.id + '/access', {
+          method: 'PUT',
+          body: { visibility: v.visibility, user_ids: v.user_ids }
+        });
+        toast('可见范围已更新', 'success');
+        await loadDocs();
+      }
+    });
   }
 
   async function uploadFiles(files) {

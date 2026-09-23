@@ -93,6 +93,7 @@ def register_bytes(
     version: str = "1.0",
     effective_date: str | None = None,
     tags: list[str] | None = None,
+    visibility: str = "shared",
 ) -> tuple[dict, str]:
     """校验并登记文件为 parsing；耗时索引由调用方随后串行执行。"""
     if not data:
@@ -139,7 +140,8 @@ def register_bytes(
     try:
         cur = db.execute(
             "INSERT INTO documents (filename, stored_name, content_type, size_bytes, sha256, status,"
-            " version, effective_date, tags, uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?,?,?,?)",
+            " version, effective_date, tags, visibility, uploaded_by, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,'parsing',?,?,?,?,?,?,?)",
             (
                 filename,
                 stored_name,
@@ -149,6 +151,8 @@ def register_bytes(
                 version,
                 effective_date,
                 json.dumps(tags or [], ensure_ascii=False),
+                # fail-closed：非 shared 一律按受限存。
+                "shared" if str(visibility).strip().lower() == "shared" else "restricted",
                 user_id,
                 now,
                 now,
