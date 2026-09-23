@@ -20,6 +20,8 @@ from ..gate import llm_gate
 from ..ingest import IngestError
 from ..schemas import (
     DocumentAccessBody,
+    GroupBody,
+    GroupMembersBody,
     SettingsPatch,
     UserCreate,
     UserPatch,
@@ -269,7 +271,9 @@ def get_document_access(
         "filename": row["filename"],
         "visibility": acl.normalize_visibility(row["visibility"]),
         "granted_user_ids": acl.granted_user_ids(db, doc_id),
+        "granted_group_ids": acl.granted_group_ids(db, doc_id),
         "candidates": acl.grantable_users(db),
+        "group_candidates": acl.list_groups(db),
     }
 
 
@@ -287,23 +291,30 @@ def update_document_access(
     if row is None:
         raise HTTPException(status_code=404, detail="文档不存在")
 
-    valid_ids = {item["id"] for item in acl.grantable_users(db)}
-    unknown = sorted(set(body.user_ids) - valid_ids)
-    if unknown:
+    valid_user_ids = {item["id"] for item in acl.grantable_users(db)}
+    unknown_users = sorted(set(body.user_ids) - valid_user_ids)
+    if unknown_users:
         raise HTTPException(
             status_code=422,
-            detail=f"以下用户不存在或不可被单独授权（root 本来就不受限）：{unknown}",
+            detail=f"以下用户不存在或不可被单独授权（root 本来就不受限）：{unknown_users}",
         )
 
-    if body.visibility == acl.RESTRICTED and not body.user_ids:
-        # 受限但一个授权人都没有，等于"只有管理员能看"，几乎总是误操作，
-        # 而且会让设置的人自己也用不了。直接拒绝并给出两种正确做法。
+    valid_group_ids = {item["id"] for item in acl.list_groups(db)}
+    unknown_groups = sorted(set(body.group_ids) - valid_group_ids)
+    if unknown_groups:
+        raise HTTPException(status_code=422, detail=f"以下用户组不存在：{unknown_groups}")
+
+    if body.visibility == acl.RESTRICTED and not (body.user_ids or body.group_ids):
+        # 受限但一个授权主体都没有，等于"只有管理员能看"，几乎总是误操作，
+        # 而且会让设置的人自己也用不了。直接拒绝并给出正确做法。
         raise HTTPException(
             status_code=422,
-            detail="受限文档必须至少指定一名可见用户；若希望全员可见，请选择 shared。",
+            detail="受限文档必须至少指定一个可见账号或用户组；若希望全员可见，请选择 shared。",
         )
 
-    acl.set_document_access(db, doc_id, body.visibility, body.user_ids, user.id, now_iso())
+    acl.set_document_access(
+        db, doc_id, body.visibility, body.user_ids, body.group_ids, user.id, now_iso()
+    )
     audit.log_audit(
         db,
         action="document_access_update",
@@ -311,7 +322,8 @@ def update_document_access(
         username=user.username,
         detail=(
             f"doc:{doc_id} 文件:{row['filename']} "
-            f"可见范围:{body.visibility} 授权人数:{len(body.user_ids)}"
+            f"可见范围:{acl.normalize_visibility(body.visibility)} "
+            f"授权账号:{len(body.user_ids)} 授权组:{len(body.group_ids)}"
         ),
         ip=_ip(request),
     )
@@ -319,7 +331,153 @@ def update_document_access(
         "document_id": doc_id,
         "visibility": acl.normalize_visibility(body.visibility),
         "granted_user_ids": acl.granted_user_ids(db, doc_id),
+        "granted_group_ids": acl.granted_group_ids(db, doc_id),
     }
+
+
+# ---------------- 用户组管理（只有 root；组是访问控制的载体） ----------------
+
+def _clean_group_name(raw: str | None) -> str:
+    name = (raw or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="组名不能为空")
+    if len(name) > 32:
+        raise HTTPException(status_code=422, detail="组名最长 32 个字符")
+    return name
+
+
+def _require_group(db: sqlite3.Connection, group_id: int):
+    row = db.execute("SELECT * FROM groups WHERE id=?", (group_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="用户组不存在")
+    return row
+
+
+@router.get("/admin/groups")
+def list_groups(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)):
+    items = acl.list_groups(db)
+    return {
+        "items": items,
+        "total": len(items),
+        # 成员候选人复用"可授权账号"清单（不含 root，它本来就不受限）。
+        "candidates": acl.grantable_users(db),
+    }
+
+
+@router.post("/admin/groups", status_code=201)
+def create_group(
+    body: GroupBody,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_root),
+):
+    name = _clean_group_name(body.name)
+    try:
+        group_id = acl.create_group(db, name, body.description, now_iso())
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"用户组「{name}」已存在") from None
+    audit.log_audit(
+        db,
+        action="group_create",
+        user_id=user.id,
+        username=user.username,
+        detail=f"group:{group_id} 名称:{name}",
+        ip=_ip(request),
+    )
+    return {"id": group_id, "name": name, "description": body.description, "member_ids": []}
+
+
+@router.patch("/admin/groups/{group_id}")
+def update_group(
+    group_id: int,
+    body: GroupBody,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_root),
+):
+    _require_group(db, group_id)
+    name = _clean_group_name(body.name)
+    try:
+        acl.update_group(db, group_id, name, body.description, now_iso())
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail=f"用户组「{name}」已存在") from None
+    audit.log_audit(
+        db,
+        action="group_update",
+        user_id=user.id,
+        username=user.username,
+        detail=f"group:{group_id} 名称:{name}",
+        ip=_ip(request),
+    )
+    return {"id": group_id, "name": name, "description": body.description}
+
+
+@router.put("/admin/groups/{group_id}/members")
+def set_group_members(
+    group_id: int,
+    body: GroupMembersBody,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_root),
+):
+    group = _require_group(db, group_id)
+    valid_ids = {item["id"] for item in acl.grantable_users(db)}
+    unknown = sorted(set(body.user_ids) - valid_ids)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"以下用户不存在或不能加入用户组（root 本来就不受限）：{unknown}",
+        )
+    acl.set_group_members(db, group_id, body.user_ids, now_iso())
+    # 成员变化会直接改变一批文档的可见性，因此审计里带上当前生效的授权文档数，
+    # 便于事后回答"这次改动到底影响了什么"。
+    granted = len(
+        db.execute(
+            "SELECT 1 FROM document_acl WHERE subject_type=? AND subject_id=?",
+            (acl.SUBJECT_GROUP, group_id),
+        ).fetchall()
+    )
+    audit.log_audit(
+        db,
+        action="group_members_update",
+        user_id=user.id,
+        username=user.username,
+        detail=(
+            f"group:{group_id} 名称:{group['name']} "
+            f"成员数:{len(body.user_ids)} 该组已授权文档数:{granted}"
+        ),
+        ip=_ip(request),
+    )
+    return {"id": group_id, "member_ids": sorted({int(x) for x in body.user_ids})}
+
+
+@router.delete("/admin/groups/{group_id}", status_code=204)
+def delete_group(
+    group_id: int,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_root),
+):
+    group = _require_group(db, group_id)
+    affected = len(
+        db.execute(
+            "SELECT 1 FROM document_acl WHERE subject_type=? AND subject_id=?",
+            (acl.SUBJECT_GROUP, group_id),
+        ).fetchall()
+    )
+    acl.delete_group(db, group_id)
+    audit.log_audit(
+        db,
+        action="group_delete",
+        user_id=user.id,
+        username=user.username,
+        detail=(
+            f"group:{group_id} 名称:{group['name']} "
+            f"同时清理了 {affected} 份文档对该组的授权"
+        ),
+        ip=_ip(request),
+    )
+    return Response(status_code=204)
 
 
 # ---------------- 用户管理 ----------------

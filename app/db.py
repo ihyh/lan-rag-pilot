@@ -51,10 +51,9 @@ CREATE TABLE IF NOT EXISTS documents (
     updated_at   TEXT    NOT NULL
 );
 
--- 文档级授权。subject_type/subject_id 建成通用主体，当前只用 'user'；
--- 将来若要支持按组授权，只需新增 subject_type 取值，不必再改表结构。
--- subject_id 不声明外键：它指向的表随 subject_type 变化。用户只停用不删除，
--- 因此这里不存在悬空授权的问题。
+-- 文档级授权。subject_type/subject_id 是通用主体，当前支持 'user' 与 'group'。
+-- subject_id 不声明外键：它指向的表随 subject_type 变化。因此删除组或用户时
+-- 必须由业务层显式清理授权行（见 acl.delete_group / acl.delete_user_grants）。
 CREATE TABLE IF NOT EXISTS document_acl (
     document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     subject_type TEXT    NOT NULL DEFAULT 'user',
@@ -64,6 +63,25 @@ CREATE TABLE IF NOT EXISTS document_acl (
     PRIMARY KEY (document_id, subject_type, subject_id)
 );
 CREATE INDEX IF NOT EXISTS idx_document_acl_subject ON document_acl(subject_type, subject_id);
+
+-- 用户组：用于"一次授权给一批人"。
+-- 这是**新建**的概念，不是恢复 v2 取消掉的部门/知识库划分：
+-- 组由 root 显式创建并维护成员，不参与任何自动归类，也不影响检索范围。
+CREATE TABLE IF NOT EXISTS groups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    description TEXT,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id   INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT    NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

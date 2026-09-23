@@ -133,7 +133,7 @@ def main() -> None:
 
             # ---------- D. 授权后可见，撤权后立刻不可见 ----------
             print("\n== 授权 / 撤权立即生效 ==")
-            acl.set_document_access(db, secret_doc, acl.RESTRICTED, [ids["alice"]], ids["root"], now)
+            acl.set_document_access(db, secret_doc, acl.RESTRICTED, [ids["alice"]], [], ids["root"], now)
             db.commit()
             r = as_user("alice").get("/api/documents")
             check(secret_doc in {x["id"] for x in r.json()["items"]}, "授权后 alice 能看到受限文档")
@@ -165,7 +165,7 @@ def main() -> None:
             check(not body["turns"][0].get("redacted"), "撤权前：alice 能读到该轮")
             check("缺陷A" in body["turns"][0]["answer"], "撤权前答案正文可见")
 
-            acl.set_document_access(db, secret_doc, acl.RESTRICTED, [], ids["root"], now)
+            acl.set_document_access(db, secret_doc, acl.RESTRICTED, [], [], ids["root"], now)
             db.execute("UPDATE documents SET visibility='restricted' WHERE id=?", (secret_doc,))
             db.commit()
 
@@ -196,6 +196,12 @@ def main() -> None:
                 json={"visibility": "restricted", "user_ids": []},
             )
             check(r.status_code == 422, f"受限但空名单 → HTTP {r.status_code}（期望 422）")
+
+            r = as_user("root").put(
+                f"/api/admin/documents/{secret_doc}/access",
+                json={"visibility": "restricted", "user_ids": [], "group_ids": [9999]},
+            )
+            check(r.status_code == 422, f"授权给不存在的用户组 → HTTP {r.status_code}（期望 422）")
 
             r = as_user("root").put(
                 f"/api/admin/documents/{secret_doc}/access",
@@ -233,7 +239,100 @@ def main() -> None:
             )
             check(r.status_code == 403, f"kb_admin 上传受限文档 → HTTP {r.status_code}（期望 403）")
 
-            # ---------- H. 管理员例外审计 ----------
+            # ---------- H. 按组授权 ----------
+            print("\n== 按组授权：一次授权给一批人 ==")
+            r = as_user("kbadmin").post("/api/admin/groups", json={"name": "质量部"})
+            check(r.status_code == 403, f"kb_admin 创建用户组 → HTTP {r.status_code}（期望 403）")
+            r = as_user("bob").get("/api/admin/groups")
+            check(r.status_code == 403, f"普通用户读取用户组 → HTTP {r.status_code}（期望 403）")
+
+            r = as_user("root").post(
+                "/api/admin/groups", json={"name": "质量部", "description": "质量与工艺"}
+            )
+            check(r.status_code == 201, "root 创建用户组成功")
+            group_id = r.json()["id"]
+            r = as_user("root").post("/api/admin/groups", json={"name": "质量部"})
+            check(r.status_code == 409, f"重名用户组 → HTTP {r.status_code}（期望 409）")
+
+            r = as_user("root").put(
+                f"/api/admin/groups/{group_id}/members", json={"user_ids": [ids["bob"]]}
+            )
+            check(
+                r.status_code == 200 and r.json()["member_ids"] == [ids["bob"]],
+                "把 bob 加入用户组",
+            )
+
+            # 只授权给组、不给任何个人：验证"受限必须有可见对象"的规则不会误伤这种用法
+            r = as_user("root").put(
+                f"/api/admin/documents/{secret_doc}/access",
+                json={"visibility": "restricted", "user_ids": [], "group_ids": [group_id]},
+            )
+            check(
+                r.status_code == 200 and r.json()["granted_group_ids"] == [group_id],
+                "只授权给用户组（不带任何个人账号）也被接受",
+            )
+
+            r = as_user("bob").get("/api/documents")
+            check(
+                secret_doc in {x["id"] for x in r.json()["items"]},
+                "组内成员 bob 通过组获得访问权",
+            )
+            r = as_user("alice").get("/api/documents")
+            check(
+                secret_doc not in {x["id"] for x in r.json()["items"]},
+                "非组内成员 alice 仍然看不到",
+            )
+            r = as_user("bob").post(
+                "/api/query", json={"question": "有哪些缺陷？", "document_ids": [secret_doc]}
+            )
+            check(r.status_code != 404, f"bob 可通过组授权限定该文档（HTTP {r.status_code}，不再是 404）")
+
+            # 造一轮 bob 引用该文档的对话，用于验证"移出组"之后的隐藏
+            cur = db.execute(
+                "INSERT INTO conversations (user_id, title, document_ids, created_at, updated_at)"
+                " VALUES (?,?,?,?,?)",
+                (ids["bob"], "bob 的缺陷查询", f"[{secret_doc}]", now, now),
+            )
+            bob_conversation = int(cur.lastrowid)
+            cur = db.execute(
+                "INSERT INTO chats (user_id, conversation_id, turn_index, question, answer, status, created_at)"
+                " VALUES (?,?,1,?,?,'ok',?)",
+                (ids["bob"], bob_conversation, "有哪些缺陷？", "缺陷C：划伤。", now),
+            )
+            bob_chat = int(cur.lastrowid)
+            db.execute(
+                "INSERT INTO chat_sources (chat_id, document_id, chunk_id, score, page, excerpt)"
+                " VALUES (?,?,NULL,0.9,1,?)",
+                (bob_chat, secret_doc, "缺陷C：划伤"),
+            )
+            db.commit()
+
+            body = as_user("bob").get(f"/api/conversations/{bob_conversation}").json()
+            check(not body["turns"][0].get("redacted"), "在组内时：bob 能读到该轮")
+
+            r = as_user("root").put(f"/api/admin/groups/{group_id}/members", json={"user_ids": []})
+            check(r.status_code == 200, "把 bob 移出用户组")
+            r = as_user("bob").get("/api/documents")
+            check(
+                secret_doc not in {x["id"] for x in r.json()["items"]},
+                "移出组后 bob 立即失去访问权（组成员关系现查，不缓存）",
+            )
+            body = as_user("bob").get(f"/api/conversations/{bob_conversation}").json()
+            check(body["turns"][0].get("redacted") is True, "移出组后历史对话同步隐藏")
+            check("缺陷C" not in body["turns"][0]["answer"], "移出组后答案正文不再返回")
+
+            # 删除组必须清理它的文档授权，否则会留下悬空授权
+            r = as_user("root").delete(f"/api/admin/groups/{group_id}")
+            check(r.status_code == 204, "root 删除用户组")
+            left = db.execute(
+                "SELECT COUNT(*) AS n FROM document_acl WHERE subject_type=? AND subject_id=?",
+                (acl.SUBJECT_GROUP, group_id),
+            ).fetchone()["n"]
+            check(left == 0, "删除组时一并清理了它残留的文档授权（无悬空行）")
+            r = as_user("root").get(f"/api/admin/documents/{secret_doc}/access")
+            check(r.json()["granted_group_ids"] == [], "文档的组授权已清空")
+
+            # ---------- I. 管理员例外审计 ----------
             print("\n== 管理员打开受限原文必须留下例外审计 ==")
             r = as_user("kbadmin").get(f"/api/documents/{secret_doc}/file")
             check(r.status_code == 200, f"kb_admin 可打开受限原文 → HTTP {r.status_code}")

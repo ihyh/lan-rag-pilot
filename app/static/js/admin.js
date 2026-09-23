@@ -149,12 +149,24 @@
               label: u.username + '（' + roleLabel(u.role) + '）' + (u.is_active ? '' : ' · 已停用')
             };
           })
+        },
+        {
+          name: 'group_ids', type: 'checkboxes', numeric: true,
+          label: '可见用户组（组内成员都会获得访问权）',
+          value: detail.granted_group_ids,
+          emptyText: '暂无用户组，请先在“用户组”里创建',
+          options: (detail.group_candidates || []).map(function (g) {
+            return {
+              value: g.id,
+              label: g.name + '（' + (g.member_ids || []).length + ' 名成员）'
+            };
+          })
         }
       ],
       onSubmit: async function (v) {
         await api('/api/admin/documents/' + doc.id + '/access', {
           method: 'PUT',
-          body: { visibility: v.visibility, user_ids: v.user_ids }
+          body: { visibility: v.visibility, user_ids: v.user_ids, group_ids: v.group_ids }
         });
         toast('可见范围已更新', 'success');
         await loadDocs();
@@ -305,6 +317,100 @@
     finally { loading.classList.add('hidden'); }
   }
 
+  /* ---------------- 用户组 ---------------- */
+  //
+  // 组只影响"哪些文档对谁可见"，不参与检索范围或任何自动归类。
+  // 这是新建的概念，不是恢复 v2 取消掉的部门/知识库划分。
+
+  var groupState = { items: [], candidates: [] };
+
+  async function loadGroups() {
+    var loading = qs('#groupsLoading'); var body = qs('#groupsBody');
+    loading.classList.remove('hidden'); clear(body);
+    try {
+      var data = await api('/api/admin/groups');
+      groupState.items = data.items || [];
+      groupState.candidates = data.candidates || [];
+      if (!groupState.items.length) { body.appendChild(empty('尚未创建用户组')); return; }
+      var byId = {};
+      groupState.candidates.forEach(function (u) { byId[u.id] = u.username; });
+      var rows = groupState.items.map(function (g) {
+        var names = (g.member_ids || []).map(function (id) { return byId[id] || ('#' + id); });
+        var actions = h('td', { class: 'cell-actions' });
+        actions.appendChild(actionButton('管理成员', 'btn-outline', function (btn) { editGroupMembers(g, btn); }));
+        actions.appendChild(actionButton('修改', 'btn-outline', function (btn) { editGroup(g, btn); }));
+        actions.appendChild(actionButton('删除', 'btn-danger', function (btn) { deleteGroup(g, btn); }));
+        return h('tr', {}, [
+          cell(g.name, 'cell-main'),
+          cell(g.description || '—', 'cell-long'),
+          cell(names.length ? names.join('、') : '（无成员）', 'cell-long'),
+          cell(g.granted_document_count),
+          cell(fmtTime(g.updated_at)),
+          actions
+        ]);
+      });
+      body.appendChild(table(['组名', '说明', '成员', '已授权文档', '更新时间', '操作'], rows));
+    } catch (e) { body.appendChild(loadError(e.message || '用户组加载失败', loadGroups)); }
+    finally { loading.classList.add('hidden'); }
+  }
+
+  function editGroup(g) {
+    return formModal({
+      title: '修改用户组',
+      submitText: '保存',
+      fields: [
+        { name: 'name', label: '组名（1–32 位）', type: 'text', value: g.name, required: true, maxlength: 32 },
+        { name: 'description', label: '说明（可选）', type: 'text', value: g.description || '', maxlength: 200 }
+      ],
+      onSubmit: async function (v) {
+        await api('/api/admin/groups/' + g.id, {
+          method: 'PATCH', body: { name: v.name, description: v.description || '' }
+        });
+        toast('用户组已更新', 'success'); await loadGroups();
+      }
+    });
+  }
+
+  function editGroupMembers(g) {
+    return formModal({
+      title: '管理「' + g.name + '」的成员',
+      submitText: '保存成员',
+      fields: [{
+        name: 'user_ids', type: 'checkboxes', numeric: true,
+        label: '组内成员（本组当前被 ' + g.granted_document_count + ' 份文档授权）',
+        value: g.member_ids,
+        emptyText: '暂无可加入的账号，请先在“用户”里创建',
+        options: groupState.candidates.map(function (u) {
+          return {
+            value: u.id,
+            label: u.username + '（' + roleLabel(u.role) + '）' + (u.is_active ? '' : ' · 已停用')
+          };
+        })
+      }],
+      onSubmit: async function (v) {
+        await api('/api/admin/groups/' + g.id + '/members', {
+          method: 'PUT', body: { user_ids: v.user_ids }
+        });
+        toast('成员已更新', 'success'); await loadGroups();
+      }
+    });
+  }
+
+  async function deleteGroup(g, btn) {
+    var msg = '确认删除用户组「' + g.name + '」？';
+    if (g.granted_document_count > 0) {
+      msg += '\n\n该组当前被 ' + g.granted_document_count + ' 份文档授权。'
+           + '删除后这些授权一并失效，组内成员会立即失去对相应文档的访问权。';
+    }
+    if (!window.confirm(msg)) { return; }
+    busy(btn, true, '删除中…');
+    try {
+      await api('/api/admin/groups/' + g.id, { method: 'DELETE' });
+      toast('用户组已删除', 'success'); await loadGroups();
+    } catch (e) { toast(e.message || '删除用户组失败', 'error'); }
+    finally { busy(btn, false); }
+  }
+
   function bindTabs() {
     qsa('[data-tab]').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -313,6 +419,7 @@
         if (btn.dataset.tab === 'overview') { loadOverview(); }
         if (btn.dataset.tab === 'docs') { loadDocs(); }
         if (btn.dataset.tab === 'users') { loadUsers(); }
+        if (btn.dataset.tab === 'groups') { loadGroups(); }
         if (btn.dataset.tab === 'audit') { loadAudit('chats'); }
       });
     });
@@ -358,6 +465,19 @@
     });
     zone.addEventListener('drop', function (e) { if (e.dataTransfer.files.length) { uploadFiles(e.dataTransfer.files); } });
     qs('#refreshDocsBtn').addEventListener('click', loadDocs);
+    qs('#createGroupForm').addEventListener('submit', async function (ev) {
+      ev.preventDefault(); var btn = qs('#createGroupBtn'); busy(btn, true, '创建中…');
+      try {
+        await api('/api/admin/groups', {
+          method: 'POST',
+          body: { name: qs('#ng-name').value.trim(), description: qs('#ng-description').value.trim() }
+        });
+        toast('用户组已创建', 'success');
+        qs('#ng-name').value = ''; qs('#ng-description').value = '';
+        await loadGroups();
+      } catch (e) { toast(e.message || '创建用户组失败', 'error'); }
+      finally { busy(btn, false); }
+    });
     qs('#docFilterVersion').addEventListener('keydown', function (e) { if (e.key === 'Enter') { loadDocs(); } });
     qs('#refreshUsersBtn').addEventListener('click', loadUsers);
     qs('#refreshChatsBtn').addEventListener('click', function () { loadAudit('chats'); });

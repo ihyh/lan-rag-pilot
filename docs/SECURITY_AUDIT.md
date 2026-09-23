@@ -11,7 +11,7 @@
 | 证据 | 已有措施 | 不能据此推断 |
 |---|---|---|
 | [security.py](../app/security.py)、[auth.py](../app/routers/auth.py) | Argon2id、随机会话、令牌 HMAC、Cookie 属性、登录限流 | 已有 MFA/SSO、无会话风险 |
-| [deps.py](../app/deps.py)、[acl.py](../app/acl.py)、[query.py](../app/routers/query.py) | 登录/启用状态与角色检查；文档级授权在检索、列表、原文、历史四条链路统一生效 | 已按部门/组隔离（只做到按账号） |
+| [deps.py](../app/deps.py)、[acl.py](../app/acl.py)、[query.py](../app/routers/query.py) | 登录/启用状态与角色检查；文档级授权（账号 + 用户组）在检索、列表、原文、历史四条链路统一生效 | 用户组与公司组织架构同步；导出已接入授权 |
 | [query.py](../app/routers/query.py) | 对话归属与文档范围约束 | 文档范围是不可绕过的用户授权 |
 | [main.py](../app/main.py) | API no-store、写请求来源检查 | 所有 CSRF 情形都已覆盖；缺 Origin/Referer 的行为需独立审查 |
 | [parsing.py](../app/parsing.py)、[admin.py](../app/routers/admin.py) | 类型/大小/格式检查、解析、原文存储 | 上传文件无恶意内容、已有解析沙箱 |
@@ -20,14 +20,14 @@
 
 ## 已确认的上线阻塞/风险
 
-1. **文档 ACL（部分解决）：** 已实现**按账号**的逐份文档授权——`documents.visibility`
-   （默认 `shared`）+ `document_acl`（通用主体，当前只实现 `user`）。受限文档在检索、
-   文档列表、原文访问、历史对话四条链路统一生效；撤权后旧对话中引用过它的那一轮
-   连同答案正文一并隐藏（答案可能逐字引用原文，仅过滤引用不够）；管理员例外写审计。
-   越权回归见 `tests/document_acl_check.py`，走**真实 HTTP 依赖链**（只替换认证来源，
-   保留真实角色校验）。
-   **仍未解决**：没有组/部门概念，无法按组织单位批量授权；没有导出功能，将来新增导出
-   必须一并接入授权。
+1. **文档 ACL（已实现，含用户组）：** 按账号与按用户组的逐份文档授权——`documents.visibility`
+   （默认 `shared`）+ `document_acl`（通用主体 `user` / `group`）+ `groups` / `group_members`。
+   受限文档在检索、文档列表、原文访问、历史对话四条链路统一生效；撤权（含移出用户组、
+   删除用户组）后旧对话中引用过它的那一轮连同答案正文一并隐藏（答案可能逐字引用原文，
+   仅过滤引用不够）；管理员例外写审计。越权回归见 `tests/document_acl_check.py`（48 项，
+   走**真实 HTTP 依赖链**——只替换认证来源，保留真实角色校验）。
+   **未解决**：用户组不与公司组织架构/通讯录同步，需人工维护成员；
+   没有导出功能，将来新增导出必须一并接入授权。
 2. **外联已改为 fail-closed（部分解决）：** 启动时校验 `DEEPSEEK_BASE_URL` 的主机是否属于内网（私有/回环/链路本地 IP、单标签主机名、内网后缀，或显式列入 `RAG_LLM_TRUSTED_HOSTS`），否则拒绝启动；公网地址不再可能由默认值静默生效。**仍需**：网络出口默认拒绝、`RAG_ALLOW_INSECURE_START` 在目标环境保持关闭（离线变量本身依然不能阻止任意 socket）。
 3. **密钥已改为 fail-closed（已解决）：** `RAG_SECRET_KEY` 缺失时不再回退开发密钥，而是拒绝启动，并在错误信息中给出生成命令。发布验收仍应人工核对确为随机值。
 4. **仓库默认配置已收敛（已解决）：** `docker-compose.yml` 的端口改为 `127.0.0.1:8088:8088`，不再对全网卡发布；不再提供会与基础映射叠加的 HTTPS override 示例（该文件此前已随仓库清理删除，本页仅作历史说明）。
