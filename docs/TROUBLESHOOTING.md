@@ -71,7 +71,53 @@ Ubuntu 查 `docker compose exec ollama ollama list`；RAG 容器中的 127.0.0.1
 
 ## 运行慢、显存不足、磁盘满
 
-先把生成并发降为 1，检查 `ollama ps` 和系统资源。嵌入固定 CPU，生成模型是否 GPU 运行需实测。降低模型/上下文前记录旧值，每次只改一项。恢复旧模型不会自动回滚文档索引。
+**先分清是"读提示词"慢还是"写答案"慢**，两者的解法完全不同。Ollama 原生接口会返回精确耗时：
+
+```bash
+curl -s http://127.0.0.1:11434/api/generate -d '{
+  "model":"qwen3:1.7b","prompt":"测试","stream":false,"options":{"num_predict":64}
+}' | python3 -c "import json,sys; d=json.load(sys.stdin); \
+print('读提示词 %.1f tok/s' % (d['prompt_eval_count']/(d['prompt_eval_duration']/1e9))); \
+print('生成答案 %.1f tok/s' % (d['eval_count']/(d['eval_duration']/1e9)))"
+```
+
+纯 CPU 笔记本（i5-13420H，无独显）上的实测参考值：
+
+| 环节 | 实测 | 说明 |
+|---|---|---|
+| 读提示词 | ~49–61 token/s | **主要瓶颈**：RAG 每次要送入 800–1800 token |
+| 生成答案 | ~12–16 token/s | 1.7B 模型的正常水平，不是故障 |
+| 模型冷加载 | ~25 秒 | 闲置 5 分钟后重新提问才付这个代价 |
+| BGE 检索 | 60–530 ms | 基本可忽略 |
+
+按性价比排序的提速手段：
+
+1. **提高模型驻留时长**（上表 3）：给 Ollama 服务设 `OLLAMA_KEEP_ALIVE=30m`（或 `-1` 永不卸载）。
+   注意必须设在 **Ollama 服务端**——实测在请求体里传 `keep_alive` 对 OpenAI 兼容端点
+   `/v1/chat/completions` **无效**。
+2. **降低 `RAG_TOP_K`**（上表 1）：5 → 3 可让单次问答从 32~43 秒降到 18~22 秒。可在管理页
+   “运行参数”在线调整，无需重启。改动前请用真实评测集确认召回率没有下降。
+3. **保持流式输出**：首字 2~3 秒出现，避免"转圈 40 秒"的体感。
+4. 调小切片长度需要重新索引全部文档，代价大，只在确有必要时做。
+
+### 突然变得极慢、甚至不出回答：先查内存和残留进程
+
+Windows 上 `ollama serve` 的模型进程是独立的 `llama-server.exe`，**结束 `ollama serve` 不会
+连带结束它**。重启过 Ollama、或同时存在多个模型实例时，可能留下孤儿进程长期占用内存：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" |
+  ForEach-Object { "PID $($_.ProcessId)  $([int]((Get-Process -Id $_.ProcessId).WorkingSet64/1MB))MB  父=$($_.ParentProcessId)" }
+Get-CimInstance Win32_OperatingSystem |
+  ForEach-Object { "可用 $([int]($_.FreePhysicalMemory/1KB)) MB" }
+```
+
+正常应只有 **1 个** `llama-server`。多于 1 个说明有孤儿，结束它们即可。
+内存不足时 Windows 会把模型和应用一起换页到磁盘，表现为所有请求都变慢、流式回答长时间没有输出。
+
+另外注意 `ollama ps` / `ollama list` 受 `OLLAMA_HOST` 影响：如果该变量指向另一台机器或另一个
+实例，你会看到错误的状态（例如明明在跑却显示为空）。要查本机实例，直接用
+`http://127.0.0.1:11434/api/ps`。
 
 磁盘满先暂停上传，检查日志、备份和模型占用。按保留策略清理已确认可回收的副本；禁止直接删除 data、业务卷或不明数据库 WAL。保留至少一个已恢复验证的备份。
 

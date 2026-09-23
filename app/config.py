@@ -113,7 +113,9 @@ class Settings:
         # 切块 / 检索
         self.chunk_max_tokens = _int("RAG_CHUNK_MAX_TOKENS", 400)
         self.chunk_overlap_tokens = _int("RAG_CHUNK_OVERLAP_TOKENS", 60)
-        self.top_k = _int("RAG_TOP_K", 5)
+        # 与 .env.example 保持一致：纯 CPU 机器上 3 条比 5 条快约一半，抽样答案内容相同。
+        # 取舍与实测数据见 .env.example 的「检索与切块」说明。
+        self.top_k = _int("RAG_TOP_K", 3)
         # 真实嵌入的低相似度拒答阈值；mock 后端测试时由查询层跳过。
         raw_min_score = _float("RAG_MIN_RELEVANCE_SCORE", 0.25)
         self.min_relevance_score = (
