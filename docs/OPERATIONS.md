@@ -132,7 +132,7 @@ docker compose up -d --pull never --no-build
 
 监控口径（探针已经分开，不要混用）：
 
-- `/api/health` 恒为 200，只说明进程活着。**不要拿它当“能回答问题”的证据**，也不要让编排层因为 Ollama 抖动就重启容器——它刻意不联系 Ollama。
+- `/api/health` 恒为 200，只说明进程活着。**不要拿它当“能回答问题”的证据**，也不要让编排层因为 Ollama 抖动就重启容器——它刻意不联系 Ollama。它带的 `checks.llm` 是**上次探测的回放快照**，可能已经过期：实测把 Ollama 停掉后，健康探针仍在返回 `ok: true, cached: true` 长达一个缓存周期。判断当前状态只看 `/api/ready`。
 - `/api/ready` 才会同时校验嵌入与生成两条链路，503 时响应体的 `reason`（`embed_not_ready` / `llm_not_ready`）与 `checks.embed`、`checks.llm` 指出是哪一条断了，并给出可操作说明。告警应挂在它上面。
 - 探测结果默认缓存 30 秒，所以告警抖动窗口约为该值的两倍；若要求更灵敏，调小 `RAG_READY_PROBE_TTL_S`，代价是更频繁地打扰 Ollama。
 - 探测只证明“模型服务可达、鉴权可用且模型存在”（服务没有模型清单端点时只能证明前两项），**不证明答案正确**。真实问答抽样仍是不可省略的巡检项。
