@@ -301,6 +301,18 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .chip.chip-ok { background: var(--green-bg); color: var(--green); }
 .chip.chip-err { background: var(--red-bg); color: var(--red); }
 .chip .spin { width: 12px; height: 12px; }
+/* 上传失败原因必须直接可见：只放在 title 里，触屏和键盘用户根本看不到 */
+.chip.chip-block { border-radius: 10px; align-items: flex-start; flex-wrap: wrap; padding: 6px 10px; }
+.chip.chip-block .chip-name { max-width: 100%; white-space: normal; }
+.chip .chip-reason { flex-basis: 100%; font-size: 12px; line-height: 1.5; color: var(--red); word-break: break-word; }
+
+/* 加载失败必须与「暂无数据」区分开，并给出重试入口 */
+.load-error {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 14px 16px; border-radius: 10px;
+  background: var(--red-bg); color: var(--red); font-size: 13px;
+}
+.load-error .err-text { flex: 1 1 220px; word-break: break-word; }
 
 /* 用户创建 */
 .user-create-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }

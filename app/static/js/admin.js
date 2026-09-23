@@ -14,13 +14,23 @@
   function empty(text) {
     return h('div', { class: 'empty' }, [h('span', { html: icon('folder') }), h('span', {}, [text])]);
   }
+  /* 加载失败与「暂无数据」是两件事：前者要能看出是出错，并给出重试入口。 */
+  function loadError(text, retry) {
+    var box = h('div', { class: 'load-error' }, [
+      h('span', { class: 'err-ic', html: icon('alert') }),
+      h('span', { class: 'err-text' }, [text || '加载失败'])
+    ]);
+    if (retry) { box.appendChild(actionButton('重试', 'btn-outline', retry)); }
+    return box;
+  }
   function table(headers, rows) {
     var head = h('thead', {}, [h('tr', {}, headers.map(function (x) { return h('th', {}, [x]); }))]);
     return h('div', { class: 'table-wrap' }, [h('table', { class: 'tbl' }, [head, h('tbody', {}, rows)])]);
   }
   function actionButton(text, kind, handler) {
     var btn = h('button', { class: 'btn btn-sm ' + (kind || 'btn-outline'), type: 'button' }, [text]);
-    btn.addEventListener('click', handler);
+    // 把按钮自身传给处理函数：长耗时操作需要给自己加忙碌态，防止重复提交。
+    btn.addEventListener('click', function () { handler(btn); });
     return btn;
   }
   function kv(k, v) {
@@ -85,21 +95,25 @@
       if (!data.items.length) { body.appendChild(empty('尚未上传文档')); return; }
       var rows = data.items.map(function (d) {
         var actions = h('td', { class: 'cell-actions' });
-        actions.appendChild(actionButton('重建索引', 'btn-outline', function () { reindexDoc(d.id, d.filename); }));
-        actions.appendChild(actionButton('删除', 'btn-danger', function () { removeDoc(d.id, d.filename); }));
+        actions.appendChild(actionButton('重建索引', 'btn-outline', function (btn) { reindexDoc(d.id, d.filename, btn); }));
+        actions.appendChild(actionButton('删除', 'btn-danger', function (btn) { removeDoc(d.id, d.filename, btn); }));
         var state = d.status === 'ready' ? badge('就绪', 'b-ok') : d.status === 'failed' ? badge('失败', 'b-err') : badge('处理中', 'b-warn');
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
         if (d.error) { name.appendChild(h('div', { class: 'doc-err', title: d.error }, [d.error])); }
         return h('tr', {}, [name, cell(d.version || '1.0'), cell(fmtBytes(d.size_bytes)), h('td', {}, [state]), cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
       });
       body.appendChild(table(['文件', '版本', '大小', '状态', '上传者', '上传日期', '操作'], rows));
-    } catch (e) { body.appendChild(empty(e.message || '文档加载失败')); }
+    } catch (e) { body.appendChild(loadError(e.message || '文档加载失败', loadDocs)); }
     finally { loading.classList.add('hidden'); }
   }
 
   async function uploadFiles(files) {
+    var list = Array.from(files);
     var chips = qs('#fileChips'); clear(chips);
-    var jobs = Array.from(files).map(async function (file) {
+    var failed = 0;
+    // 不再用 setInterval 轮询文档列表：上传本身就是串行等待的，轮询既浪费请求，
+    // 又会在结束前一直跑；改为全部结束后刷新一次。
+    var jobs = list.map(async function (file) {
       var chip = h('span', { class: 'chip' }, [h('span', { class: 'spin' }), h('span', { class: 'chip-name', title: file.name }, [file.name])]);
       chips.appendChild(chip);
       try {
@@ -108,30 +122,41 @@
         await api('/api/admin/documents', { method: 'POST', body: form });
         chip.className = 'chip chip-ok'; chip.firstChild.innerHTML = icon('check');
       } catch (e) {
-        chip.className = 'chip chip-err'; chip.firstChild.innerHTML = icon('alert'); chip.title = e.message;
+        // 失败原因不能只写进 title：触屏与键盘用户看不到 tooltip。
+        var reason = e.message || '上传失败';
+        failed += 1;
+        chip.className = 'chip chip-err chip-block';
+        chip.firstChild.innerHTML = icon('alert');
+        chip.title = reason;
+        chip.appendChild(h('span', { class: 'chip-reason' }, ['上传失败：' + reason]));
       }
     });
-    var refreshTimer = setInterval(loadDocs, 1000);
-    setTimeout(loadDocs, 200);
     try { await Promise.all(jobs); }
     finally {
-      clearInterval(refreshTimer); qs('#fileInput').value = '';
+      qs('#fileInput').value = '';
       await loadDocs(); await refreshOverview();
     }
+    if (failed) { toast(failed + ' 个文件上传失败，原因见文件名下方', 'error'); }
+    else if (list.length) { toast('上传完成', 'success'); }
   }
-  async function reindexDoc(id, name) {
+  async function reindexDoc(id, name, btn) {
     if (!window.confirm('重建《' + name + '》的检索索引？\n\n系统会使用已上传的原文件重新解析、分段并生成检索向量，不会重复上传文件。')) { return; }
+    // 重建可能耗时数分钟；不加忙碌态就可以被重复点击，触发多次重建。
+    busy(btn, true, '重建中…');
     try {
       await api('/api/admin/documents/' + id + '/reindex', { method: 'POST', body: {} });
       toast('索引重建完成', 'success'); await loadDocs(); await refreshOverview();
     } catch (e) { toast(e.message || '索引重建失败', 'error'); }
+    finally { busy(btn, false); }
   }
-  async function removeDoc(id, name) {
+  async function removeDoc(id, name, btn) {
     if (!window.confirm('确认删除《' + name + '》？此操作不可撤销。')) { return; }
+    busy(btn, true, '删除中…');
     try {
       await api('/api/admin/documents/' + id, { method: 'DELETE' });
       toast('文档已删除', 'success'); await loadDocs(); await refreshOverview();
-    } catch (e) { toast(e.message || '删除失败', 'error'); }
+    } catch (e) { toast(e.message || '删除文档失败', 'error'); }
+    finally { busy(btn, false); }
   }
 
   async function loadUsers() {
@@ -139,6 +164,7 @@
     loading.classList.remove('hidden'); clear(body);
     try {
       var data = await api('/api/admin/users');
+      if (!data.items.length) { body.appendChild(empty('暂无用户')); return; }
       var rows = data.items.map(function (u) {
         var actions = h('td', { class: 'cell-actions' });
         actions.appendChild(actionButton('重置密码', 'btn-outline', function () { resetPassword(u); }));
@@ -151,7 +177,7 @@
         ]);
       });
       body.appendChild(table(['用户名', '角色', '状态', '最近登录', '创建时间', '操作'], rows));
-    } catch (e) { body.appendChild(empty(e.message || '用户加载失败')); }
+    } catch (e) { body.appendChild(loadError(e.message || '用户加载失败', loadUsers)); }
     finally { loading.classList.add('hidden'); }
   }
   async function patchUser(id, patch) {
@@ -183,14 +209,16 @@
     });
   }
 
-  async function deleteConversation(conversation) {
+  async function deleteConversation(conversation, btn) {
     if (!window.confirm('确定删除 ' + conversation.username + ' 的对话“' + conversation.title + '”？其中全部问答将被删除且无法恢复。')) { return; }
+    busy(btn, true, '删除中…');
     try {
       await api('/api/conversations/' + conversation.id, { method: 'DELETE' });
       toast('对话已删除', 'success');
       await loadAudit('chats');
       await refreshOverview();
-    } catch (e) { toast(e.message || '删除失败', 'error'); }
+    } catch (e) { toast(e.message || '删除对话失败', 'error'); }
+    finally { busy(btn, false); }
   }
 
   async function loadAudit(kind) {
@@ -208,7 +236,7 @@
       var rows = data.items.map(function (x) {
         if (isChats) {
           return h('tr', {}, [cell(x.username), cell(x.title, 'cell-long'), cell(x.turn_count), cell(fmtTime(x.created_at)), cell(fmtTime(x.updated_at)),
-            h('td', { class: 'cell-actions' }, [actionButton('删除', 'btn-danger', function () { deleteConversation(x); })])]);
+            h('td', { class: 'cell-actions' }, [actionButton('删除', 'btn-danger', function (btn) { deleteConversation(x, btn); })])]);
         }
         if (isFeedback) {
           return h('tr', {}, [cell(x.username), cell(x.rating === 'helpful' ? '有帮助' : '没帮助'),
@@ -218,7 +246,7 @@
         return h('tr', {}, [cell(x.username || '系统'), cell(x.action), cell(excerpt(detail, 120), 'cell-long'), cell(x.ip), cell(fmtTime(x.created_at))]);
       });
       body.appendChild(table(isChats ? ['用户', '对话标题', '问答轮数', '创建时间', '最后更新', '操作'] : (isFeedback ? ['用户', '评价', '问题', '备注', '时间'] : ['用户', '动作', '详情', 'IP', '时间']), rows));
-    } catch (e) { body.appendChild(empty(e.message || '记录加载失败')); }
+    } catch (e) { body.appendChild(loadError(e.message || '记录加载失败', function () { loadAudit(kind); })); }
     finally { loading.classList.add('hidden'); }
   }
 
