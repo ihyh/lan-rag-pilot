@@ -75,12 +75,48 @@
       Object.keys(data.settings).forEach(function (key) {
         var input = qs('#cfg-' + key); if (input) { input.value = data.settings[key]; }
       });
+      renderLatency(data.latency);
       qs('#maxUploadMB').textContent = m.max_upload_mb;
       qs('#uploadMeta').textContent = '最大 ' + m.max_upload_mb + ' MB / 文件';
       content.classList.remove('hidden');
     } catch (e) {
       error.textContent = e.message || '概览加载失败'; error.classList.remove('hidden');
     } finally { loading.classList.add('hidden'); }
+  }
+
+  // 分阶段耗时：把"生成慢"和"检索慢"分开显示，避免再靠人工取证判断瓶颈。
+  function msLabel(v) {
+    if (v === null || v === undefined) { return '—'; }
+    return v >= 1000 ? (v / 1000).toFixed(1) + ' 秒' : v + ' 毫秒';
+  }
+
+  function renderLatency(lat) {
+    var host = qs('#latencyCard');
+    if (!host) { return; }
+    clear(host);
+    if (!lat) { return; }
+    var total = lat.total_ms;
+    var retr = lat.retrieval_ms;
+    var verdict = '暂无足够的成功作答样本';
+    if (total && retr && total.p50 !== null && retr.p50 !== null) {
+      // 检索正常在毫秒级；只要它远小于总耗时，瓶颈就在生成（纯 CPU 机器属预期）。
+      var ratio = total.p50 / Math.max(1, retr.p50);
+      verdict = ratio >= 10
+        ? '瓶颈在生成（检索仅占极小部分）：这是纯 CPU 部署的预期表现，想更快应优先看生成模型与硬件'
+        : '检索耗时占比偏高：先检查嵌入设备、切片数量与文档规模';
+    }
+    host.appendChild(h('div', { class: 'kv-grid' }, [
+      kv('统计轮次', lat.sample_size + ' / 窗口 ' + lat.window),
+      kv('拒答 / 失败', lat.refusals + ' / ' + lat.errors),
+      kv('总耗时 中位', msLabel(total ? total.p50 : null)),
+      kv('总耗时 P95', msLabel(total ? total.p95 : null)),
+      kv('总耗时 最长', msLabel(total ? total.max : null)),
+      kv('检索 中位', msLabel(retr ? retr.p50 : null)),
+      kv('检索 P95', msLabel(retr ? retr.p95 : null)),
+      kv('输出 token 中位', lat.completion_tokens && lat.completion_tokens.p50 !== null ? lat.completion_tokens.p50 : '—')
+    ]));
+    host.appendChild(h('p', { class: 'small muted', style: 'margin-top:10px' }, [verdict]));
+    host.appendChild(h('p', { class: 'small muted', style: 'margin-top:6px' }, [lat.note || '']));
   }
 
   async function loadDocs() {

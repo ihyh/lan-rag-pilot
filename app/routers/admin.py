@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 
-from .. import acl, audit, ingest, runtime as rt
+from .. import acl, audit, ingest, metrics, runtime as rt
 from ..config import settings
 from ..db import get_db, now_iso
 from ..deps import require_kb_admin, require_root, stored_role_fields
@@ -721,6 +721,21 @@ def export_feedback_csv(
 
 # ---------------- 系统概览 / 运行参数 ----------------
 
+def _latency_block(db: sqlite3.Connection) -> dict:
+    """最近若干轮问答的分阶段耗时统计。
+
+    只取最近 N 轮而不是固定时长：查询成本与数据库大小无关，也不会因为长期没人提问
+    而返回空统计。口径（只统计真正发起过模型调用的轮次、拒答与失败单独计数）写在
+    app/metrics.py 里，避免在这里再次解释一遍而产生分歧。
+    """
+    rows = db.execute(
+        "SELECT status, latency_ms, retrieval_ms, completion_tokens, created_at"
+        " FROM chats ORDER BY id DESC LIMIT ?",
+        (metrics.DEFAULT_WINDOW,),
+    ).fetchall()
+    return metrics.latency_summary([dict(row) for row in rows], window=metrics.DEFAULT_WINDOW)
+
+
 @router.get("/admin/overview")
 def overview(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)):
     counts = {
@@ -738,6 +753,7 @@ def overview(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)):
     ).fetchone()["n"]
     return {
         "counts": counts,
+        "latency": _latency_block(db),
         "model": {
             "version": settings.version,
             "model_ready": embedding_service.state == "ready",

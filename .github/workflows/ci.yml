@@ -55,6 +55,7 @@ jobs:
           python tests/embed_device_check.py
           python tests/parse_limits_check.py
           python tests/parse_isolation_check.py
+          python tests/latency_stats_check.py
           python tests/document_acl_check.py
           python tests/acl_coverage_check.py
           python tests/llm_probe_check.py

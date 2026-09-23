@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import closing
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -220,6 +221,7 @@ def _store_chat(
     *,
     model: str | None = None,
     latency_ms: int | None = None,
+    retrieval_ms: int | None = None,
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     sources: list[dict] | None = None,
@@ -240,8 +242,8 @@ def _store_chat(
     ).fetchone()["n"]
     cur = db.execute(
         "INSERT INTO chats (user_id, conversation_id, turn_index, question, answer, status, error,"
-        " model, prompt_tokens, completion_tokens, latency_ms, created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " model, prompt_tokens, completion_tokens, latency_ms, retrieval_ms, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             user_id,
             conversation_id,
@@ -254,6 +256,7 @@ def _store_chat(
             prompt_tokens,
             completion_tokens,
             latency_ms,
+            retrieval_ms,
             created,
         ),
     )
@@ -332,10 +335,15 @@ def query(
             },
         )
 
+    # 检索段耗时。在 refuse 之前初始化：知识库为空/无权访问这类拒答发生在检索之前，
+    # 此时它确实是 None，而不是"未测量"。
+    retrieval_ms: int | None = None
+
     def refuse(message: str, action: str) -> dict:
         chat_id, stored_conversation_id = _store_chat(
             db, user.id, question, message, "ok", None,
-            model=None, conversation_id=conversation_id, document_ids=document_ids,
+            model=None, retrieval_ms=retrieval_ms,
+            conversation_id=conversation_id, document_ids=document_ids,
         )
         audit.log_audit(
             db,
@@ -351,6 +359,7 @@ def query(
             "conversation_id": stored_conversation_id,
             "sources": [],
             "status": "ok",
+            "retrieval_ms": retrieval_ms,
         }
 
     if vector_index.size() == 0:
@@ -364,6 +373,9 @@ def query(
         )
 
     try:
+        # 检索段计时：从构造检索问题到选出来源。它只依赖本机嵌入模型与内存索引，
+        # 与模型生成完全无关，因此单独记录才能把"生成慢"和"检索慢"分开。
+        retrieval_started = time.monotonic()
         retrieval_question = f"{history[-1]['question']}\n{question}" if history else question
         qvec = embedding_service.embed_query(retrieval_question)
         min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
@@ -409,6 +421,7 @@ def query(
             }
         )
     sources = _select_sources(sources, rt_values["top_k"])
+    retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
     if not sources:
         return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
 
@@ -435,7 +448,7 @@ def query(
                 with closing(connect()) as stream_db:
                     chat_id, stored_conversation_id = _store_chat(
                         stream_db, user.id, question, "", "error", f"{exc.code}: {exc.message}",
-                        model=settings.deepseek_model,
+                        model=settings.deepseek_model, retrieval_ms=retrieval_ms,
                         conversation_id=conversation_id, document_ids=document_ids,
                     )
                     audit.log_audit(
@@ -454,6 +467,7 @@ def query(
                 chat_id, stored_conversation_id = _store_chat(
                     stream_db, user.id, question, answer, "ok", None,
                     model=settings.deepseek_model, latency_ms=usage["latency_ms"],
+                    retrieval_ms=retrieval_ms,
                     prompt_tokens=usage["prompt_tokens"], completion_tokens=usage["completion_tokens"],
                     sources=sources, conversation_id=conversation_id, document_ids=document_ids,
                 )
@@ -461,10 +475,12 @@ def query(
                     stream_db, action="llm_query", user_id=user.id, username=user.username,
                     detail=json.dumps({"question": question[:200], "documents": doc_names,
                                        "model": settings.deepseek_model, "latency_ms": usage["latency_ms"],
+                                       "retrieval_ms": retrieval_ms,
                                        "prompt_tokens": usage["prompt_tokens"],
                                        "completion_tokens": usage["completion_tokens"]}, ensure_ascii=False), ip=ip,
                 )
-            yield line({"type": "done", "chat_id": chat_id, "conversation_id": stored_conversation_id})
+            yield line({"type": "done", "chat_id": chat_id, "conversation_id": stored_conversation_id,
+                        "latency_ms": usage["latency_ms"], "retrieval_ms": retrieval_ms})
 
         return StreamingResponse(events(), media_type="application/x-ndjson",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
@@ -480,7 +496,7 @@ def query(
         except LLMError as exc:
             chat_id, stored_conversation_id = _store_chat(
                 db, user.id, question, "", "error", f"{exc.code}: {exc.message}",
-                model=settings.deepseek_model,
+                model=settings.deepseek_model, retrieval_ms=retrieval_ms,
                 conversation_id=conversation_id,
                 document_ids=document_ids,
             )
@@ -521,6 +537,7 @@ def query(
         None,
         model=result["model"],
         latency_ms=result["latency_ms"],
+        retrieval_ms=retrieval_ms,
         prompt_tokens=result["prompt_tokens"],
         completion_tokens=result["completion_tokens"],
         sources=sources,
@@ -538,6 +555,7 @@ def query(
                 "documents": doc_names,
                 "model": result["model"],
                 "latency_ms": result["latency_ms"],
+                "retrieval_ms": retrieval_ms,
                 "prompt_tokens": result["prompt_tokens"],
                 "completion_tokens": result["completion_tokens"],
             },
@@ -555,6 +573,9 @@ def query(
             for s in sources
         ],
         "status": "ok",
+        # 分阶段耗时：便于前端/巡检直接看到瓶颈在哪一段，而不必去数据库里翻。
+        "latency_ms": result["latency_ms"],
+        "retrieval_ms": retrieval_ms,
     }
 
 
@@ -660,7 +681,7 @@ def list_chats(
         "SELECT COUNT(*) AS n FROM chats WHERE user_id=?", (user.id,)
     ).fetchone()["n"]
     rows = db.execute(
-        "SELECT id, question, answer, status, error, model, latency_ms, created_at "
+        "SELECT id, question, answer, status, error, model, latency_ms, retrieval_ms, created_at "
         "FROM chats WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
         (user.id, limit, offset),
     ).fetchall()

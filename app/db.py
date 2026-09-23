@@ -149,6 +149,9 @@ CREATE TABLE IF NOT EXISTS chats (
     prompt_tokens     INTEGER,
     completion_tokens INTEGER,
     latency_ms        INTEGER,
+    -- 检索段耗时（构造检索问题 → 选出来源）。与 latency_ms 分开记录，
+    -- 这样"生成慢"和"检索慢"能分开判断，不必靠人工取证。旧数据为空。
+    retrieval_ms      INTEGER,
     created_at        TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chats_user_time ON chats(user_id, created_at);
@@ -235,8 +238,20 @@ def init_db() -> None:
         _ensure_user_permission_columns(conn)
         _ensure_conversation_columns(conn)
         _ensure_document_visibility_column(conn)
+        _ensure_chat_metric_columns(conn)
     finally:
         conn.close()
+
+
+def _ensure_chat_metric_columns(conn: sqlite3.Connection) -> None:
+    """为旧版数据库补齐问答耗时明细列，迁移可重复执行。
+
+    ``retrieval_ms`` 允许为空：旧数据没有这个值，拒答轮次也不需要（它们没有检索）。
+    统计时只取非空样本，见 app/metrics.py 的口径说明。
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chats)")}
+    if "retrieval_ms" not in columns:
+        conn.execute("ALTER TABLE chats ADD COLUMN retrieval_ms INTEGER")
 
 
 def _ensure_document_visibility_column(conn: sqlite3.Connection) -> None:
