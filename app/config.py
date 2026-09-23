@@ -8,6 +8,7 @@ from __future__ import annotations
 import ipaddress
 import math
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -78,6 +79,14 @@ def _is_intranet_host(host: str, trusted: set[str] | None = None) -> bool:
     return host.endswith(_INTRANET_SUFFIXES)
 
 
+_EMBED_DEVICE_RE = re.compile(r"^(cpu|mps|cuda|cuda:\d+)$")
+
+
+def _is_valid_embed_device(value: str) -> bool:
+    """校验 RAG_EMBED_DEVICE 的写法；不判断设备在当前机器上是否真的可用。"""
+    return bool(_EMBED_DEVICE_RE.match((value or "").strip().lower()))
+
+
 class Settings:
     def __init__(self) -> None:
         self.version = "0.1.0"
@@ -109,6 +118,13 @@ class Settings:
         self.embed_backend = (os.environ.get("RAG_EMBED_BACKEND") or "st").strip().lower()
         self.embed_model = os.environ.get("RAG_EMBED_MODEL") or "BAAI/bge-small-zh-v1.5"
         self.embed_dim = 512  # bge-small-zh-v1.5 输出 512 维；mock 后端沿用同一维度
+        # 嵌入模型运行设备：cpu | mps | cuda | cuda:<序号>。
+        # 默认 CPU 是刻意选择，不是遗留：本机实测检索仅 32~530 ms，GPU 编码对"问答"
+        # 几乎无收益；它的价值在批量入库，且会与同机的生成模型争抢显存。
+        # 显式写成非 CPU 却不可用时不会静默降级（见 embeddings.device_available）。
+        self.embed_device = (os.environ.get("RAG_EMBED_DEVICE") or "cpu").strip().lower()
+        # 批量编码大小；GPU 上可调大以提升入库吞吐，CPU 上通常无需改动。
+        self.embed_batch_size = _int("RAG_EMBED_BATCH_SIZE", 32)
 
         # 切块 / 检索
         self.chunk_max_tokens = _int("RAG_CHUNK_MAX_TOKENS", 400)
@@ -187,6 +203,19 @@ class Settings:
                     f"RAG_PUBLIC_ORIGIN 是 HTTP（{origin}）但 RAG_COOKIE_SECURE 为 true："
                     "浏览器不会回传该 Cookie，登录会陷入循环。"
                 )
+
+        # 嵌入设备只校验「字符串是否合法」；"cuda 是否真的可用"留给加载阶段判断，
+        # 否则纯 CPU 机器上的合法配置会被这里直接挡死。
+        if not _is_valid_embed_device(self.embed_device):
+            problems.append(
+                f"RAG_EMBED_DEVICE={self.embed_device!r} 不是合法设备名："
+                "只接受 cpu、mps、cuda、cuda:<序号>（如 cuda:0）。"
+            )
+
+        if not 1 <= self.embed_batch_size <= 256:
+            problems.append(
+                f"RAG_EMBED_BATCH_SIZE={self.embed_batch_size} 超出范围：应为 1~256。"
+            )
 
         if not problems:
             return

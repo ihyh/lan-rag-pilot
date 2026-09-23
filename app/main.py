@@ -74,7 +74,7 @@ def create_app() -> FastAPI:
             f"  局域网 RAG 试点 v{settings.version}\n"
             f"  访问地址: http://{settings.host}:{settings.port}（容器内由 8088 映射）\n"
             f"  对外地址: {settings.public_origin or '(未配置 RAG_PUBLIC_ORIGIN)'}\n"
-            f"  嵌入模型: {settings.embed_model} [{settings.embed_backend}]\n"
+            f"  嵌入模型: {settings.embed_model} [{settings.embed_backend}] 设备={settings.embed_device}\n"
             f"  模型接口: {settings.deepseek_base_url} ({settings.deepseek_model})\n"
             "──────────────────────────────────────────────────────\n"
         )
@@ -124,6 +124,9 @@ def create_app() -> FastAPI:
             "model_ready": embedding_service.state == "ready",
             "model_state": embedding_service.state,
             "model_message": embedding_service.message or None,
+            # 实际生效的嵌入设备，便于核对"GPU 到底有没有用上"
+            "embed_device": embedding_service.device,
+            "embed_backend": settings.embed_backend,
         }
 
     @app.get("/api/ready")
@@ -133,6 +136,8 @@ def create_app() -> FastAPI:
             "model_ready": embedding_service.state == "ready",
             "model_state": embedding_service.state,
             "model_message": embedding_service.message or None,
+            "embed_device": embedding_service.device,
+            "embed_backend": settings.embed_backend,
         }
         if not payload["model_ready"]:
             return JSONResponse(status_code=503, content=payload)

@@ -488,6 +488,7 @@ def overview(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)):
             "model_message": embedding_service.message,
             "embed_model": settings.embed_model,
             "embed_backend": settings.embed_backend,
+            "embed_device": embedding_service.device,
             "llm_model": settings.deepseek_model,
             "chunk_max_tokens": settings.chunk_max_tokens,
             "chunk_overlap_tokens": settings.chunk_overlap_tokens,

@@ -55,6 +55,7 @@
         ]),
         h('div', { class: 'kv-grid' }, [
           kv('应用版本', m.version), kv('嵌入模型', m.embed_model), kv('嵌入后端', m.embed_backend),
+          kv('嵌入设备', m.embed_device || '—'),
           kv('生成模型', m.llm_model),
           kv('切片上限', m.chunk_max_tokens + ' token'), kv('切片重叠', m.chunk_overlap_tokens + ' token'),
           kv('拒答阈值', m.min_relevance_score),
