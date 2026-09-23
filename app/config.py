@@ -310,6 +310,21 @@ class Settings:
                 + "、".join(bad_limits)
             )
 
+        # 切块参数：合法区间是 max_tokens > 0 且 0 <= overlap < max_tokens。
+        # 越界会破坏"切片完整覆盖原文"这一前提，而症状（丢内容、切分不前进）到检索阶段
+        # 才暴露且很难归因，所以在启动时就拦住。判定口径与 app/chunking.check_split_params 一致。
+        if self.chunk_max_tokens <= 0:
+            problems.append(
+                f"RAG_CHUNK_MAX_TOKENS={self.chunk_max_tokens} 必须为正整数："
+                "切块窗口为零或负数会让切分无法进行。"
+            )
+        if self.chunk_overlap_tokens < 0 or self.chunk_overlap_tokens >= self.chunk_max_tokens:
+            problems.append(
+                f"RAG_CHUNK_OVERLAP_TOKENS={self.chunk_overlap_tokens} 必须满足 "
+                f"0 <= 重叠 < RAG_CHUNK_MAX_TOKENS（{self.chunk_max_tokens}）："
+                "重叠为负会让下一片跳过一段原文，重叠不小于窗口会让切分无法前进。"
+            )
+
         # 解析隔离的超时：<=0 会让每次解析立刻被判超时，等于所有上传都失败。
         if not math.isfinite(self.parse_timeout_s) or self.parse_timeout_s <= 0:
             problems.append(

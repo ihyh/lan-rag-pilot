@@ -44,14 +44,18 @@ python scripts/retrieval_compare.py
 
 ```bash
 python tests/hybrid_retrieval_check.py
+python tests/chunk_integrity_check.py
 python tests/retrieval_quality_check.py
 python tests/conversation_scope_check.py
 python tests/injections/run_injections.py --group retrieval
+python tests/injections/run_injections.py --group chunking
 ```
 
 检索回归入口包括精确标识符、超出向量候选池的召回、文档范围、删除/重建、并发重载、原相似度语义、切块边界，以及"含不存在标识符时精确匹配仍须生效"（`tests/hybrid_retrieval_check.py`）。完整 smoke 继续覆盖上传、查询、对话持久化和权限。合成用例通过不替代真实业务验收。
 
-最后一条命令把退化修复改回旧行为并**要求对应断言变红**，用来证明该断言真的在测东西；框架说明见 `tests/injections/README.md`。
+`tests/chunk_integrity_check.py` 校验分块器的**结构性质**，不需要人工答案集：不得出现同一断点处连续缩短的后缀级联、持续前进、**非空白**原文被完整覆盖、每片不超过窗口上界；覆盖两条切分路径与多组参数（含 `overlap=0` 与 `overlap=max-1` 两个边界值）。本机存在离线 BGE 模型时，还会用真实 tokenizer 重放已复现的 PDF/xlsx 形态与真实文件。
+
+最后两条命令把退化修复改回旧行为并**要求对应断言变红**，用来证明这些断言真的在测东西；框架说明见 `tests/injections/README.md`。
 
 ## 切换嵌入设备（CPU ↔ GPU）后建议重新索引
 

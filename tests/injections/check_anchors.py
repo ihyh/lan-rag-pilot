@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import inject_chunking
 import inject_encoding
 import inject_isolation
 import inject_latency
@@ -15,6 +16,7 @@ GROUPS = {
     "isolation": inject_isolation.INJECTIONS,
     "latency": inject_latency.INJECTIONS,
     "retrieval": inject_retrieval.INJECTIONS,
+    "chunking": inject_chunking.INJECTIONS,
 }
 
 

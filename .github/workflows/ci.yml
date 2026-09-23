@@ -50,6 +50,7 @@ jobs:
           python tests/llm_request_check.py
           python tests/retrieval_quality_check.py
           python tests/hybrid_retrieval_check.py
+          python tests/chunk_integrity_check.py
           python tests/doc_parsing_check.py
           python tests/conversation_scope_check.py
           python tests/config_guard_check.py

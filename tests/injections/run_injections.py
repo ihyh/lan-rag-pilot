@@ -17,6 +17,7 @@ TESTS = {
     "isolation": ("tests/parse_isolation_check.py",),
     "latency": ("tests/latency_stats_check.py",),
     "retrieval": ("tests/hybrid_retrieval_check.py",),
+    "chunking": ("tests/chunk_integrity_check.py",),
     "encoding": ("tests/win_script_encoding_check.py",),
 }
 

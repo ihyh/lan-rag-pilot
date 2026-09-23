@@ -143,6 +143,37 @@ def main() -> None:
         "解析隔离超时不接受无穷大",
     )
 
+    # 切块参数越界会破坏"切片完整覆盖原文"的前提，且症状到检索阶段才暴露、很难归因。
+    check(
+        "RAG_CHUNK_MAX_TOKENS" in rejected(RAG_CHUNK_MAX_TOKENS="0"),
+        "切块窗口为 0 时拒绝启动",
+    )
+    check(
+        "RAG_CHUNK_MAX_TOKENS" in rejected(RAG_CHUNK_MAX_TOKENS="-5"),
+        "切块窗口为负数时拒绝启动",
+    )
+    check(
+        "RAG_CHUNK_OVERLAP_TOKENS" in rejected(RAG_CHUNK_OVERLAP_TOKENS="-1"),
+        "重叠为负数时拒绝启动（否则下一片会跳过一段原文）",
+    )
+    check(
+        "RAG_CHUNK_OVERLAP_TOKENS" in rejected(RAG_CHUNK_OVERLAP_TOKENS="400"),
+        "重叠等于窗口时拒绝启动（否则切分无法前进）",
+    )
+    check(
+        "RAG_CHUNK_OVERLAP_TOKENS" in rejected(RAG_CHUNK_OVERLAP_TOKENS="401",
+                                               RAG_CHUNK_MAX_TOKENS="400"),
+        "重叠大于窗口时拒绝启动",
+    )
+    check(
+        accepted(RAG_CHUNK_MAX_TOKENS="400", RAG_CHUNK_OVERLAP_TOKENS="0") == "",
+        "重叠为 0 可启动（合法边界值）",
+    )
+    check(
+        accepted(RAG_CHUNK_MAX_TOKENS="400", RAG_CHUNK_OVERLAP_TOKENS="399") == "",
+        "重叠为窗口-1 可启动（合法边界值）",
+    )
+
     # 这一条直接对应“默认值会静默连公网”的历史缺口
     check(
         "非内网地址" in rejected(DEEPSEEK_BASE_URL="https://api.deepseek.com/v1"),

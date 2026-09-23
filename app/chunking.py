@@ -12,6 +12,31 @@ from .parsing import Unit
 _SENTENCE_END = "。！？；.!?;\n"
 
 
+def check_split_params(max_tokens: int, overlap_tokens: int) -> None:
+    """切分参数的合法区间：``max_tokens > 0`` 且 ``0 <= overlap < max_tokens``。
+
+    重叠为负会让下一片从上一片末尾**之后**开始，直接丢掉原文；重叠不小于窗口会让下一片
+    不前进甚至倒退。两种情况都会破坏"覆盖原文"，所以在入口拦住而不是等检索阶段才发现。
+    """
+    if max_tokens <= 0:
+        raise ValueError(f"max_tokens 必须为正整数：{max_tokens}")
+    if overlap_tokens < 0 or overlap_tokens >= max_tokens:
+        raise ValueError(
+            f"overlap_tokens 必须满足 0 <= overlap < max_tokens："
+            f"overlap={overlap_tokens}, max_tokens={max_tokens}"
+        )
+
+
+def min_span(max_tokens: int, overlap_tokens: int) -> int:
+    """接受句末断点所需的最小跨度。
+
+    取 ``max(overlap + 1, max_tokens - overlap)``。下界 ``overlap + 1`` 是关键：它保证
+    **刚被采用过的断点在下一轮必然被拒绝**（下一片起点到该断点的距离正好是 overlap，
+    小于下界），因此"同一断点处连续缩短的后缀级联"在结构上不可能出现。
+    """
+    return max(overlap_tokens + 1, max_tokens - overlap_tokens)
+
+
 @dataclass
 class Piece:
     text: str
@@ -41,7 +66,19 @@ class TokenizerAdapter:
         return self._approx_count(text)
 
     def split_long(self, text: str, max_tokens: int, overlap_tokens: int) -> list[tuple[str, int]]:
-        """把超长文本切成 ≤max_tokens 的片段，返回 (text, token_count)。"""
+        """把超长文本切成 ≤max_tokens 的片段，返回 (text, token_count)。
+
+        断点选择有一条**最小跨度**约束（见 ``min_span``）：句末符只有在离当前起点足够远时
+        才被采纳，否则整窗切分。没有这条约束时会退化成"同一断点处连续缩短的后缀级联"——
+        实测某个 xlsx 缓冲（1241 token）产出 64 片、其中 60 片是 token 数 396→2 的递减后缀；
+        某个 PDF 页（676 token）产出 15 片、其中 13 片由 14→2 递减。这些碎片既没有证据价值，
+        也白占入库与嵌入预算。
+
+        注意：本方法只保证"不产生同断点级联"和"覆盖完整"，**不禁止有意重叠**。当
+        ``overlap`` 接近 ``max_tokens`` 时步长会很小、产出接近滑动窗口式的近似重复片段
+        （步长下界为 ``max_tokens - 2*overlap``），这是该配置的固有代价，故默认值取 60/400。
+        """
+        check_split_params(max_tokens, overlap_tokens)
         text = text.strip()
         n = self.count(text)
         if n <= max_tokens:
@@ -54,6 +91,7 @@ class TokenizerAdapter:
         )
         offsets = enc["offset_mapping"]
         total = len(enc["input_ids"])
+        need = min_span(max_tokens, overlap_tokens)
         pieces: list[tuple[str, int]] = []
         start = 0
         while start < total:
@@ -64,7 +102,16 @@ class TokenizerAdapter:
                 if seg and seg[-1] in _SENTENCE_END:
                     snap = i
                     break
-            seg_end = end if end == total else ((snap + 1) if snap is not None else end)
+            # 末尾窗口一律取整段（保持原有的收尾行为：最后一片可以是短的）；
+            # 其余窗口只在断点离 start 足够远时采纳，否则用整窗。
+            # 断点太近时不采纳是必需的：否则这一片几乎没有内容，而且下一轮会以同一个断点
+            # 为界继续收缩，逐轮退化成大量同尾后缀。
+            if end == total:
+                seg_end = end
+            elif snap is not None and (snap + 1 - start) >= need:
+                seg_end = snap + 1
+            else:
+                seg_end = end
             piece = text[offsets[start][0]:offsets[seg_end - 1][1]].strip()
             if piece:
                 pieces.append((piece, self.count(piece)))
@@ -72,15 +119,16 @@ class TokenizerAdapter:
                 break  # 最后一块已覆盖末尾，不再逐字生成重叠尾片段。
             span = seg_end - start
             next_start = seg_end - min(overlap_tokens, span - 1)
-            if next_start <= start:
+            if next_start <= start:  # 终止保险；上面的 need 规则使其不可达
                 next_start = start + 1
             start = next_start
         return pieces or [(text, n)]
 
     def _approx_split(self, text: str, max_tokens: int, overlap_tokens: int) -> list[tuple[str, int]]:
+        """mock/无 tokenizer 时的字符近似切分，规则与 ``split_long`` 一致。"""
         window = max(16, max_tokens * 2)
-        overlap_chars = max(1, overlap_tokens * 2)
-        step = max(1, window - overlap_chars)
+        overlap_chars = max(0, overlap_tokens * 2)
+        need = max(overlap_chars + 1, window - overlap_chars)
         pieces: list[tuple[str, int]] = []
         i = 0
         n_text = len(text)
@@ -91,13 +139,14 @@ class TokenizerAdapter:
                 if text[k - 1] in _SENTENCE_END:
                     boundary = k
                     break
-            j = boundary if boundary is not None else j
+            # 同 token 路径：断点太靠近 i 时改用整窗，避免同断点处的后缀级联。
+            j = boundary if (boundary is not None and boundary - i >= need) else j
             piece = text[i:j].strip()
             if piece:
                 pieces.append((piece, self._approx_count(piece)))
             if j >= n_text:
                 break
-            i = max(i + 1, j - overlap_chars)
+            i = max(i + 1, j - overlap_chars)  # 保险；上面的 need 规则使其不可达
         return pieces or [(text, self._approx_count(text))]
 
 
