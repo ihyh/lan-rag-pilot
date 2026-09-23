@@ -13,7 +13,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import parsing
+from . import parse_runner, parsing
 from .chunking import TokenizerAdapter, chunk_units
 from .config import settings
 from .db import now_iso
@@ -204,7 +204,7 @@ def _index_document(db: sqlite3.Connection, doc_id: int, kind: str) -> dict:
     """假定文档行已存在且状态为 parsing，执行解析/切块/向量化并置为 ready。"""
     doc = _fetch_doc(db, doc_id)
     assert doc is not None
-    units = parsing.PARSERS[kind](settings.upload_dir / doc["stored_name"])
+    units = parse_runner.parse_units(kind, settings.upload_dir / doc["stored_name"])
     ta = TokenizerAdapter(embedding_service.tokenizer_or_none())
     pieces = chunk_units(units, ta, settings.chunk_max_tokens, settings.chunk_overlap_tokens)
     if not pieces:

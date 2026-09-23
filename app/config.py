@@ -193,6 +193,19 @@ class Settings:
         self.parse_max_text_chars = _int("RAG_PARSE_MAX_TEXT_CHARS", 20_000_000)
         self.parse_max_chunks = _int("RAG_PARSE_MAX_CHUNKS", 50_000)
 
+        # 解析隔离：把解析放到子进程执行，见 app/parse_runner.py 的说明。
+        # 上面这些上限都作用在"提取之后"（单元数、字符数、切片数）或在解压前做体检，
+        # 管不到解析库**内部**的内存膨胀；而单 worker 是硬约束，一次解析把内存吃满
+        # 就是全站中断。默认开启；关掉只应用于排查该机制本身的问题。
+        self.parse_isolation = _bool("RAG_PARSE_ISOLATION", True)
+        # 单份文件的解析硬超时。设得比正常解析宽裕很多（CPU 上 25MB PDF 属最坏情况），
+        # 它的作用是兜住"卡死"而不是掐掉正常文件。
+        self.parse_timeout_s = _float("RAG_PARSE_TIMEOUT_S", 300.0)
+        # 解析子进程的内存上限（MB）；0 表示不限制。
+        # POSIX 上通过 RLIMIT_AS 生效；Windows 无等价的地址空间限制，
+        # 此时只有超时与崩溃隔离生效——如实说明，不假装等效。
+        self.parse_memory_mb = _int("RAG_PARSE_MEMORY_MB", 2048)
+
         # 启动安全校验（见 Settings.validate_or_raise）
         self.allow_insecure_start = _bool("RAG_ALLOW_INSECURE_START", False)
         self.llm_trusted_hosts = {
@@ -295,6 +308,19 @@ class Settings:
             problems.append(
                 "以下解析上限必须为正整数，否则任何文件都会被拒绝："
                 + "、".join(bad_limits)
+            )
+
+        # 解析隔离的超时：<=0 会让每次解析立刻被判超时，等于所有上传都失败。
+        if self.parse_timeout_s <= 0:
+            problems.append(
+                f"RAG_PARSE_TIMEOUT_S={self.parse_timeout_s} 必须为正数："
+                "0 或负数会让每次解析立刻被判超时。"
+            )
+        # 内存上限允许 0（表示不限制）；负数会让子进程连解释器都起不来。
+        if self.parse_memory_mb < 0:
+            problems.append(
+                f"RAG_PARSE_MEMORY_MB={self.parse_memory_mb} 不能为负："
+                "0 表示不限制子进程内存。"
             )
 
         if not problems:
