@@ -85,17 +85,19 @@ class VectorIndex:
         with self._lock:
             return int(self._vectors.shape[1]) if self._vectors.size else int(settings.embed_dim)
 
-    def _keyword_exists(self, term: str) -> bool:
-        """该技术标识符是否存在倒排项（决定它该不该参与 AND）。
+    def _keyword_exists(self, term: str, document_ids: set[int] | None) -> bool:
+        """该技术标识符在当前文档范围内是否存在倒排项（决定它该不该参与 AND）。
 
         术语总数有上限（见 search 里的 16），每个只查一次内存 FTS 表，成本可忽略。
         """
         if self._keywords is None:  # pragma: no cover - search 已先行判断
             return False
-        row = self._keywords.execute(
-            "SELECT 1 FROM terms WHERE terms MATCH ? LIMIT 1",
-            ('"' + term.encode("ascii").hex() + '"',),
-        ).fetchone()
+        sql = "SELECT 1 FROM terms WHERE terms MATCH ?"
+        params: list = ['"' + term.encode("ascii").hex() + '"']
+        if document_ids is not None:
+            sql += " AND document_id IN (" + ",".join("?" for _ in document_ids) + ")"
+            params.extend(sorted(document_ids))
+        row = self._keywords.execute(sql + " LIMIT 1", params).fetchone()
         return row is not None
 
     def search(
@@ -118,13 +120,13 @@ class VectorIndex:
             dids = self._document_ids
             # 仅有界召回精确技术标识符；普通中文问题保持原语义检索。
             if self._keywords is not None and 0 < len(terms) <= 16:
-                # 先剔除"在任何切片里都不存在"的术语，再做 AND。
+                # 先剔除"在当前文档范围内任何切片里都不存在"的术语，再做 AND。
                 # 一个零倒排项的术语与其它术语做 AND 不可能提高精度，只会把整个通道打成空，
                 # 而且完全静默。实测（真实语料）：问题「Fortrend LP PxM 软件里，如何设置
                 # 设备的通讯参数？」提取出 fortrend/lp/pxm，而手册正文写的是 LP/PLM、LP-150，
                 # 从没有 PxM（PxM 只在文件名里）——于是 AND 命中 0 个切片，精确匹配整个失效，
                 # 只剩向量检索，结果答成了 PLM2.0/Plus Pro 的内容。
-                live_terms = [term for term in terms if self._keyword_exists(term)]
+                live_terms = [term for term in terms if self._keyword_exists(term, document_ids)]
                 if live_terms:
                     match = " AND ".join(
                         '"' + term.encode("ascii").hex() + '"' for term in live_terms

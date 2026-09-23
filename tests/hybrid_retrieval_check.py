@@ -22,7 +22,7 @@ def main():
     for cid in range(1, 121):
         add(cid, 1, "ArmElev的P200是别的参数。", 0.8)
     add(121, 1, "ArmElev的P20在参数页修改，确认后保存。", 0.1)
-    add(122, 2, "ArmElev P20", 0.9)
+    add(122, 2, "ArmElev P20 DOC2ONLY", 0.9)
     add(123, 3, "ArmElev P20", 0.99)
     add(124, 1, "只写P20，没有轴名。", 0.7)
     add(125, 1, "RESET_AXIS命令用于复位。", 0.05)
@@ -52,6 +52,8 @@ def main():
     # 而手册正文写的是 LP/PLM、LP-150，从没有 PxM，于是 AND 命中 0 个切片。
     dead_term = index.search(q, 5, {1}, 0.25, query_text="ArmElev P20 ZZTOP")
     assert dead_term[0]["chunk_id"] == 121, f"含不存在术语时精确匹配仍须生效：{dead_term}"
+    scoped_term = index.search(q, 1, {1}, min_score=0.999, query_text="ArmElev P20 DOC2ONLY")
+    assert scoped_term and scoped_term[0]["chunk_id"] == 121, f"范围外术语不得清空精确匹配：{scoped_term}"
     # 全部术语都不存在时：退回纯语义检索，既不报错也不凭空命中。
     assert index.search(q, 5, {1}, 0.25, query_text="ZZTOP") == baseline
     # 剔除的只能是"零倒排项"的术语：其余术语之间的 AND 精度必须保持不变，
