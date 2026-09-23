@@ -39,6 +39,7 @@ jobs:
       - name: Unit and contract checks
         shell: bash
         run: |
+          python tests/injections/check_anchors.py
           # 每个文件都显式列出：此前 device_scope_check.js 只因被 citations_check 间接
           # require 才执行，失败信息会混在其它用例里；conversation_scope_check.py 则完全没跑。
           node tests/form_modal_check.js
