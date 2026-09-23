@@ -317,9 +317,17 @@ def run_piece_budget() -> None:
     except ParseError as exc:
         check(exc.code == "too_many_chunks", f"跨单元超预算同样报 too_many_chunks（{exc.code}）")
 
+    try:
+        chunk_units([Unit("甲" * 100, page=1), Unit("乙" * 1000, page=2)],
+                    TokenizerAdapter(), 100, 0, max_pieces=2)
+        check(False, "跨单元超预算应显示文档总上限")
+    except ParseError as exc:
+        check("上限 2" in exc.message,
+              f"跨单元超预算显示文档总上限而非剩余额度（{exc.message}）")
+
     print("-- 正常规模不受影响 --")
     normal = chunk_units(units, ta, 200, 40, max_pieces=50_000)
-    check(len(normal) == len(chunk_units(units, ta, 200, 40)),
+    check(normal == chunk_units(units, ta, 200, 40),
           "充裕预算下的产出与不传预算时完全一致")
 
 

@@ -214,9 +214,13 @@ def chunk_units(
         nonlocal buffer_texts, buffer_page, buffer_para, buffer_tokens
         merged = "\n".join(t for t in buffer_texts if t.strip()).strip()
         if merged:
-            for text, cnt in ta.split_long(
-                merged, max_tokens, overlap_tokens, remaining()
-            ):
+            try:
+                split = ta.split_long(merged, max_tokens, overlap_tokens, remaining())
+            except ParseError as exc:
+                if exc.code != "too_many_chunks" or max_pieces is None:
+                    raise
+                raise piece_budget_error("该文档", max_pieces) from exc
+            for text, cnt in split:
                 pieces_out.append(
                     Piece(text=text, token_count=cnt, page=buffer_page, paragraph=buffer_para)
                 )
