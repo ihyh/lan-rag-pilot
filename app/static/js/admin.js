@@ -84,7 +84,7 @@
     } finally { loading.classList.add('hidden'); }
   }
 
-  // 分阶段耗时：把"生成慢"和"检索慢"分开显示，避免再靠人工取证判断瓶颈。
+  // 分阶段耗时：明确样本量和时间范围，避免把历史统计当成当前请求耗时。
   function msLabel(v) {
     if (v === null || v === undefined) { return '—'; }
     return v >= 1000 ? (v / 1000).toFixed(1) + ' 秒' : v + ' 毫秒';
@@ -95,22 +95,26 @@
     if (!host) { return; }
     clear(host);
     if (!lat) { return; }
-    var total = lat.total_ms;
+    var model = lat.model_ms;
     var retr = lat.retrieval_ms;
-    var verdict = '暂无足够的成功作答样本';
-    if (total && retr && total.p50 !== null && retr.p50 !== null) {
-      // 检索正常在毫秒级；只要它远小于总耗时，瓶颈就在生成（纯 CPU 机器属预期）。
-      var ratio = total.p50 / Math.max(1, retr.p50);
-      verdict = ratio >= 10
-        ? '瓶颈在生成（检索仅占极小部分）：这是纯 CPU 部署的预期表现，想更快应优先看生成模型与硬件'
-        : '检索耗时占比偏高：先检查嵌入设备、切片数量与文档规模';
+    var verdict = '样本不足，请结合具体问答记录判断';
+    if (model && retr && model.samples >= 5 && retr.samples >= 5) {
+      if (retr.p50 >= 1000) {
+        verdict = '检索中位耗时已到秒级，请检查嵌入设备与索引规模';
+      } else if (model.p50 >= 1000 && model.p50 >= retr.p50 * 10) {
+        verdict = '模型调用明显慢于检索，请检查生成模型与硬件';
+      } else {
+        verdict = '两段中位耗时较低；若仍感觉慢，请检查并发排队与网络';
+      }
     }
     host.appendChild(h('div', { class: 'kv-grid' }, [
-      kv('统计轮次', lat.sample_size + ' / 窗口 ' + lat.window),
+      kv('模型样本 / 窗口', lat.sample_size + ' / ' + lat.window),
+      kv('统计截至', lat.span ? fmtTime(lat.span.to) : '—'),
       kv('拒答 / 失败', lat.refusals + ' / ' + lat.errors),
-      kv('总耗时 中位', msLabel(total ? total.p50 : null)),
-      kv('总耗时 P95', msLabel(total ? total.p95 : null)),
-      kv('总耗时 最长', msLabel(total ? total.max : null)),
+      kv('模型调用 中位', msLabel(model ? model.p50 : null)),
+      kv('模型调用 P95', msLabel(model ? model.p95 : null)),
+      kv('模型调用 最长', msLabel(model ? model.max : null)),
+      kv('检索样本', retr ? retr.samples : 0),
       kv('检索 中位', msLabel(retr ? retr.p50 : null)),
       kv('检索 P95', msLabel(retr ? retr.p95 : null)),
       kv('输出 token 中位', lat.completion_tokens && lat.completion_tokens.p50 !== null ? lat.completion_tokens.p50 : '—')

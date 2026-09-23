@@ -393,6 +393,7 @@ def query(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     if not hits:
+        retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
         return refuse("未找到与问题相关的可用文档，请换个问法或联系管理员。", "query_no_match")
 
     ids = [h["chunk_id"] for h in hits]

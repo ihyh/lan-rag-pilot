@@ -10,21 +10,21 @@
 
 - **检索耗时**（``retrieval_ms``）：从构造检索问题到选出最终来源。它只依赖本机嵌入模型
   与内存索引，正常情况下是几十到几百毫秒。
-- **总耗时**（``latency_ms``）：模型调用本身。纯 CPU 机器上它远大于检索，且**包含模型
+- **模型耗时**（``latency_ms``）：模型调用本身。纯 CPU 机器上它远大于检索，且**包含模型
   冷加载**（闲置卸载后再问，实测多约 25 秒）。
 
-两者对比就能定位瓶颈：检索几百毫秒而总耗时几十秒 = 生成是瓶颈；检索也到秒级 = 索引或
-嵌入有问题。
+对照同一次问答：检索几百毫秒而模型调用几十秒，应优先检查生成模型；检索也到秒级，
+应检查索引或嵌入。两段均不包含并发排队和完整 HTTP 请求时间。
 
 ## 口径（刻意写明，避免误读）
 
-- 只统计 **``latency_ms IS NOT NULL``** 的轮次，也就是真正发起过模型调用的轮次。
+- 模型耗时只统计 **``status='ok' AND latency_ms IS NOT NULL``** 的轮次。
   拒答（知识库为空、无匹配、无权访问）也会写入 ``chats`` 且 ``status='ok'``，但它没有
   模型调用、``latency_ms`` 为 NULL；若按 ``status='ok'`` 取样本，等于把无耗时的行混进
   统计，百分位会失去意义。
 - 拒答与失败**单独计数**，因为它们反映的是完全不同的问题：拒答多说明语料或阈值需要
   调整，失败多说明链路有问题。
-- 两段耗时的样本口径**刻意不同**：``total_ms`` 只统计成功作答的轮次——失败轮次的耗时
+- 两段耗时的样本口径**刻意不同**：``model_ms`` 只统计成功作答的轮次——失败轮次的耗时
   没有可比性，混进去会把"一次断链"误读成"系统变慢"；而 ``retrieval_ms`` 统计所有发生
   过检索的轮次（含随后生成失败的），因为检索成本与后续是否失败无关，它反映的是索引与
   嵌入的健康度。两段都各自带 ``samples``，便于看清样本量差异。
@@ -94,10 +94,10 @@ def latency_summary(rows: list[dict], window: int = DEFAULT_WINDOW) -> dict:
             refusals += 1
         else:
             answered.append(int(latency))
+            if row.get("completion_tokens") is not None:
+                tokens.append(int(row["completion_tokens"]))
         if row.get("retrieval_ms") is not None:
             retrieval.append(int(row["retrieval_ms"]))
-        if row.get("completion_tokens") is not None:
-            tokens.append(int(row["completion_tokens"]))
         stamp = row.get("created_at")
         if isinstance(stamp, str) and stamp:
             stamps.append(stamp)
@@ -108,12 +108,13 @@ def latency_summary(rows: list[dict], window: int = DEFAULT_WINDOW) -> dict:
         "refusals": refusals,
         "errors": errors,
         "span": {"from": min(stamps), "to": max(stamps)} if stamps else None,
-        "total_ms": _series(answered),
+        "model_ms": _series(answered),
         "retrieval_ms": _series(retrieval),
         "completion_tokens": _series(tokens),
         "note": (
-            "总耗时是成功作答的模型调用时间，包含模型冷加载；检索耗时覆盖所有发生过检索"
+            "模型耗时是成功作答的模型调用时间，包含模型冷加载，但不包含排队和整个 HTTP 请求；"
+            "检索耗时覆盖所有发生过检索"
             "的轮次（含随后生成失败的），因为检索成本与后续是否失败无关。两者对比即可"
-            "判断瓶颈在生成还是检索。拒答与失败不计入耗时，单独计数。"
+            "判断这两段的相对耗时。拒答与失败不计入模型耗时，单独计数。"
         ),
     }

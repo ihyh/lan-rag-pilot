@@ -121,32 +121,33 @@ def main() -> None:
         {"status": "ok", "latency_ms": None, "retrieval_ms": 150, "completion_tokens": None,
          "created_at": "2026-01-03T00:00:00"},
         # 失败：有部分耗时，但不应进入"成功作答"的耗时分布
-        {"status": "error", "latency_ms": 5000, "retrieval_ms": 250, "completion_tokens": 0,
+        {"status": "error", "latency_ms": 5000, "retrieval_ms": 250, "completion_tokens": 900,
          "created_at": "2026-01-04T00:00:00"},
         # 检索之前就拒答（知识库为空）：两段都没有
         {"status": "ok", "latency_ms": None, "retrieval_ms": None, "completion_tokens": None,
          "created_at": "2026-01-05T00:00:00"},
     ]
     summary = metrics.latency_summary(rows, window=5)
-    check(summary["sample_size"] == 2, f"总耗时样本只含 2 次成功作答（实际 {summary['sample_size']}）")
+    check(summary["sample_size"] == 2, f"模型耗时样本只含 2 次成功作答（实际 {summary['sample_size']}）")
     check(summary["refusals"] == 2, f"拒答单独计数为 2（实际 {summary['refusals']}）")
     check(summary["errors"] == 1, f"失败单独计数为 1（实际 {summary['errors']}）")
     check(
-        summary["total_ms"]["max"] == 20000,
-        f"失败轮次的 5000ms 没有进入总耗时分布（max={summary['total_ms']['max']}）",
+        summary["model_ms"]["max"] == 20000,
+        f"失败轮次的 5000ms 没有进入模型耗时分布（max={summary['model_ms']['max']}）",
     )
     check(
-        summary["total_ms"]["samples"] == 2 and summary["retrieval_ms"]["samples"] == 4,
-        "两段样本口径按设计不同：总耗时只含成功作答，检索覆盖所有发生过检索的轮次",
+        summary["model_ms"]["samples"] == 2 and summary["retrieval_ms"]["samples"] == 4,
+        "两段样本口径按设计不同：模型耗时只含成功作答，检索覆盖所有发生过检索的轮次",
     )
+    check(summary["completion_tokens"]["max"] == 200, "失败轮次的输出 token 不混入成功作答统计")
     check(summary["span"] == {"from": "2026-01-01T00:00:00", "to": "2026-01-05T00:00:00"},
           "时间跨度如实反映窗口覆盖范围")
     check(
-        "拒答与失败不计入耗时" in summary["note"],
+        "拒答与失败不计入模型耗时" in summary["note"],
         "note 明确写出统计口径，避免读的人自行猜测",
     )
     check(metrics.latency_summary([])["sample_size"] == 0, "空数据不报错")
-    check(metrics.latency_summary([])["total_ms"] is None, "空数据的耗时为 None 而不是 0")
+    check(metrics.latency_summary([])["model_ms"] is None, "空数据的耗时为 None 而不是 0")
 
     # ---------- B. 真实 HTTP：检索耗时被记录并回传 ----------
     tmp = Path(tempfile.mkdtemp(prefix="rag-latency-"))
@@ -220,6 +221,19 @@ def main() -> None:
         )
         check(row["latency_ms"] == 1234, "模型耗时也已落库")
 
+        print("\n== 检索后没有命中，也必须记录已经花掉的检索时间 ==")
+        with patch.object(vector_index, "search", return_value=[]):
+            no_hit = client.post("/api/query", json={"question": "没有命中的问题", "stream": False})
+        check(no_hit.status_code == 200, f"无命中时正常拒答（实际 {no_hit.status_code}）")
+        no_hit_row = conn.execute(
+            "SELECT latency_ms, retrieval_ms FROM chats ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        check(no_hit_row["latency_ms"] is None, "无命中未调用模型")
+        check(
+            isinstance(no_hit_row["retrieval_ms"], int) and no_hit_row["retrieval_ms"] >= 0,
+            "无命中仍记录检索耗时，供统计检索瓶颈",
+        )
+
         print("\n== 生成失败也必须留下检索耗时（口径里承诺过）==")
         from app.llm import LLMError
 
@@ -259,10 +273,12 @@ def main() -> None:
         check(lat.get("window") == metrics.DEFAULT_WINDOW, f"窗口为默认 {metrics.DEFAULT_WINDOW}")
         check(isinstance(lat.get("sample_size"), int), "sample_size 是整数")
         check(lat.get("sample_size", 0) >= 1, "刚才那次真实提问已被统计进去")
+        check(lat.get("model_ms", {}).get("p50") == 1234, "概览明确给出模型调用耗时")
         check(
             lat.get("retrieval_ms") is not None and lat["retrieval_ms"]["p50"] is not None,
             "检索耗时统计非空",
         )
+        check(lat["retrieval_ms"]["samples"] >= 3, "无命中与生成失败轮次也进入检索样本")
         check("note" in lat and lat["note"], "统计口径随响应一起给出")
 
         print("\n== 概览仍只对 root 开放 ==")
