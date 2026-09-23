@@ -99,6 +99,15 @@ def child_report_ok(conn, value) -> None:
     conn.send(("echo", value))
 
 
+def child_report_process_group(conn) -> None:
+    conn.send(("group", os.getpid(), os.getpgrp() if os.name == "posix" else None))
+
+
+def child_close_then_hang(conn) -> None:
+    conn.close()
+    time.sleep(3600)
+
+
 def child_spawn_grandchild(conn, marker: str) -> None:
     """起一个带唯一标记的孙进程再卡死，用来验证超时会杀掉整棵进程树。
 
@@ -277,6 +286,13 @@ def main() -> None:
     check(outcome.reason == "crashed", f"结局标记为 crashed（实际 {outcome.reason}）")
     check("退出码 3" in outcome.note, f"说明里带退出码：{outcome.note}")
 
+    started = time.monotonic()
+    outcome = parse_runner._run_isolated(
+        child_close_then_hang, (), 30.0, name="test-close-then-hang"
+    )
+    check(not outcome.got and outcome.reason == "crashed", "关闭通道后卡死的进程会被回收")
+    check(time.monotonic() - started < 20.0, "该异常不会一直留在后台")
+
     if os.name == "posix":
         outcome = parse_runner._run_isolated(child_segfault, (), 30.0, name="test-segv")
         check(not outcome.got and outcome.reason == "crashed", "段错误同样归为 crashed")
@@ -313,7 +329,7 @@ def main() -> None:
             "解析该文件时出错" in exc.message and "PackageNotFoundError" in exc.message,
             f"信息里有可定位的异常类型：{exc.message[:70]}…",
         )
-        check("服务器未受影响" in exc.message, "信息里说明服务器未受影响")
+        check("主服务进程仍在运行" in exc.message, "信息准确说明主服务进程仍在运行")
 
     # ---------- F. 结果回传保真 ----------
     print("\n== 结果回传必须保真（中文、空值、大对象）==")
@@ -329,6 +345,15 @@ def main() -> None:
         child_report_ok, (big,), 60.0, name="test-big"
     )
     check(outcome.got and outcome.result[1] == big, "约 2MB 的回传完整无损")
+
+    if os.name == "posix":
+        outcome = parse_runner._run_isolated(
+            child_report_process_group, (), 30.0, name="test-process-group"
+        )
+        _, child_pid, child_pgid = outcome.result
+        check(child_pid == child_pgid, "隔离目标运行前已建立独立 POSIX 进程组")
+    else:
+        skip("独立进程组断言仅 POSIX；Windows 使用 taskkill /T")
 
     # ---------- G. 内存上限 ----------
     print("\n== 内存上限：超限必须是干净的解析失败，不是把机器拖垮 ==")
@@ -408,6 +433,23 @@ def main() -> None:
         check(False, "未知解析类型应报错")
     except parsing.ParseError as exc:
         check(exc.code == "unsupported_kind", f"未知类型报 unsupported_kind（{exc.code}）")
+
+    original_run_isolated = parse_runner._run_isolated
+    parse_runner._run_isolated = lambda *args, **kwargs: parse_runner.IsolatedOutcome(
+        got=False, reason="unavailable", note="test start failure"
+    )
+    try:
+        try:
+            parse_runner.parse_units("txt", txt)
+            check(False, "隔离启动失败时不得退回主进程解析")
+        except parsing.ParseError as exc:
+            check(
+                exc.code == "parse_isolation_unavailable",
+                f"隔离启动失败时 fail-closed（实际 {exc.code}）",
+            )
+            check("test start failure" in exc.message, "错误信息保留可操作的启动失败原因")
+    finally:
+        parse_runner._run_isolated = original_run_isolated
 
     print(f"\n结果: {len(PASS)} 通过, {len(FAIL)} 失败" + (f", {len(SKIP)} 跳过" if SKIP else ""))
     if FAIL:

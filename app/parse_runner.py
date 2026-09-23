@@ -31,8 +31,9 @@
 ## 失败语义
 
 子进程里的 ``ParseError`` 会原样回传（含 code），与不隔离时行为一致；其余失败
-（超时、内存超限、崩溃）映射为带明确 code 的 ``ParseError``（``parse_timeout`` /
-``parse_memory`` / ``parse_crashed``），并写进文档的失败原因，便于管理员区分
+（隔离不可用、超时、内存超限、崩溃、解析器未知异常）映射为带明确 code 的 ``ParseError``
+（``parse_isolation_unavailable`` / ``parse_timeout`` / ``parse_memory`` /
+``parse_crashed`` / ``parse_failed``），并写进文档的失败原因，便于管理员区分
 "文件坏了"和"服务器资源不够"。
 """
 from __future__ import annotations
@@ -51,6 +52,7 @@ _OK = "ok"
 _PARSE_ERROR = "parse_error"
 _MEMORY = "memory"
 _FAILED = "failed"
+_ISOLATION_ERROR = "isolation_error"
 
 # 收结果的三种结局
 _RECV_OK = "ok"
@@ -59,6 +61,8 @@ _RECV_TIMEOUT = "timeout"    # 到点还没动静
 
 # 强杀后等待回收的时间；被杀的子进程几乎立刻退出，这里只是给足余量。
 _REAP_GRACE_S = 10.0
+# 已经收到结果或 EOF 后，正常子进程只剩解释器收尾；无需为异常卡死再等完整回收窗口。
+_NORMAL_EXIT_GRACE_S = 2.0
 
 
 @dataclass
@@ -77,18 +81,32 @@ class IsolatedOutcome:
 
 
 def _limit_address_space(mem_mb: int) -> None:
-    """POSIX：给子进程地址空间设上限。Windows 无对应能力，直接返回。"""
+    """POSIX：给子进程地址空间设上限。Windows 无对应能力，直接返回。
+
+    已要求限制时不能静默忽略失败，否则运维看到配置存在会误以为保护已经生效。
+    """
     if mem_mb <= 0 or os.name != "posix":
         return
     try:
         import resource  # noqa: PLC0415 - 仅 POSIX 存在
-    except ImportError:  # pragma: no cover - 非 POSIX
-        return
+    except ImportError as exc:  # pragma: no cover - 极少数非标准 POSIX Python
+        raise RuntimeError("当前 POSIX Python 缺少 resource，无法设置解析内存上限") from exc
     cap = mem_mb * 1024 * 1024
     try:
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-    except (ValueError, OSError):  # pragma: no cover - 平台不允许时静默跳过
-        return
+    except (ValueError, OSError) as exc:  # pragma: no cover - 取决于宿主内核策略
+        raise RuntimeError(f"无法设置解析内存上限：{exc}") from exc
+
+
+def _isolated_entry(target, conn, args: tuple) -> None:
+    """所有隔离任务的统一入口；先建立独立进程组，再运行目标函数。"""
+    if os.name == "posix":
+        try:
+            os.setsid()
+        except OSError:
+            # _kill_tree 还会核对 pgid==pid；未成功独立时只杀直接子进程，绝不误杀父组。
+            pass
+    target(conn, *args)
 
 
 def _child_main(conn, kind: str, path_str: str, mem_mb: int) -> None:
@@ -96,13 +114,12 @@ def _child_main(conn, kind: str, path_str: str, mem_mb: int) -> None:
 
     自成进程组（POSIX）是为了让父进程能按组杀掉整棵树，包括 antiword 这类孙进程。
     """
-    if os.name == "posix":
-        try:
-            os.setsid()
-        except OSError:  # pragma: no cover
-            pass
     try:
-        _limit_address_space(mem_mb)
+        try:
+            _limit_address_space(mem_mb)
+        except RuntimeError as exc:
+            _send(conn, (_ISOLATION_ERROR, str(exc)))
+            return
         units = parsing.PARSERS[kind](Path(path_str))
         payload = [(u.text, u.page, u.paragraph) for u in units]
         _send(conn, (_OK, payload))
@@ -152,7 +169,13 @@ def _kill_tree(proc: multiprocessing.process.BaseProcess) -> None:
         import signal  # noqa: PLC0415
 
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            pgid = os.getpgid(pid)
+            if pgid != pid:
+                # 子进程还没来得及 setsid；此时 killpg 会杀到父服务所在的进程组。
+                # 只杀直接子进程最安全，且它尚未进入目标函数，不可能已经创建孙进程。
+                proc.kill()
+            else:
+                os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             # 取不到进程组（子进程还没执行 setsid 就被杀）时退回单进程终止。
             try:
@@ -178,7 +201,9 @@ def _kill_tree(proc: multiprocessing.process.BaseProcess) -> None:
     proc.join(_REAP_GRACE_S)
 
 
-def _recv_with_deadline(conn, timeout_s: float) -> tuple[str, object]:
+def _recv_with_deadline(
+    conn, timeout_s: float
+) -> tuple[str, object, threading.Thread]:
     """带截止时间地收结果，返回 (结局, 值)，结局取值见 ``_RECV_*``。
 
     用一个读取线程而不是 ``conn.poll(timeout)`` + ``recv()``：poll 只保证"有数据可读"，
@@ -202,10 +227,11 @@ def _recv_with_deadline(conn, timeout_s: float) -> tuple[str, object]:
     thread = threading.Thread(target=_reader, name="parse-recv", daemon=True)
     thread.start()
     if not finished.wait(timeout_s):
-        return _RECV_TIMEOUT, None
+        return _RECV_TIMEOUT, None, thread
+    thread.join()
     if "value" in holder:
-        return _RECV_OK, holder["value"]
-    return _RECV_CLOSED, None
+        return _RECV_OK, holder["value"], thread
+    return _RECV_CLOSED, None, thread
 
 
 def _run_isolated(
@@ -219,12 +245,26 @@ def _run_isolated(
     ``target`` 必须可按引用 pickle（即模块级函数），这是 multiprocessing spawn 的要求。
     它的第一个参数固定是回传用的 ``Connection``。
     """
+    parent_conn = child_conn = proc = None
     try:
         ctx = multiprocessing.get_context("spawn")
         parent_conn, child_conn = ctx.Pipe(duplex=False)
-        proc = ctx.Process(target=target, args=(child_conn, *args), name=name, daemon=True)
+        proc = ctx.Process(
+            target=_isolated_entry,
+            args=(target, child_conn, args),
+            name=name,
+            daemon=True,
+        )
         proc.start()
-    except (OSError, ValueError, ImportError) as exc:
+    except Exception as exc:  # noqa: BLE001 - 启动失败统一转为明确的隔离不可用
+        if proc is not None and proc.is_alive():
+            _kill_tree(proc)
+        for conn in (parent_conn, child_conn):
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
         return IsolatedOutcome(
             got=False, reason="unavailable", note=f"{exc.__class__.__name__}: {exc}"
         )
@@ -235,28 +275,38 @@ def _run_isolated(
     except OSError:  # pragma: no cover
         pass
 
+    close_parent = True
     try:
-        state, value = _recv_with_deadline(parent_conn, timeout_s)
+        state, value, reader = _recv_with_deadline(parent_conn, timeout_s)
         if state == _RECV_TIMEOUT:
             # 先杀进程树，再（在 finally 里）关连接：子进程写端关闭后，仍阻塞在 recv 上的
             # 读取线程会立刻拿到 EOF 自然退出。顺序反了就是在一个线程仍阻塞于该句柄时
             # 把它关掉——POSIX 上被关闭的文件描述符号可能马上被复用，阻塞中的读就有读到
             # 无关数据的风险。
             _kill_tree(proc)
+            reader.join(_REAP_GRACE_S)
+            # 极端情况下读取线程仍未退出，就把连接留给它持有；主动 close 会重新引入
+            # “另一线程仍在 recv 时关闭并复用文件描述符”的竞态。
+            close_parent = not reader.is_alive()
     finally:
-        try:
-            parent_conn.close()
-        except OSError:  # pragma: no cover
-            pass
+        if close_parent:
+            try:
+                parent_conn.close()
+            except OSError:  # pragma: no cover
+                pass
 
     if state == _RECV_OK:
         # 正常拿到结果；子进程此时可能仍在退出过程中，join 收尾避免僵尸。
-        proc.join(_REAP_GRACE_S)
+        proc.join(_NORMAL_EXIT_GRACE_S)
+        if proc.is_alive():
+            _kill_tree(proc)
         return IsolatedOutcome(got=True, result=value, exit_note=exit_note(proc.exitcode))
 
     if state == _RECV_CLOSED:
         # 必须 join 之后再读退出码，否则拿到的还是 None（子进程尚未被回收）。
-        proc.join(_REAP_GRACE_S)
+        proc.join(_NORMAL_EXIT_GRACE_S)
+        if proc.is_alive():
+            _kill_tree(proc)
         note = exit_note(proc.exitcode)
         return IsolatedOutcome(got=False, reason="crashed", note=note, exit_note=note)
 
@@ -272,8 +322,8 @@ def _run_isolated(
 def parse_units(kind: str, path: Path) -> list[parsing.Unit]:
     """解析文档并返回文本单元；与 ``parsing.PARSERS[kind](path)`` 等价但受隔离保护。
 
-    隔离不可用时（配置关闭、或平台无法启动子进程）退回同进程解析：功能不因此中断，
-    但会失去这层保护，调用方无需区分。
+    只有显式关闭隔离时才在当前进程解析。隔离已开启却无法创建子进程时必须失败关闭；
+    若退回当前进程，同一份不可信文件就可能重新拖垮整个服务。
     """
     parser = parsing.PARSERS.get(kind)
     if parser is None:
@@ -292,19 +342,23 @@ def parse_units(kind: str, path: Path) -> list[parsing.Unit]:
 
     if not outcome.got:
         if outcome.reason == "unavailable":
-            # 连子进程都起不来（受限环境/句柄耗尽）：退回同进程，不让上传功能整体失效。
-            return parser(path)
+            raise parsing.ParseError(
+                "[parse_isolation_unavailable] 无法启动文档解析隔离进程。"
+                "为避免不可信文件在主服务内解析，本次操作已拒绝；请检查系统进程/句柄"
+                f"资源与运行权限（{outcome.note}）。",
+                code="parse_isolation_unavailable",
+            )
         if outcome.reason == "timeout":
             raise parsing.ParseError(
-                f"解析超过 {timeout_s:g} 秒仍未完成，已终止该进程树。"
+                f"[parse_timeout] 解析超过 {timeout_s:g} 秒仍未完成，已终止该进程树。"
                 "文件可能损坏或构造异常；请检查该文件，或调大 RAG_PARSE_TIMEOUT_S。",
                 code="parse_timeout",
             )
         # 通道关闭：子进程没留下任何说明就退出了。段错误、被系统 OOM 杀掉都走这里，
         # 与"解析器自己报错"（parse_failed）必须分开，否则运维会去找一个不存在的崩溃。
         raise parsing.ParseError(
-            f"解析进程异常退出（{outcome.note}）。文件可能损坏或格式不兼容；"
-            "服务器未受影响，其他功能可继续使用。",
+            f"[parse_crashed] 解析进程异常退出（{outcome.note}）。文件可能损坏或格式不兼容；"
+            "主服务进程仍在运行。若宿主机同时出现内存紧张，请先检查系统资源再重试。",
             code="parse_crashed",
         )
 
@@ -317,17 +371,23 @@ def parse_units(kind: str, path: Path) -> list[parsing.Unit]:
     if status == _PARSE_ERROR:
         message, code = detail  # type: ignore[misc]
         raise parsing.ParseError(message, code=code)
+    if status == _ISOLATION_ERROR:
+        raise parsing.ParseError(
+            "[parse_isolation_unavailable] 文档解析隔离环境初始化失败："
+            f"{detail}。本次操作已拒绝，未退回主服务解析。",
+            code="parse_isolation_unavailable",
+        )
     if status == _MEMORY:
         limit = f"{detail} MB" if detail else "配置的上限"
         raise parsing.ParseError(
-            f"解析该文件时内存超过上限（{limit}），已终止。"
+            f"[parse_memory] 解析该文件时内存超过上限（{limit}），已终止。"
             "文件可能损坏或为构造的超大解压文件；调大 RAG_PARSE_MEMORY_MB 前，"
             "请先确认服务器内存足够，且不会影响正在服务的其他用户。",
             code="parse_memory",
         )
     raise parsing.ParseError(
-        f"解析该文件时出错（{detail}）。文件很可能损坏或格式不兼容；"
-        "服务器未受影响，可继续使用其他功能。若确认文件正常，请把该文件与这条信息"
+        f"[parse_failed] 解析该文件时出错（{detail}）。文件很可能损坏或格式不兼容；"
+        "主服务进程仍在运行。若确认文件正常，请把该文件与这条信息"
         "一并反馈，以便定位是哪个解析组件的问题。",
         code="parse_failed",
     )

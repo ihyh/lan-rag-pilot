@@ -311,7 +311,7 @@ class Settings:
             )
 
         # 解析隔离的超时：<=0 会让每次解析立刻被判超时，等于所有上传都失败。
-        if self.parse_timeout_s <= 0:
+        if not math.isfinite(self.parse_timeout_s) or self.parse_timeout_s <= 0:
             problems.append(
                 f"RAG_PARSE_TIMEOUT_S={self.parse_timeout_s} 必须为正数："
                 "0 或负数会让每次解析立刻被判超时。"

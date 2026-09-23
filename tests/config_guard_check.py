@@ -134,6 +134,14 @@ def main() -> None:
         "RAG_READY_PROBE_TIMEOUT_S" in rejected(RAG_READY_PROBE_TIMEOUT_S="inf"),
         "探针超时不接受无穷大",
     )
+    check(
+        "RAG_PARSE_TIMEOUT_S" in rejected(RAG_PARSE_TIMEOUT_S="nan"),
+        "解析隔离超时不接受 NaN",
+    )
+    check(
+        "RAG_PARSE_TIMEOUT_S" in rejected(RAG_PARSE_TIMEOUT_S="inf"),
+        "解析隔离超时不接受无穷大",
+    )
 
     # 这一条直接对应“默认值会静默连公网”的历史缺口
     check(
