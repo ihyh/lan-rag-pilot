@@ -21,4 +21,11 @@ INJECTIONS = [
         '            j = boundary if boundary is not None else j',
         '字符近似路径',
     ),
+    (
+        'I3 去掉切片预算的增量检查（退回"全部生成完再查总数"）',
+        'app/chunking.py',
+        '        return max_pieces is not None and len(pieces) >= max_pieces',
+        '        return False',
+        '超过预算时应报错',
+    ),
 ]

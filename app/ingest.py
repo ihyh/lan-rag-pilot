@@ -206,11 +206,17 @@ def _index_document(db: sqlite3.Connection, doc_id: int, kind: str) -> dict:
     assert doc is not None
     units = parse_runner.parse_units(kind, settings.upload_dir / doc["stored_name"])
     ta = TokenizerAdapter(embedding_service.tokenizer_or_none())
-    pieces = chunk_units(units, ta, settings.chunk_max_tokens, settings.chunk_overlap_tokens)
+    # 切片预算在切块过程中逐次下传：重叠接近窗口时步长会塌到 1，切片数与总文本量随文本
+    # 长度剧增；等切完再查 len(pieces) 等于没查（实测 20M 字符输入会在检查前先吃掉约 5 GB）。
+    pieces = chunk_units(
+        units, ta, settings.chunk_max_tokens, settings.chunk_overlap_tokens,
+        max_pieces=settings.parse_max_chunks,
+    )
     if not pieces:
         raise IngestError("解析完成但没有可切块的文本", code="empty_doc")
     # 切片数上限：内存索引按 512 维 float32 常驻内存，切片数直接决定内存占用与
     # 重建耗时。没有这道闸，一份超大文档就能把服务器拖垮。
+    # 上面的 max_pieces 已经在生成过程中拦下超限情况，这里是兜底（例如调用方未传预算时）。
     if len(pieces) > settings.parse_max_chunks:
         raise IngestError(
             f"解析产生 {len(pieces)} 个切片，超过 {settings.parse_max_chunks} 上限。"

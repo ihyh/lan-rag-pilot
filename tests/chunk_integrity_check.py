@@ -42,7 +42,7 @@ from app.chunking import (  # noqa: E402
     chunk_units,
     min_span,
 )
-from app.parsing import Unit  # noqa: E402
+from app.parsing import ParseError, Unit  # noqa: E402
 
 PASS: list[str] = []
 FAIL: list[str] = []
@@ -258,6 +258,71 @@ def run_page_attribution(ta: TokenizerAdapter, path_label: str) -> None:
           f"{path_label}：跨单元切块仍守住 token 上界")
 
 
+class CountingTokenizer(CharacterTokenizer):
+    """统计被调用次数，用来证明"预算是在生成过程中就地生效"，而不是生成完再查。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def encode(self, text, **kwargs):
+        self.calls += 1
+        return super().encode(text, **kwargs)
+
+    def __call__(self, text, **kwargs):
+        self.calls += 1
+        return super().__call__(text, **kwargs)
+
+
+def run_piece_budget() -> None:
+    """切块预算必须在生成过程中就地生效（前置资源保护）。
+
+    背景：`ingest` 原先只在整个文档切完之后检查 `len(pieces) > RAG_PARSE_MAX_CHUNKS`。
+    重叠接近窗口时有效步长塌到 1，切片数与总文本量随文本长度剧增——实测 20M 字符输入在
+    该配置下会在检查之前先生成约 1017 万片、约 4 GB 文本（估约 5 GB 内存）。
+    """
+    print("\n== 切片预算（前置资源保护）==")
+    text = "。" + "甲" * 6000           # 步长 1 时会产出数千片
+    probe = TokenizerAdapter(CharacterTokenizer())
+    unbounded = probe.split_long(text, 400, 399)
+    check(len(unbounded) > 4000,
+          f"无预算时该文本确实产出大量片段（{len(unbounded)} 片），预算确有必要")
+
+    for path_label, ta in (
+        ("offsets 路径", TokenizerAdapter(CountingTokenizer())),
+        ("字符近似路径", TokenizerAdapter()),
+    ):
+        counting = isinstance(ta._tokenizer, CountingTokenizer)  # noqa: SLF001
+        try:
+            ta.split_long(text, 400, 399, max_pieces=50)
+            check(False, f"{path_label}：超过预算时应报错")
+        except ParseError as exc:
+            check(exc.code == "too_many_chunks",
+                  f"{path_label}：超预算报 too_many_chunks（实际 {exc.code}）")
+            check("RAG_CHUNK_OVERLAP_TOKENS" in exc.message,
+                  f"{path_label}：错误信息给出重叠过大的排查方向")
+        if counting:
+            calls = ta._tokenizer.calls  # noqa: SLF001
+            check(calls <= 60,
+                  f"{path_label}：在预算附近就停止，而不是生成 {len(unbounded)} 片后才发现"
+                  f"（tokenizer 调用 {calls} 次）")
+
+    print("-- 跨单元预算 --")
+    units = [Unit("甲" * 1000, page=1), Unit("乙" * 1000, page=2), Unit("丙" * 1000, page=3)]
+    ta = TokenizerAdapter(CharacterTokenizer())
+    ok = chunk_units(units, ta, 200, 40, max_pieces=60)
+    check(len(ok) <= 60, f"预算充足时正常切块（{len(ok)} 片 ≤ 60）")
+    try:
+        chunk_units(units, ta, 200, 40, max_pieces=3)
+        check(False, "跨单元累计超过预算时应报错")
+    except ParseError as exc:
+        check(exc.code == "too_many_chunks", f"跨单元超预算同样报 too_many_chunks（{exc.code}）")
+
+    print("-- 正常规模不受影响 --")
+    normal = chunk_units(units, ta, 200, 40, max_pieces=50_000)
+    check(len(normal) == len(chunk_units(units, ta, 200, 40)),
+          "充裕预算下的产出与不传预算时完全一致")
+
+
 def run_real_tokenizer_replay() -> None:
     """真实 BGE tokenizer 可用时，重放已复现的两种真实形态与真实文件。"""
     model_dir = os.environ.get("CHUNK_CHECK_MODEL") or r"C:/rag-personal/models/bge-small-zh-v1.5"
@@ -364,9 +429,10 @@ def main() -> None:
         check(shortest >= min_span(100, 20),
               f"除尾片外每片至少 {min_span(100, 20)} token（实测最短 {shortest}）")
 
+    run_piece_budget()
+
     print("\n== 真实 BGE tokenizer 重放（本机有模型时执行）==")
     run_real_tokenizer_replay()
-
     print(f"\n结果: {len(PASS)} 通过, {len(FAIL)} 失败"
           + (f", {len(SKIP)} 跳过" if SKIP else ""))
     if FAIL:
