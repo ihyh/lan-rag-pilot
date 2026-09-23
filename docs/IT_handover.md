@@ -34,6 +34,7 @@ Windows 脚本不移除值两侧引号或行尾注释；Compose 则有自己的�
 | DEEPSEEK_MODEL | 缺失回退公共服务模型名 | 填已离线导入的精确本地标签 |
 | DEEPSEEK_API_KEY | 默认空；模型调用要求非空 | 本文 Ollama 示例为 ollama，不是真正接口鉴权 |
 | DEEPSEEK_TIMEOUT_S | 60 秒 | 教程 180，需与代理超时协调 |
+| RAG_LLM_TRUST_ENV_PROXY | 0（不使用代理） | **不要改成 1**，除非确实要经代理访问公网 API；详见下方“代理接管”一节 |
 | RAG_SECRET_KEY | 默认空，**缺失时拒绝启动**（不再回退开发密钥） | 必须随机配置；错误信息内含生成命令 |
 | RAG_ROOT_PASSWORD | 空库没有初始密码时启动失败 | 只初始化首个 root，不重置已有用户 |
 | RAG_COOKIE_SECURE | false | LAN HTTPS 必须 true |
@@ -46,7 +47,10 @@ Windows 脚本不移除值两侧引号或行尾注释；Compose 则有自己的�
 | RAG_EMBED_MODEL | BAAI/bge-small-zh-v1.5 | 教程用完整本地模型目录 |
 | RAG_EMBED_BACKEND | st | mock 只用于测试，不可上线 |
 | RAG_CHUNK_MAX_TOKENS / RAG_CHUNK_OVERLAP_TOKENS | 400 / 60 | 改后旧文档不自动重切 |
-| RAG_TOP_K | 5 | 可被数据库运行设置覆盖 |
+| RAG_TOP_K | 3 | 可被数据库运行设置覆盖 |
+| RAG_READY_PROBE_LLM | 1 | 就绪是否校验生成模型；关闭后探针不再覆盖问答链路 |
+| RAG_READY_PROBE_TTL_S | 30 秒 | 探测结果缓存；0 表示每次健康检查都真探测 |
+| RAG_READY_PROBE_TIMEOUT_S | 3 秒 | 须明显小于编排层健康检查超时（compose 为内层 8 秒、外层 10 秒） |
 | RAG_MIN_RELEVANCE_SCORE | 0.25 | 需按模型/语料校准，不是答案可信度 |
 | RAG_QUERIES_PER_MINUTE | 10 | 可被数据库运行设置覆盖 |
 | RAG_MAX_CONCURRENT_LLM | 3 | 教程初始设 1；数据库设置优先 |
@@ -61,9 +65,30 @@ Windows 脚本不移除值两侧引号或行尾注释；Compose 则有自己的�
 
 单 worker、单 RAG 副本。限流、并发闸门和向量索引依赖进程内状态，不能通过增加 uvicorn workers 安全扩容。多机/多进程需要额外架构改造。
 
-本地启动后 /docs 提供 OpenAPI 文档，/api/health 用于存活，/api/ready 用于嵌入就绪；后者不验证 Ollama 全链路。生产应由 IT 控制管理/诊断入口范围，不把接口文档可见性当成授权。
+本地启动后 /docs 提供 OpenAPI 文档，/api/health 用于存活，/api/ready 用于就绪。两者的分工必须分清：
+
+- `/api/health`：只反映进程活着，**从不主动联系 Ollama**，永远 200。它顺带返回上次就绪探测的缓存结果（没有缓存时为 `null`）。存活探针不去碰外部依赖，是为了避免 Ollama 抖动导致编排层把本来能提供检索服务的容器反复重启。
+- `/api/ready`：同时校验嵌入模型与生成模型两条链路。嵌入未就绪先返回 `503 reason=embed_not_ready`（此时不会去探测模型服务）；嵌入就绪但模型不可用返回 `503 reason=llm_not_ready`，响应体 `checks.embed` 与 `checks.llm` 分别给出两条链路的结论与可操作说明。`model_ready` 字段为兼容旧脚本保留，只表示嵌入。
+- 探测结果带 TTL 缓存（默认 30 秒，`RAG_READY_PROBE_TTL_S`）。可用 `RAG_READY_PROBE_LLM=0` 关闭生成侧校验，但那会让“探针全绿、提问全失败”重新变成可能，不建议。
+- 判定口径：只有连接失败或超时才算不可用；401/403/404 等任何 HTTP 响应都说明链路是通的。**例外是 502/503/504**——网关错误恰恰意味着请求没到达模型服务（典型成因是系统/环境代理接管了内网流量），必须算不可用。
+- 就绪结论与提问结果保持一致：`DEEPSEEK_API_KEY` 缺失（含只填了空白）时提问必然以 `llm_auth` 失败，因此探测直接判未就绪并指明该配置项，而不是报成网络故障。key 是否算“已配置”由 `app/llm.py` 的 `effective_api_key()` 单点定义，请求头构造、提问校验与健康探测共用，避免口径不一致。
+
+生产应由 IT 控制管理/诊断入口范围，不把接口文档可见性当成授权。
 
 改 env 不等于改数据库。升级可能涉及模式变化，先读 [备份回退](OPERATIONS.md)，不能把旧程序直接接到未知新库。
+
+## 代理接管：一种会伪装成“模型服务故障”的部署事故
+
+模型服务按设计是本机或内网依赖（`DEEPSEEK_BASE_URL` 多为 `http://127.0.0.1:11434/v1`）。但 Python 的 httpx 默认会读取 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`；在 Windows 上还会经 urllib 读取 WinINET 系统代理（注册表 `Internet Settings`），**并且不读其中的 `ProxyOverride` 绕过列表**。
+
+后果是：即使系统明确写了 `127.*`、`localhost`、`192.168.*` 不走代理，请求仍会被送给代理；代理无法转发本机或内网地址时返回 502。用户看到的是“提问全部失败、模型服务不可用”，而模型服务其实完全正常——排查方向被完全带偏。
+
+本产品因此**默认不使用任何代理**（`RAG_LLM_TRUST_ENV_PROXY=0`），并且就绪探测把 502/503/504 判为不可用而不是“链路可达”，两道措施互为兜底。运维要点：
+
+- 部署机上的代理客户端（Clash、企业安全客户端、VPN 工具等）开启系统代理时，本产品不受影响，无需为其配置绕过规则；这是刻意的设计，不是遗漏。
+- 反向代理/负载均衡用 502 表示“后端不可达”时不会被误读成就绪。
+- 若某部署确实要经代理访问公网 API，才显式设 `RAG_LLM_TRUST_ENV_PROXY=1`，并自行确认代理能转发到模型地址；此时内网依赖被代理接管的误判风险由该部署自行承担。
+- 排查方法：`curl`（会走系统代理）与省略代理的直连结果不一致时，即为此类问题。就绪响应里的 `checks.llm.message` 会直接指出这一点。
 
 ## 开发与验证
 

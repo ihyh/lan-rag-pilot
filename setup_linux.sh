@@ -182,29 +182,53 @@ cleanup() { kill "$app_pid" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
 ready=0
+probe_reason=""
 for _ in $(seq 1 120); do
     if ! kill -0 "$app_pid" 2>/dev/null; then
         break
     fi
-    if "$venv_python" - "$port" <<'PY' 2>/dev/null
+    # 探针显式直连回环，不使用任何代理：本应用与模型服务都是本机/内网依赖，
+    # 一旦被 http_proxy 之类的环境代理接管，一个完全正常的实例会返回 502，
+    # 把验收判成失败（成因与排查见 docs/IT_handover.md 的“代理接管”一节）。
+    # 非 200 时把响应体带回 shell：/api/ready 的 503 正文写明断在哪条链路、该怎么修，
+    # 只说“未返回 200”等于把最有用的一句诊断丢掉。
+    probe_out="$("$venv_python" - "$port" <<'PY' 2>/dev/null || true
 import sys
+import urllib.error
 import urllib.request
 
 port = sys.argv[1]
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 for path in ("/api/health", "/api/ready"):
-    if urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=2).status != 200:
+    try:
+        with opener.open(f"http://127.0.0.1:{port}{path}", timeout=2) as resp:
+            if resp.status != 200:
+                print(f"{path} HTTP {resp.status}")
+                raise SystemExit(1)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace").replace("\n", " ")[:300]
+        print(f"{path} HTTP {exc.code} {body}")
         raise SystemExit(1)
+    except Exception as exc:
+        print(f"{path} 无法连接（{exc.__class__.__name__}）")
+        raise SystemExit(1)
+print("OK")
 PY
-    then
+)"
+    if [[ "$probe_out" == "OK" ]]; then
         ready=1
         break
     fi
+    probe_reason="$probe_out"
     sleep 1
 done
 
 if [[ $ready -ne 1 ]]; then
     echo "启动后健康检查未通过：/api/health 或 /api/ready 未在 120 秒内返回 200。" >&2
-    echo "请检查上方日志（常见原因：嵌入模型未加载、Ollama 未启动、配置被启动校验拒绝）。" >&2
+    if [[ -n "$probe_reason" ]]; then
+        echo "最近一次探测结果：$probe_reason" >&2
+    fi
+    echo "请检查上方日志（常见原因：嵌入模型未加载、Ollama 未启动、模型未 pull、配置被启动校验拒绝）。" >&2
     exit 1
 fi
 

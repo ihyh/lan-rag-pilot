@@ -107,6 +107,21 @@ def main() -> None:
     check("secrets.token_urlsafe" in reason, "拒绝信息包含可直接复制的密钥生成命令")
 
     check("DEEPSEEK_API_KEY" in rejected(DEEPSEEK_API_KEY=None), "缺少 DEEPSEEK_API_KEY 时拒绝启动")
+    # 只有空白也必须拒绝：它既能通过这里的裸属性判断，也能通过 chat 里
+    # `if not settings.deepseek_api_key` 的判断，最后表现为发出非法的
+    # `Authorization: Bearer `（带尾随空格），被报成"无法连接模型服务"的伪网络故障。
+    check(
+        "DEEPSEEK_API_KEY" in rejected(DEEPSEEK_API_KEY="   "),
+        "只有空白的 DEEPSEEK_API_KEY 也在启动时被拒绝（而非拖到用户提问才失败）",
+    )
+    check(
+        "DEEPSEEK_API_KEY" in rejected(DEEPSEEK_API_KEY=""),
+        "显式空字符串的 DEEPSEEK_API_KEY 被拒绝",
+    )
+    check(
+        accepted(DEEPSEEK_API_KEY="ollama") == "",
+        "非空占位值 ollama 可启动（本地 Ollama 的正常用法）",
+    )
 
     # 这一条直接对应“默认值会静默连公网”的历史缺口
     check(

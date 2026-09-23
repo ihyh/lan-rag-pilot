@@ -15,6 +15,7 @@ from .config import settings
 from .db import connect, init_db, now_iso
 from .embeddings import embedding_service
 from .index import vector_index
+from .llm_health import llm_probe
 from .pages import router as pages_router
 from .routers import admin as admin_router
 from .routers import auth as auth_router
@@ -118,6 +119,12 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     def health():
+        """存活探针：只看进程与嵌入模型，**不触发**生成模型探测（保持轻量）。
+
+        生成模型的状态以 checks.llm 形式附带——只用上次探测的缓存结果，
+        没有缓存就是 null。这样存活探针不会因为 Ollama 抖动而被判定失败。
+        """
+        llm_snapshot = llm_probe.snapshot()
         return {
             "status": "ok",
             "version": settings.version,
@@ -127,20 +134,50 @@ def create_app() -> FastAPI:
             # 实际生效的嵌入设备，便于核对"GPU 到底有没有用上"
             "embed_device": embedding_service.device,
             "embed_backend": settings.embed_backend,
+            "checks": {
+                "embed": {
+                    "ok": embedding_service.state == "ready",
+                    "message": embedding_service.message or None,
+                },
+                "llm": llm_snapshot.as_dict() if llm_snapshot else None,
+            },
         }
 
     @app.get("/api/ready")
     def ready():
+        """就绪探针：必须同时满足"能检索"和"能生成"，否则不算就绪。
+
+        此前只检查嵌入模型，因此"探针全绿、用户提问全部超时"是可能的。
+        顺序上先判嵌入：嵌入没就绪时连检索都做不了，不必再去探测生成模型。
+        """
+        embed_ok = embedding_service.state == "ready"
         payload = {
-            "status": "ready" if embedding_service.state == "ready" else "not_ready",
-            "model_ready": embedding_service.state == "ready",
+            "status": "not_ready",
+            "model_ready": embed_ok,
             "model_state": embedding_service.state,
             "model_message": embedding_service.message or None,
             "embed_device": embedding_service.device,
             "embed_backend": settings.embed_backend,
+            "checks": {
+                "embed": {
+                    "ok": embed_ok,
+                    "message": embedding_service.message or None,
+                },
+                "llm": None,
+            },
         }
-        if not payload["model_ready"]:
+        if not embed_ok:
+            payload["reason"] = "embed_not_ready"
             return JSONResponse(status_code=503, content=payload)
+
+        llm = llm_probe.probe()
+        payload["checks"]["llm"] = llm.as_dict()
+        if not llm.ok:
+            # 关键：能嵌入但生成不可用，对用户来说就是"问不出答案"，必须报未就绪。
+            payload["reason"] = "llm_not_ready"
+            return JSONResponse(status_code=503, content=payload)
+
+        payload["status"] = "ready"
         return payload
 
     @app.get("/sw.js", include_in_schema=False)

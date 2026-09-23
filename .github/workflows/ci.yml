@@ -56,6 +56,8 @@ jobs:
           python tests/parse_limits_check.py
           python tests/document_acl_check.py
           python tests/acl_coverage_check.py
+          python tests/llm_probe_check.py
+          python tests/win_script_encoding_check.py
 
       - name: Compose syntax
         shell: bash

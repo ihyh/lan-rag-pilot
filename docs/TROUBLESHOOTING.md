@@ -33,18 +33,33 @@ Ubuntu 在部署目录用 `docker compose ps`、`docker compose logs --tail 100 
 | HTTP 404 | BASE_URL 是否指向兼容接口 /v1，模型标签是否真的存在 |
 | 身份/API Key 配置错误 | 本地 Ollama 示例用 DEEPSEEK_API_KEY=ollama，不是公网凭据 |
 | 超时 | 模型首次加载、CPU/GPU 分配、上下文与并发、RAG/代理超时 |
-| 健康正常仍生成失败 | ready 不测试完整 Ollama 请求，必须真实提问 |
+| HTTP 502 / "网关错误" | 请求被系统或环境代理接管。模型服务是本机/内网依赖，不该走代理；本产品默认已不使用代理，见下方“经代理访问模型服务” |
+| 健康正常仍生成失败 | `/api/ready` 现在会校验生成模型，但仍不等于“能答对”；检索质量、拒答阈值与语料覆盖要另行用真实提问核对 |
 
 Windows 查 `ollama list` 和 `Invoke-RestMethod http://127.0.0.1:11434/api/tags`。
 Ubuntu 查 `docker compose exec ollama ollama list`；RAG 容器中的 127.0.0.1 是它自己，不是宿主机，也不是 Ollama 容器。本文 Ubuntu 配置使用 `http://ollama:11434/v1`。
 
 配置改完须重启 Windows 应用；Compose 用 `docker compose up -d --pull never --no-build`，不是仅 restart。模型缺失应导入新离线包，不在线 pull。
 
+### 经代理访问模型服务（502 / 网关错误）
+
+症状：提问全部失败，错误为 `llm_upstream` 或信息里出现 502；而 Ollama 进程正常、`ollama list` 也能列出模型。成因是请求没有发到模型服务，而是被送进了系统或环境里的 HTTP 代理，代理无法转发本机/内网地址就回 502。
+
+要点：
+
+- 本产品**默认不使用代理**（`RAG_LLM_TRUST_ENV_PROXY=0`）。Windows 上 httpx 会经 urllib 读取注册表里的 WinINET 系统代理，且**不读 `ProxyOverride` 绕过列表**——系统里写着 `127.*` 不走代理也不生效，所以必须由程序侧关掉。
+- 部署机上开着 Clash 一类代理客户端时无需为其添加绕过规则；这是刻意设计。
+- 如果这个部署确实要经代理访问公网 API，才设 `RAG_LLM_TRUST_ENV_PROXY=1`，并自行确认代理能转发到模型地址。
+- 排查手法：用 `curl`（会走系统代理）与不带代理的直连各请求一次 `/v1/models`，两者结果不一致即可确认。`/api/ready` 的 `checks.llm.message` 会直接指出这一原因，不必自行猜测。
+
 ## ready 一直 503 / 模型缓存缺失
 
-检查 RAG_EMBED_BACKEND=st、本地 RAG_EMBED_MODEL 目录及权限。完整目录需含 tokenizer、配置和权重，不能只放一个模型文件。HF 离线变量必须保留；修复方式是补齐管理员包而非改成联网。
+先看响应体的 `reason`，两条链路要分开排查：
 
-如果后端为 mock，ready 即使成功也不代表真实检索可用，mock 只用于隔离测试。真实嵌入在 CPU 运行，加载期间可能较慢；查看日志判断加载进度或内存不足。
+- `reason=embed_not_ready`：嵌入模型这条链路。检查 RAG_EMBED_BACKEND=st、本地 RAG_EMBED_MODEL 目录及权限。完整目录需含 tokenizer、配置和权重，不能只放一个模型文件。HF 离线变量必须保留；修复方式是补齐管理员包而非改成联网。如果后端为 mock，ready 即使成功也不代表真实检索可用，mock 只用于隔离测试。真实嵌入在 CPU 运行，加载期间可能较慢；查看日志判断加载进度或内存不足。
+- `reason=llm_not_ready`：生成模型这条链路。响应体 `checks.llm.message` 会说明具体原因，常见四类：配置里没有 `DEEPSEEK_API_KEY`（或只填了空白）——此时提问本身就会以 `llm_auth` 失败，所以直接判未就绪，信息里会给出该配什么；连不上（Ollama 没运行、地址写错、被防火墙拦）；算出了模型清单但没有配置的那个模型（提示 `ollama pull`，信息里会列出当前可用模型）；以及被代理接管的 502（见上一节）。注意嵌入未就绪时系统不会去探测模型服务，所以这一步不会掩盖嵌入问题。
+
+探测结果默认缓存 30 秒（`RAG_READY_PROBE_TTL_S`），因此刚修好 Ollama 后 `/api/ready` 最多要等这么久才转绿；需要立刻确认真实状态就用 `RAG_READY_PROBE_TTL_S=0` 或重启服务。
 
 ## 没有引用来源
 

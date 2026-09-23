@@ -87,6 +87,18 @@ def _is_valid_embed_device(value: str) -> bool:
     return bool(_EMBED_DEVICE_RE.match((value or "").strip().lower()))
 
 
+def effective_key(raw: str | None) -> str:
+    """判断"API key 是否算已配置"的**唯一定义**：只有空白同样视为未配置。
+
+    必须在单点定义，否则各处口径会不一致：`if not settings.deepseek_api_key` 认为
+    一个空格(" ")是已配置，而请求头构造再 strip 一次就变成空，于是发出
+    `Authorization: Bearer `——带尾随空格的请求头是非法 HTTP 头，httpcore 会在建连
+    之前抛 LocalProtocolError，上层把它报成"无法连接模型服务"，与网络毫无关系。
+    启动校验、请求头构造、提问校验与健康探测都走这个函数。
+    """
+    return (raw or "").strip()
+
+
 class Settings:
     def __init__(self) -> None:
         self.version = "0.1.0"
@@ -113,6 +125,29 @@ class Settings:
         self.deepseek_base_url = (os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
         self.deepseek_model = os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
         self.deepseek_timeout_s = _float("DEEPSEEK_TIMEOUT_S", 60.0)
+
+        # 生成模型可达性探测（供 /api/ready 使用）。
+        # 此前 /api/ready 只看嵌入模型，从不触碰 Ollama，于是"探针全绿、用户提问
+        # 全部超时"完全可能发生，而且从监控上看不出来。
+        self.llm_probe_enabled = _bool("RAG_READY_PROBE_LLM", True)
+        # 结果缓存时长：健康检查每 30 秒一次，没必要每次都真打 Ollama。
+        self.llm_probe_ttl_s = _float("RAG_READY_PROBE_TTL_S", 30.0)
+        # 单次探测超时。刻意取得小：本地/内网的 /models 是轻量元数据请求，正常在
+        # 毫秒级返回；而 /api/ready 现在会真的探测生成模型，探测耗时会计入编排层
+        # 健康检查的预算。默认 3 秒，明显小于仓库 compose 健康检查的内层 8 秒与
+        # 外层 10 秒。调大它时必须同步调大健康检查超时，否则会出现"应用正常但容器
+        # 反复被判不健康"。
+        self.llm_probe_timeout_s = _float("RAG_READY_PROBE_TIMEOUT_S", 3.0)
+
+        # 是否让模型服务请求沿用系统/环境里的 HTTP 代理。**默认关闭**。
+        # 模型服务按设计是本机或内网依赖（DEEPSEEK_BASE_URL 多为
+        # http://127.0.0.1:11434/v1）。httpx 默认 trust_env=True，会读取
+        # HTTP_PROXY 等环境变量；在 Windows 上还会经 urllib 读取注册表里的
+        # WinINET 系统代理，而且**不读 ProxyOverride 绕过列表**——即使系统
+        # 明确写了"127.* 不走代理"，请求仍会被送到代理，返回 502。
+        # 结果极其误导：健康探测把 502 当作"链路可达"而变绿，用户提问却全部失败。
+        # 需要经代理访问公网 API 的部署显式打开本项。
+        self.llm_trust_env_proxy = _bool("RAG_LLM_TRUST_ENV_PROXY", False)
 
         # 嵌入模型
         self.embed_backend = (os.environ.get("RAG_EMBED_BACKEND") or "st").strip().lower()
@@ -189,9 +224,11 @@ class Settings:
                 '        生成一个：python -c "import secrets; print(secrets.token_urlsafe(48))"'
             )
 
-        if not self.deepseek_api_key:
+        if not effective_key(self.deepseek_api_key):
             problems.append(
-                "未设置 DEEPSEEK_API_KEY：连接内网 Ollama 时也需要一个非空占位值（例如 ollama）。"
+                "未设置 DEEPSEEK_API_KEY（或只填了空白）：连接内网 Ollama 时也需要一个"
+                "非空占位值（例如 ollama）。只填空白会让提问以 llm_auth 失败，"
+                "所以在这里就拒绝启动，而不是等到用户提问才发现。"
             )
 
         llm_host = _host_of(self.deepseek_base_url)
@@ -219,6 +256,15 @@ class Settings:
 
         # 嵌入设备只校验「字符串是否合法」；"cuda 是否真的可用"留给加载阶段判断，
         # 否则纯 CPU 机器上的合法配置会被这里直接挡死。
+        if self.llm_probe_ttl_s < 0:
+            problems.append(
+                f"RAG_READY_PROBE_TTL_S={self.llm_probe_ttl_s} 不能为负："
+                "0 表示每次健康检查都真探测，正数表示缓存该秒数。"
+            )
+        if self.llm_probe_timeout_s <= 0:
+            problems.append(
+                f"RAG_READY_PROBE_TIMEOUT_S={self.llm_probe_timeout_s} 必须为正数。"
+            )
         if not _is_valid_embed_device(self.embed_device):
             problems.append(
                 f"RAG_EMBED_DEVICE={self.embed_device!r} 不是合法设备名："

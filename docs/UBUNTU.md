@@ -80,7 +80,12 @@ services:
       - rag_models:/rag/models:ro
     networks: [isolated]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/api/ready', timeout=5)"]
+      # 刻意绕过代理：这里访问的是容器自己的回环地址，而 env_file 会把 .env 里的
+      # HTTP_PROXY 等注入容器，urllib 默认使用它们，代理转发不了回环地址就返回 502，
+      # 容器会一直 unhealthy 而应用本身是好的。
+      # 内层 timeout 8 秒 > RAG_READY_PROBE_TIMEOUT_S（默认 3 秒），
+      # 否则生成模型探测还没返回就被这里掐断。
+      test: ["CMD", "python", "-c", "import urllib.request,sys;op=urllib.request.build_opener(urllib.request.ProxyHandler({}));sys.exit(0 if op.open('http://127.0.0.1:8088/api/ready', timeout=8).status == 200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
