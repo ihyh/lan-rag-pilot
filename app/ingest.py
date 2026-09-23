@@ -182,8 +182,10 @@ def index_registered_document(db: sqlite3.Connection, doc_id: int, kind: str) ->
     except EmbeddingUnavailable as exc:
         _fail_doc(db, doc_id, str(exc))
         raise
-    except IngestError:
-        _fail_doc(db, doc_id, "索引失败")
+    except IngestError as exc:
+        # 记下具体原因（例如"切片数超限"），而不是笼统的"索引失败"，
+        # 否则管理员在界面上看不到该改什么。
+        _fail_doc(db, doc_id, exc.message)
         raise
     except Exception as exc:  # noqa: BLE001
         _fail_doc(db, doc_id, f"内部错误：{exc.__class__.__name__}")
@@ -203,6 +205,15 @@ def _index_document(db: sqlite3.Connection, doc_id: int, kind: str) -> dict:
     pieces = chunk_units(units, ta, settings.chunk_max_tokens, settings.chunk_overlap_tokens)
     if not pieces:
         raise IngestError("解析完成但没有可切块的文本", code="empty_doc")
+    # 切片数上限：内存索引按 512 维 float32 常驻内存，切片数直接决定内存占用与
+    # 重建耗时。没有这道闸，一份超大文档就能把服务器拖垮。
+    if len(pieces) > settings.parse_max_chunks:
+        raise IngestError(
+            f"解析产生 {len(pieces)} 个切片，超过 {settings.parse_max_chunks} 上限。"
+            "请拆分文档后分批上传，或调大 RAG_PARSE_MAX_CHUNKS"
+            "（调大前请先确认服务器内存足够）。",
+            code="too_many_chunks",
+        )
     vecs = embedding_service.embed_texts([p.text for p in pieces])
     rows = [
         (doc_id, i, p.page, p.paragraph, p.token_count, p.text, vecs[i].tobytes())

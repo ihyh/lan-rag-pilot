@@ -52,6 +52,7 @@ jobs:
           python tests/conversation_scope_check.py
           python tests/config_guard_check.py
           python tests/embed_device_check.py
+          python tests/parse_limits_check.py
 
       - name: Compose syntax
         shell: bash

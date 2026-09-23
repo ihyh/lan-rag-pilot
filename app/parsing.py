@@ -12,6 +12,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import settings
+
 EXTENSIONS = {
     ".pdf": "pdf",
     ".doc": "doc",
@@ -65,6 +67,121 @@ def check_mime(content_type: str) -> None:
         raise ParseError(f"MIME 类型 {ctype!r} 不在允许范围，疑似伪造扩展名", code="bad_mime")
 
 
+# ---------------- 解析资源上限（防压缩炸弹 / 超大表格） ----------------
+#
+# 上传体积上限（默认 25MB）挡不住"解压后几十 GB"的构造文件：OOXML 文件就是 ZIP，
+# 一个几 MB 的 docx 可以把 word/document.xml 压成几十 GB。这里在交给
+# python-docx / openpyxl 解压之前先做压缩包层面的体检。
+
+# 各类型真正会被解析的主部件（用于有界实际读取）
+_OOXML_MAIN_PART = {"docx": "word/document.xml", "xlsx": "xl/sharedStrings.xml"}
+
+
+class ParseBudget:
+    """累计单份文件提取出的字符数，超限即抛 ParseError。
+
+    只限制"文本单元个数"不够：极宽的一行也能是单个超长单元，
+    因此必须同时限制累计字符数。
+    """
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.chars = 0
+
+    def spend(self, text: str) -> None:
+        self.chars += len(text)
+        if self.chars > settings.parse_max_text_chars:
+            raise ParseError(
+                f"{self.label} 提取出的文本已超过 {settings.parse_max_text_chars} 字符上限"
+                f"（当前 {self.chars}）。请拆分文件，或调大 RAG_PARSE_MAX_TEXT_CHARS。",
+                code="text_too_large",
+            )
+
+
+def check_units(units: list[Unit], label: str) -> None:
+    if len(units) > settings.parse_max_units:
+        raise ParseError(
+            f"{label} 解析出 {len(units)} 个文本单元，超过 {settings.parse_max_units} 上限。"
+            "请拆分文件，或调大 RAG_PARSE_MAX_UNITS。",
+            code="too_many_units",
+        )
+
+
+def _bounded_part_bytes(zf: zipfile.ZipFile, name: str, cap: int) -> int:
+    """实际解压读取某个部件，最多读 cap+1 字节后停止。
+
+    不能只信中央目录里声明的 file_size：攻击者可以谎报一个很小的值，
+    真正的解压发生在读取时，所以必须实际读一遍并设上限。
+    """
+    try:
+        with zf.open(name) as handle:
+            read = 0
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                read += len(chunk)
+                if read > cap:
+                    return read
+            return read
+    except (zipfile.BadZipFile, RuntimeError, OSError, NotImplementedError) as exc:
+        raise ParseError(
+            f"压缩包部件 {name} 读取失败（可能已损坏或使用了不支持的压缩方式）：{exc}",
+            code="zip_read_error",
+        ) from exc
+
+
+def check_zip_limits(label: str, kind: str, data: bytes) -> list[str]:
+    """压缩包层面的资源体检；通过则返回条目名列表。"""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ParseError(
+            f"文件内容不是有效 {label}（ZIP 损坏）：{exc}", code="bad_magic"
+        ) from exc
+
+    with zf:
+        infos = zf.infolist()
+        if len(infos) > settings.parse_max_zip_entries:
+            raise ParseError(
+                f"{label} 内含 {len(infos)} 个压缩条目，超过 "
+                f"{settings.parse_max_zip_entries} 上限。",
+                code="zip_too_many_entries",
+            )
+
+        declared = sum(info.file_size for info in infos)
+        compressed = sum(info.compress_size for info in infos)
+        limit = settings.max_uncompressed_bytes
+
+        if declared > limit:
+            raise ParseError(
+                f"{label} 解压后约 {declared / 1048576:.1f} MB，超过 "
+                f"{settings.parse_max_uncompressed_mb} MB 上限"
+                "（可调大 RAG_PARSE_MAX_UNCOMPRESSED_MB，但请先确认服务器内存足够）。",
+                code="zip_too_large",
+            )
+
+        if compressed > 0 and declared / compressed > settings.parse_max_compression_ratio:
+            raise ParseError(
+                f"{label} 压缩比约 {declared / compressed:.0f}:1，超过 "
+                f"{settings.parse_max_compression_ratio}:1，疑似压缩炸弹，已拒绝。",
+                code="zip_bomb_ratio",
+            )
+
+        names = zf.namelist()
+        # 谎报大小的情况：对真正会被解析的主部件做一次有界实际读取。
+        main_part = _OOXML_MAIN_PART.get(kind)
+        if main_part and main_part in names:
+            actual = _bounded_part_bytes(zf, main_part, limit)
+            if actual > limit:
+                raise ParseError(
+                    f"{label} 的 {main_part} 实际解压超过 "
+                    f"{settings.parse_max_uncompressed_mb} MB 上限（已停止读取）。",
+                    code="zip_too_large",
+                )
+        return names
+
+
 def check_magic(kind: str, data: bytes) -> None:
     if kind == "pdf":
         if not data[:5].startswith(b"%PDF-"):
@@ -72,10 +189,7 @@ def check_magic(kind: str, data: bytes) -> None:
     elif kind == "docx":
         if data[:4] != b"PK\x03\x04":
             raise ParseError("文件内容不是有效 DOCX（缺少 ZIP/OOXML 头）", code="bad_magic")
-        try:
-            names = zipfile.ZipFile(io.BytesIO(data)).namelist()
-        except zipfile.BadZipFile as exc:
-            raise ParseError(f"文件内容不是有效 DOCX（ZIP 损坏）：{exc}", code="bad_magic") from exc
+        names = check_zip_limits("DOCX", kind, data)
         if "word/document.xml" not in names:
             raise ParseError("文件内容不是有效 DOCX（缺少 word/document.xml）", code="bad_magic")
     elif kind == "doc":
@@ -84,10 +198,7 @@ def check_magic(kind: str, data: bytes) -> None:
     elif kind == "xlsx":
         if data[:4] != b"PK\x03\x04":
             raise ParseError("文件内容不是有效 XLSX（缺少 ZIP/OOXML 头）", code="bad_magic")
-        try:
-            names = zipfile.ZipFile(io.BytesIO(data)).namelist()
-        except zipfile.BadZipFile as exc:
-            raise ParseError(f"文件内容不是有效 XLSX（ZIP 损坏）：{exc}", code="bad_magic") from exc
+        names = check_zip_limits("XLSX", kind, data)
         if "xl/workbook.xml" not in names:
             raise ParseError("文件内容不是有效 XLSX（缺少 xl/workbook.xml）", code="bad_magic")
 
@@ -128,12 +239,14 @@ def parse_pdf(path: Path) -> list[Unit]:
             raise ParseError("PDF 已加密且无法解密", code="pdf_encrypted") from exc
     units: list[Unit] = []
     total = 0
+    budget = ParseBudget("PDF")
     for idx, page in enumerate(reader.pages, start=1):
         try:
             text = page.extract_text() or ""
         except Exception as exc:  # noqa: BLE001
             raise ParseError(f"第 {idx} 页文本提取失败：{exc}", code="pdf_extract") from exc
         text = _clean(text)
+        budget.spend(text)
         total += len(text)
         if text:
             units.append(Unit(text=text, page=idx))
@@ -143,6 +256,7 @@ def parse_pdf(path: Path) -> list[Unit]:
             "请改用带文字层的 PDF。",
             code="scanned_pdf",
         )
+    check_units(units, "PDF")
     return units
 
 
@@ -163,6 +277,7 @@ def parse_doc(path: Path) -> list[Unit]:
     if result.returncode != 0:
         raise ParseError("DOC 读取失败，文件可能损坏、加密或格式不兼容", code="doc_extract")
     text = _clean(result.stdout.decode("utf-8", errors="replace"))
+    ParseBudget("DOC").spend(text)
     units = [
         Unit(text=para, paragraph=index)
         for index, para in enumerate((part.strip() for part in re.split(r"\n\s*\n", text)), start=1)
@@ -170,6 +285,7 @@ def parse_doc(path: Path) -> list[Unit]:
     ]
     if not units:
         raise ParseError("DOC 中没有可索引的文本内容", code="empty_doc")
+    check_units(units, "DOC")
     return units
 
 def parse_docx(path: Path) -> list[Unit]:
@@ -178,11 +294,13 @@ def parse_docx(path: Path) -> list[Unit]:
     doc = Document(str(path))
     units: list[Unit] = []
     para_no = 0
+    budget = ParseBudget("DOCX")
 
     def add(text: str) -> None:
         nonlocal para_no
         text = _clean(text)
         if text:
+            budget.spend(text)
             para_no += 1
             units.append(Unit(text=text, paragraph=para_no))
 
@@ -194,6 +312,7 @@ def parse_docx(path: Path) -> list[Unit]:
                 add(cell.text)
     if not units:
         raise ParseError("DOCX 中没有可索引的文本内容", code="empty_doc")
+    check_units(units, "DOCX")
     return units
 
 
@@ -209,6 +328,7 @@ def parse_xlsx(path: Path) -> list[Unit]:
         raise ParseError(f"XLSX 读取失败：{exc}", code="xlsx_extract") from exc
 
     units: list[Unit] = []
+    budget = ParseBudget("XLSX")
     try:
         for sheet in workbook.worksheets:
             for row_no, row in enumerate(sheet.iter_rows(values_only=True), start=1):
@@ -220,12 +340,16 @@ def parse_xlsx(path: Path) -> list[Unit]:
                     if text:
                         cells.append(f"{get_column_letter(col_no)}{row_no}={text}")
                 if cells:
-                    units.append(
-                        Unit(
-                            text=f"工作表《{sheet.title}》第 {row_no} 行：" + "；".join(cells),
-                            paragraph=row_no,
+                    row_text = f"工作表《{sheet.title}》第 {row_no} 行：" + "；".join(cells)
+                    budget.spend(row_text)
+                    units.append(Unit(text=row_text, paragraph=row_no))
+                    if len(units) > settings.parse_max_units:
+                        raise ParseError(
+                            f"XLSX 解析出的行数已超过 {settings.parse_max_units} 上限"
+                            f"（当前工作表：{sheet.title}）。请拆分工作表，"
+                            "或调大 RAG_PARSE_MAX_UNITS。",
+                            code="too_many_units",
                         )
-                    )
     finally:
         workbook.close()
     if not units:
@@ -249,14 +373,17 @@ def parse_text(path: Path) -> list[Unit]:
     text = _clean(_read_text_bytes(path))
     units: list[Unit] = []
     para_no = 0
+    budget = ParseBudget("文本")
     for para in re.split(r"\n\s*\n", text):
         para = para.strip()
         if not para:
             continue
+        budget.spend(para)
         para_no += 1
         units.append(Unit(text=para, paragraph=para_no))
     if not units:
         raise ParseError("文件内容为空，无可索引文本", code="empty_doc")
+    check_units(units, "文本")
     return units
 
 

@@ -149,6 +149,15 @@ class Settings:
         # 上传
         self.max_upload_mb = _int("RAG_MAX_UPLOAD_MB", 25)
 
+        # 解析资源上限：防止压缩炸弹或超大表格把内存与内存索引撑爆。
+        # 上传体积上限（25MB）挡不住"解压后几十 GB"的构造文件，因此必须单独限制。
+        self.parse_max_uncompressed_mb = _int("RAG_PARSE_MAX_UNCOMPRESSED_MB", 256)
+        self.parse_max_zip_entries = _int("RAG_PARSE_MAX_ZIP_ENTRIES", 2000)
+        self.parse_max_compression_ratio = _int("RAG_PARSE_MAX_COMPRESSION_RATIO", 200)
+        self.parse_max_units = _int("RAG_PARSE_MAX_UNITS", 200_000)
+        self.parse_max_text_chars = _int("RAG_PARSE_MAX_TEXT_CHARS", 20_000_000)
+        self.parse_max_chunks = _int("RAG_PARSE_MAX_CHUNKS", 50_000)
+
         # 启动安全校验（见 Settings.validate_or_raise）
         self.allow_insecure_start = _bool("RAG_ALLOW_INSECURE_START", False)
         self.llm_trusted_hosts = {
@@ -160,6 +169,10 @@ class Settings:
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def max_uncompressed_bytes(self) -> int:
+        return self.parse_max_uncompressed_mb * 1024 * 1024
 
     def validate_or_raise(self) -> None:
         """启动前校验关键配置；不安全或缺失时拒绝启动（除非显式开启逃生开关）。
@@ -215,6 +228,22 @@ class Settings:
         if not 1 <= self.embed_batch_size <= 256:
             problems.append(
                 f"RAG_EMBED_BATCH_SIZE={self.embed_batch_size} 超出范围：应为 1~256。"
+            )
+
+        # 解析上限必须为正；配成 0 或负数会让所有上传都被拒，属于明显误配。
+        parse_limits = {
+            "RAG_PARSE_MAX_UNCOMPRESSED_MB": self.parse_max_uncompressed_mb,
+            "RAG_PARSE_MAX_ZIP_ENTRIES": self.parse_max_zip_entries,
+            "RAG_PARSE_MAX_COMPRESSION_RATIO": self.parse_max_compression_ratio,
+            "RAG_PARSE_MAX_UNITS": self.parse_max_units,
+            "RAG_PARSE_MAX_TEXT_CHARS": self.parse_max_text_chars,
+            "RAG_PARSE_MAX_CHUNKS": self.parse_max_chunks,
+        }
+        bad_limits = [name for name, value in parse_limits.items() if value <= 0]
+        if bad_limits:
+            problems.append(
+                "以下解析上限必须为正整数，否则任何文件都会被拒绝："
+                + "、".join(bad_limits)
             )
 
         if not problems:
