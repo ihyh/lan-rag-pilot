@@ -6,16 +6,15 @@
 
 判定口径（刻意如此，避免误判把可用实例标成不可用）：
 
-- **只有连接失败/超时算不可用**。401/403/404 等任何 HTTP 响应都说明链路与进程是通的，
-  只是接口细节不同，不该因此把整个实例判定为未就绪。**但网关错误（502/503/504）例外**：
-  它的含义恰恰是"没到达模型服务"，必须算不可用，否则代理会制造"探针绿、提问红"。
+- 连接失败、超时、鉴权/额度/限流错误以及服务端 5xx 都算不可用。404/405 可表示该
+  OpenAI 兼容服务没有模型清单端点，此时只确认链路可达并跳过模型清单校验。
 - 能解析出模型清单时，**额外校验配置的模型确实存在**——这能覆盖最常见的
   "忘记 ollama pull"。模型名比对不做前缀匹配：`qwen3:1.7b` 与 `qwen3:4b` 是不同模型，
   放宽成前缀匹配会把"模型不存在"误判为正常。
 - 结果带 TTL 缓存：健康检查通常每 30 秒一次，没必要每次都真打 Ollama。
 - 不自动重试、不自动拉起服务，只如实报告——探测器的职责是暴露问题，不是掩盖它。
-- 请求头按需构造：本地部署通常没有 API key，此时**不发** Authorization 头
-  （`Bearer ` 是非法头，会让探测在建连前就失败，把正常实例报成不可用）。
+- 请求头与真实提问共用同一构造逻辑；缺少 API key 时直接判未就绪，避免发送非法的
+  空 `Bearer` 请求头。
 """
 from __future__ import annotations
 
@@ -100,6 +99,7 @@ _GATEWAY_ERROR_CODES = frozenset({502, 503, 504})
 class LLMProbe:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._probe_lock = threading.Lock()
         self._result: ProbeResult | None = None
         self._checked_monotonic = 0.0
 
@@ -126,24 +126,36 @@ class LLMProbe:
                 now_iso(),
             )
 
+        cached = self._cached_result(force)
+        if cached is not None:
+            return cached
+
+        # /api/ready 无需登录。缓存尚未建立或刚过期时，多个并发请求可能同时到达；
+        # 只允许一个请求真正访问模型服务，其余请求等待后复用刚写入的缓存。
+        with self._probe_lock:
+            cached = self._cached_result(force)
+            if cached is not None:
+                return cached
+            result = self._do_probe()
+            with self._lock:
+                self._result = result
+                self._checked_monotonic = time.monotonic()
+            return result
+
+    def _cached_result(self, force: bool) -> ProbeResult | None:
         with self._lock:
             if (
-                not force
-                and self._result is not None
-                and time.monotonic() - self._checked_monotonic < settings.llm_probe_ttl_s
+                force
+                or self._result is None
+                or time.monotonic() - self._checked_monotonic >= settings.llm_probe_ttl_s
             ):
-                return ProbeResult(
-                    self._result.ok,
-                    self._result.message,
-                    self._result.checked_at,
-                    cached=True,
-                )
-
-        result = self._do_probe()
-        with self._lock:
-            self._result = result
-            self._checked_monotonic = time.monotonic()
-        return result
+                return None
+            return ProbeResult(
+                self._result.ok,
+                self._result.message,
+                self._result.checked_at,
+                cached=True,
+            )
 
     def _do_probe(self) -> ProbeResult:
         # key 缺失（含只填了空白）时提问路径会直接抛 llm_auth，所以这里必须判未就绪。
@@ -168,24 +180,24 @@ class LLMProbe:
         except httpx.TimeoutException:
             return ProbeResult(
                 False,
-                f"连接模型服务超时（{timeout:g} 秒）：{url}。"
+                f"连接模型服务超时（{timeout:g} 秒）。"
                 "请确认 Ollama 正在运行、地址可达且未被防火墙拦截。",
                 now_iso(),
             )
-        except httpx.LocalProtocolError as exc:
+        except httpx.LocalProtocolError:
             # 请求在建连之前就被拒了：本地配置非法，不是 Ollama 的问题。
             # 单独成一类，否则运维会去反复重启一个本来正常的 Ollama。
             return ProbeResult(
                 False,
-                f"探测请求本身就非法（{exc}），尚未发出：{url}。"
+                "探测请求本身不符合 HTTP 协议，尚未发出。"
                 "请检查 DEEPSEEK_BASE_URL 是否形如 http://主机:端口，"
-                "以及 RAG_LLM_API_KEY 是否含空格或换行。",
+                "以及 DEEPSEEK_API_KEY 是否含控制字符。",
                 now_iso(),
             )
         except httpx.HTTPError as exc:
             return ProbeResult(
                 False,
-                f"无法连接模型服务（{exc.__class__.__name__}）：{url}。"
+                f"无法连接模型服务（{exc.__class__.__name__}）。"
                 "请检查 Ollama 是否运行、DEEPSEEK_BASE_URL 是否正确。",
                 now_iso(),
             )
@@ -202,10 +214,49 @@ class LLMProbe:
         if response.status_code in _GATEWAY_ERROR_CODES:
             return ProbeResult(
                 False,
-                f"模型服务返回网关错误 HTTP {response.status_code}：{url}。"
+                f"模型服务返回网关错误 HTTP {response.status_code}。"
                 "常见原因是请求被系统/环境代理接管（代理无法转发本机或内网地址），"
                 "其次才是前置反向代理不可用。请检查 HTTP_PROXY/HTTPS_PROXY 与操作系统"
                 "代理设置；本产品默认不使用代理（RAG_LLM_TRUST_ENV_PROXY=0）。",
+                now_iso(),
+            )
+
+        if 300 <= response.status_code < 400:
+            return ProbeResult(
+                False,
+                f"模型服务探测请求被重定向（HTTP {response.status_code}）。"
+                "请检查 DEEPSEEK_BASE_URL 是否指向正确的 OpenAI 兼容接口。",
+                now_iso(),
+            )
+        if response.status_code in (401, 403):
+            return ProbeResult(
+                False,
+                f"模型服务拒绝鉴权（HTTP {response.status_code}）。"
+                "请检查 DEEPSEEK_API_KEY 及该账号的模型访问权限。",
+                now_iso(),
+            )
+        if response.status_code == 402:
+            return ProbeResult(
+                False,
+                "模型服务返回 HTTP 402，账户余额或调用额度不足。",
+                now_iso(),
+            )
+        if response.status_code == 429:
+            return ProbeResult(
+                False,
+                "模型服务返回 HTTP 429，当前已被限流，请稍后重试。",
+                now_iso(),
+            )
+        if response.status_code >= 500:
+            return ProbeResult(
+                False,
+                f"模型服务返回 HTTP {response.status_code}，当前无法提供回答。",
+                now_iso(),
+            )
+        if response.status_code >= 400 and response.status_code not in (404, 405):
+            return ProbeResult(
+                False,
+                f"模型服务探测请求返回 HTTP {response.status_code}，请检查服务端配置。",
                 now_iso(),
             )
 
@@ -219,13 +270,12 @@ class LLMProbe:
 
         target = settings.deepseek_model
         if _model_present(models, target):
-            return ProbeResult(True, f"模型服务可达，已找到模型 {target}", now_iso())
+            return ProbeResult(True, "模型服务可达，已找到配置的模型", now_iso())
 
-        listed = "、".join(models[:5]) if models else "（清单为空）"
         return ProbeResult(
             False,
-            f"模型服务可达，但其中没有配置的模型 {target}；当前可用：{listed}。"
-            f"请在该服务上先执行 ollama pull {target}。",
+            "模型服务可达，但没有找到配置的模型。"
+            "请运行 ollama list，并核对或导入 DEEPSEEK_MODEL 指定的精确模型标签。",
             now_iso(),
         )
 

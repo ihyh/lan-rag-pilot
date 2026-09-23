@@ -34,6 +34,18 @@ $listenAddress = if ($env:RAG_HOST) { $env:RAG_HOST } else { "127.0.0.1" }
 # 健康检查始终走回环，即使 RAG_HOST 是 0.0.0.0 也能命中。
 $listenPort = if ($env:RAG_PORT) { $env:RAG_PORT } else { "8088" }
 $probeBase = "http://127.0.0.1:$listenPort"
+$probeTimeoutSec = 5
+$configuredProbeTimeout = 0.0
+if ($env:RAG_READY_PROBE_TIMEOUT_S -and
+    [double]::TryParse(
+        $env:RAG_READY_PROBE_TIMEOUT_S,
+        [Globalization.NumberStyles]::Float,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [ref]$configuredProbeTimeout
+    ) -and $configuredProbeTimeout -gt 0) {
+    $probeTimeoutSec = [int][Math]::Ceiling($configuredProbeTimeout + 2)
+    if ($probeTimeoutSec -lt 5) { $probeTimeoutSec = 5 }
+}
 
 function Invoke-ProbeRequest {
     # 刻意不用 Invoke-WebRequest，主要原因是它对非 2xx 抛异常，
@@ -84,8 +96,8 @@ function Invoke-HealthCheck {
             Start-Sleep -Milliseconds 1000
             if ($proc.HasExited) { break }
             try {
-                $health = Invoke-ProbeRequest "$probeBase/api/health"
-                $readyResp = Invoke-ProbeRequest "$probeBase/api/ready"
+                $health = Invoke-ProbeRequest "$probeBase/api/health" -TimeoutSec $probeTimeoutSec
+                $readyResp = Invoke-ProbeRequest "$probeBase/api/ready" -TimeoutSec $probeTimeoutSec
                 if ($health.StatusCode -eq 200 -and $readyResp.StatusCode -eq 200) {
                     $ready = $true
                     break

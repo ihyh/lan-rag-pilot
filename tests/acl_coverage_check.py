@@ -44,18 +44,15 @@ SECRET_FILENAME = f"绝密手册-{MARKER}.txt"
 SKIP_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 
 # 只读之外的路径参数如何取具体值
-PARAM_VALUES: dict[str, int] = {}
-
-
 def check(cond: bool, msg: str) -> None:
     (PASS if cond else FAIL).append(msg)
     print(f"  [{'PASS' if cond else 'FAIL'}] {msg}")
 
 
-def fill_path(template: str) -> str | None:
+def fill_path(template: str, values: dict[str, int]) -> str | None:
     """把 /api/chats/{chat_id} 填成具体路径；出现未知参数则返回 None（跳过该路由）。"""
     path = template
-    for name, value in PARAM_VALUES.items():
+    for name, value in values.items():
         path = path.replace("{" + name + "}", str(value))
     if "{" in path:
         return None
@@ -146,16 +143,14 @@ def main() -> None:
             db.execute("UPDATE documents SET visibility='restricted' WHERE id=?", (secret_doc,))
             db.commit()
 
-            PARAM_VALUES.update(
-                {
-                    "conversation_id": conversation_id,
-                    "chat_id": chat_id,
-                    "document_id": secret_doc,
-                    "doc_id": secret_doc,
-                    "group_id": group_id,
-                    "user_id": ids["alice"],
-                }
-            )
+            common_params = {
+                "conversation_id": conversation_id,
+                "chat_id": chat_id,
+                "document_id": secret_doc,
+                "doc_id": secret_doc,
+                "group_id": group_id,
+                "user_id": ids["alice"],
+            }
 
             from app.main import app  # noqa: PLC0415
 
@@ -188,7 +183,7 @@ def main() -> None:
                     continue
                 if not any(method.upper() == "GET" for method in operations):
                     continue
-                filled = fill_path(template)
+                filled = fill_path(template, common_params)
                 if filled is None:
                     continue
                 targets.append(filled)
@@ -221,19 +216,39 @@ def main() -> None:
             # ---------- A. 非授权身份：任何响应都不得含标记或受限文件名 ----------
             print("\n== 未授权身份（alice 已被撤权 / bob 从未授权）==")
             leaks: list[str] = []
+            errors: list[str] = []
             for identity in ("alice", "bob"):
-                for path in targets:
+                identity_params = dict(common_params)
+                if identity == "bob":
+                    identity_params["conversation_id"] = bob_conversation
+                    identity_params["chat_id"] = bob_chat
+                for template in sorted(
+                    {
+                        item
+                        for item in (schema.get("paths") or {})
+                        if item not in SKIP_PATHS
+                        and any(
+                            method.upper() == "GET" for method in schema["paths"][item]
+                        )
+                    }
+                ):
+                    path = fill_path(template, identity_params)
+                    if path is None:
+                        continue
                     try:
                         r = get_as(identity, path)
                     except Exception as exc:  # noqa: BLE001 - 端点异常不应让本测试崩掉
-                        print(f"        [skip] {identity} {path} 抛出 {type(exc).__name__}")
+                        errors.append(f"{identity} {path} 抛出 {type(exc).__name__}")
                         continue
                     body = r.text or ""
                     for needle, label in ((MARKER, "标记"), (SECRET_FILENAME, "受限文件名")):
                         if needle in body:
                             leaks.append(f"{identity} {path} 泄露了{label}（HTTP {r.status_code}）")
             check(not leaks, f"遍历 {len(targets)} 个路由后未发现泄露")
+            check(not errors, "所有被遍历的 GET 路由都完成了响应，没有因异常跳过")
             for item in leaks:
+                print(f"        ⚠ {item}")
+            for item in errors:
                 print(f"        ⚠ {item}")
 
             # ---------- B. 对照组：root 必须能看到标记，否则夹具是空的 ----------

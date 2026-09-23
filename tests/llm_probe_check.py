@@ -52,10 +52,33 @@ class FakeModelServer:
                 if mode == "sleep":
                     time.sleep(3.0)
                     mode = "ok_openai"
+                if mode == "slow_ok":
+                    time.sleep(0.2)
+                    mode = "ok_openai"
                 if mode == "unauthorized":
                     self.send_response(401)
                     self.end_headers()
                     self.wfile.write(b'{"error":"unauthorized"}')
+                    return
+                if mode in {
+                    "redirect",
+                    "forbidden",
+                    "quota",
+                    "rate_limited",
+                    "server_error",
+                    "not_found",
+                }:
+                    status = {
+                        "redirect": 302,
+                        "forbidden": 403,
+                        "quota": 402,
+                        "rate_limited": 429,
+                        "server_error": 500,
+                        "not_found": 404,
+                    }[mode]
+                    self.send_response(status)
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"probe failure"}')
                     return
                 if mode == "gateway":
                     # 代理无法转发时的典型作答：HTTP 层"有响应"，但根本没到达模型服务。
@@ -140,13 +163,26 @@ def main() -> None:
         check("无法连接" in result.message, f"信息说明是连接问题：{result.message[:60]}…")
         check("DEEPSEEK_BASE_URL" in result.message, "信息里指出该检查哪个配置项")
 
-        # ---------- B. 有 HTTP 响应就算可达 ----------
-        print("\n== 只要拿到 HTTP 响应就算可达（避免把可用实例误判为未就绪）==")
+        # ---------- B. 能导致真实提问失败的 HTTP 状态不能算就绪 ----------
+        print("\n== 鉴权、额度、限流和服务端错误必须判为不可用 ==")
         settings.deepseek_base_url = server.base_url
-        server.mode = "unauthorized"
+        for mode, status in (
+            ("redirect", 302),
+            ("unauthorized", 401),
+            ("forbidden", 403),
+            ("quota", 402),
+            ("rate_limited", 429),
+            ("server_error", 500),
+        ):
+            server.mode = mode
+            llm_probe.reset()
+            result = llm_probe.probe()
+            check(not result.ok and str(status) in result.message, f"HTTP {status} 判为不可用")
+
+        server.mode = "not_found"
         llm_probe.reset()
         result = llm_probe.probe()
-        check(result.ok, f"401 也算可达（HTTP 层通、只是接口细节不同）：{result.message[:50]}…")
+        check(result.ok, "模型清单端点返回 404 时只确认链路可达并跳过清单校验")
 
         server.mode = "garbage"
         llm_probe.reset()
@@ -158,7 +194,8 @@ def main() -> None:
         server.mode = "ok_openai"
         llm_probe.reset()
         result = llm_probe.probe()
-        check(result.ok and TARGET_MODEL in result.message, "OpenAI 风格清单里找到目标模型")
+        check(result.ok and "已找到配置的模型" in result.message, "OpenAI 风格清单里找到目标模型")
+        check(TARGET_MODEL not in result.message, "公开探针成功信息不暴露模型标签")
 
         server.mode = "ok_ollama"
         llm_probe.reset()
@@ -169,8 +206,9 @@ def main() -> None:
         llm_probe.reset()
         result = llm_probe.probe()
         check(not result.ok, "清单里没有配置的模型时判定为不可用")
-        check("ollama pull" in result.message, "提示需要先 pull 该模型")
-        check("qwen3:4b" in result.message, "信息里列出当前可用的模型，便于排查")
+        check("ollama list" in result.message, "提示管理员检查本地模型清单")
+        check("DEEPSEEK_MODEL" in result.message, "提示管理员核对模型配置项")
+        check("qwen3:4b" not in result.message, "公开探针不暴露服务上的其他模型标签")
 
         # 这条专门守住"不做前缀匹配"：qwen3:1.7b 与 qwen3:4b 是不同模型
         check(
@@ -217,6 +255,25 @@ def main() -> None:
         )
         llm_probe.reset()
         check(llm_probe.probe().ok, "配了 key 且模型存在时判为就绪")
+
+        # /api/ready 无需登录即可访问，诊断文字不能回显 URL 用户信息或 key。
+        settings.deepseek_base_url = (
+            f"http://probe-user:probe-password@127.0.0.1:{closed_port()}"
+        )
+        llm_probe.reset()
+        result = llm_probe.probe()
+        check(
+            "probe-user" not in result.message and "probe-password" not in result.message,
+            "连接失败诊断不回显 URL 中的用户名和密码",
+        )
+
+        settings.deepseek_base_url = server.base_url
+        settings.deepseek_api_key = "probe-secret\nvalue"
+        llm_probe.reset()
+        result = llm_probe.probe()
+        check(not result.ok, "含换行的 key 判为未就绪")
+        check("probe-secret" not in result.message, "非法请求头诊断不回显 key 内容")
+
         settings.deepseek_api_key = saved_key
 
         # ---------- E. 网关错误不算可达 ----------
@@ -283,6 +340,21 @@ def main() -> None:
         forced = llm_probe.probe(force=True)
         check(server.hits - before == 2, "force=True 时忽略缓存重新探测")
         check(not forced.cached, "强制探测结果不标记为 cached")
+
+        server.mode = "slow_ok"
+        server.hits = 0
+        llm_probe.reset()
+        concurrent_results: list = []
+        workers = [
+            threading.Thread(target=lambda: concurrent_results.append(llm_probe.probe()))
+            for _ in range(5)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        check(server.hits == 1, f"5 个并发探针只访问一次模型服务（实际 {server.hits} 次）")
+        check(all(item.ok for item in concurrent_results), "等待中的并发探针都复用成功结果")
 
         # ---------- H. 可关闭 ----------
         print("\n== 允许关闭探测（某些部署不希望就绪依赖模型服务）==")

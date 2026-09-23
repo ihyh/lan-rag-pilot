@@ -194,14 +194,20 @@ for _ in $(seq 1 120); do
     # 只说“未返回 200”等于把最有用的一句诊断丢掉。
     probe_out="$("$venv_python" - "$port" <<'PY' 2>/dev/null || true
 import sys
+import os
 import urllib.error
 import urllib.request
 
 port = sys.argv[1]
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+try:
+    configured_timeout = float(os.environ.get("RAG_READY_PROBE_TIMEOUT_S", "3"))
+except ValueError:
+    configured_timeout = 3.0
+probe_timeout = max(5.0, configured_timeout + 2.0)
 for path in ("/api/health", "/api/ready"):
     try:
-        with opener.open(f"http://127.0.0.1:{port}{path}", timeout=2) as resp:
+        with opener.open(f"http://127.0.0.1:{port}{path}", timeout=probe_timeout) as resp:
             if resp.status != 200:
                 print(f"{path} HTTP {resp.status}")
                 raise SystemExit(1)

@@ -57,7 +57,7 @@ Ubuntu 查 `docker compose exec ollama ollama list`；RAG 容器中的 127.0.0.1
 先看响应体的 `reason`，两条链路要分开排查：
 
 - `reason=embed_not_ready`：嵌入模型这条链路。检查 RAG_EMBED_BACKEND=st、本地 RAG_EMBED_MODEL 目录及权限。完整目录需含 tokenizer、配置和权重，不能只放一个模型文件。HF 离线变量必须保留；修复方式是补齐管理员包而非改成联网。如果后端为 mock，ready 即使成功也不代表真实检索可用，mock 只用于隔离测试。真实嵌入在 CPU 运行，加载期间可能较慢；查看日志判断加载进度或内存不足。
-- `reason=llm_not_ready`：生成模型这条链路。响应体 `checks.llm.message` 会说明具体原因，常见四类：配置里没有 `DEEPSEEK_API_KEY`（或只填了空白）——此时提问本身就会以 `llm_auth` 失败，所以直接判未就绪，信息里会给出该配什么；连不上（Ollama 没运行、地址写错、被防火墙拦）；算出了模型清单但没有配置的那个模型（提示 `ollama pull`，信息里会列出当前可用模型）；以及被代理接管的 502（见上一节）。注意嵌入未就绪时系统不会去探测模型服务，所以这一步不会掩盖嵌入问题。
+- `reason=llm_not_ready`：生成模型这条链路。响应体 `checks.llm.message` 会说明具体原因，常见情况包括：`DEEPSEEK_API_KEY` 缺失或含控制字符；Ollama 没运行、地址写错、发生重定向或被防火墙拦截；配置的模型标签在清单中不存在；401/403 鉴权失败；402 额度不足；429 限流；以及被代理接管产生的网关错误（见上一节）。公开诊断不会回显密钥、模型地址或服务上的模型清单。注意嵌入未就绪时系统不会去探测模型服务，所以这一步不会掩盖嵌入问题。
 
 探测结果默认缓存 30 秒（`RAG_READY_PROBE_TTL_S`），因此刚修好 Ollama 后 `/api/ready` 最多要等这么久才转绿；需要立刻确认真实状态就用 `RAG_READY_PROBE_TTL_S=0` 或重启服务。
 

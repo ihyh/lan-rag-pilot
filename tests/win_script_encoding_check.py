@@ -36,14 +36,24 @@ def check(cond: bool, msg: str) -> None:
 
 
 def repo_ps1_files() -> list[Path]:
-    """.venv 里的第三方脚本不属于本仓库，必须排除。"""
-    out = []
-    for path in REPO.rglob("*.ps1"):
-        rel = path.relative_to(REPO).as_posix()
-        if rel.startswith(".venv/") or "/.venv/" in rel:
-            continue
-        out.append(path)
-    return sorted(out)
+    """只检查 Git 跟踪的脚本，避免本机 .local/.venv 让本地与 CI 结论不同。"""
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.ps1"],
+        cwd=REPO,
+        capture_output=True,
+        check=True,
+    )
+    return sorted(REPO / item.decode("utf-8") for item in proc.stdout.split(b"\0") if item)
+
+
+def tracked_shell_files() -> list[Path]:
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.sh"],
+        cwd=REPO,
+        capture_output=True,
+        check=True,
+    )
+    return sorted(REPO / item.decode("utf-8") for item in proc.stdout.split(b"\0") if item)
 
 
 def parse_with_windows_powershell(path: Path) -> tuple[bool, str]:
@@ -113,11 +123,7 @@ def main() -> None:
 
     # .sh 必须没有 BOM：BOM 会破坏 shebang，让脚本无法直接执行。
     print("\n== .sh 不得带 BOM（BOM 会破坏 shebang）==")
-    sh_files = sorted(
-        p
-        for p in REPO.rglob("*.sh")
-        if not p.relative_to(REPO).as_posix().startswith(".venv/")
-    )
+    sh_files = tracked_shell_files()
     check(len(sh_files) >= 3, f"至少扫到 3 个 shell 脚本（实际 {len(sh_files)}）")
     for path in sh_files:
         rel = path.relative_to(REPO).as_posix()
@@ -128,6 +134,17 @@ def main() -> None:
                 raw.split(b"\n", 1)[0].startswith(b"#!"),
                 f"{rel}：首行仍是 shebang",
             )
+
+    start_source = (REPO / "scripts/start_local.ps1").read_text(encoding="utf-8-sig")
+    check(
+        "RAG_READY_PROBE_TIMEOUT_S" in start_source and "$probeTimeoutSec" in start_source,
+        "Windows 启动验收的外层请求超时会随生成模型探针超时增加",
+    )
+    linux_source = (REPO / "setup_linux.sh").read_text(encoding="utf-8")
+    check(
+        "configured_timeout + 2.0" in linux_source and "timeout=probe_timeout" in linux_source,
+        "Linux 启动验收的外层请求超时大于生成模型探针超时",
+    )
 
     print(f"\n结果: {len(PASS)} 通过, {len(FAIL)} 失败")
     if FAIL:

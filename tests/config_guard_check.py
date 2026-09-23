@@ -119,8 +119,20 @@ def main() -> None:
         "显式空字符串的 DEEPSEEK_API_KEY 被拒绝",
     )
     check(
+        "控制字符" in rejected(DEEPSEEK_API_KEY="secret\nvalue"),
+        "含换行等控制字符的 DEEPSEEK_API_KEY 在启动时被拒绝",
+    )
+    check(
         accepted(DEEPSEEK_API_KEY="ollama") == "",
         "非空占位值 ollama 可启动（本地 Ollama 的正常用法）",
+    )
+    check(
+        "RAG_READY_PROBE_TTL_S" in rejected(RAG_READY_PROBE_TTL_S="nan"),
+        "探针 TTL 不接受 NaN",
+    )
+    check(
+        "RAG_READY_PROBE_TIMEOUT_S" in rejected(RAG_READY_PROBE_TIMEOUT_S="inf"),
+        "探针超时不接受无穷大",
     )
 
     # 这一条直接对应“默认值会静默连公网”的历史缺口

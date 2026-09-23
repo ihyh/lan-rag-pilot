@@ -224,11 +224,16 @@ class Settings:
                 '        生成一个：python -c "import secrets; print(secrets.token_urlsafe(48))"'
             )
 
-        if not effective_key(self.deepseek_api_key):
+        llm_key = effective_key(self.deepseek_api_key)
+        if not llm_key:
             problems.append(
                 "未设置 DEEPSEEK_API_KEY（或只填了空白）：连接内网 Ollama 时也需要一个"
                 "非空占位值（例如 ollama）。只填空白会让提问以 llm_auth 失败，"
                 "所以在这里就拒绝启动，而不是等到用户提问才发现。"
+            )
+        elif any(ord(char) < 32 or ord(char) == 127 for char in llm_key):
+            problems.append(
+                "DEEPSEEK_API_KEY 含控制字符（例如换行或制表符），无法安全放入 HTTP 请求头。"
             )
 
         llm_host = _host_of(self.deepseek_base_url)
@@ -256,12 +261,12 @@ class Settings:
 
         # 嵌入设备只校验「字符串是否合法」；"cuda 是否真的可用"留给加载阶段判断，
         # 否则纯 CPU 机器上的合法配置会被这里直接挡死。
-        if self.llm_probe_ttl_s < 0:
+        if not math.isfinite(self.llm_probe_ttl_s) or self.llm_probe_ttl_s < 0:
             problems.append(
                 f"RAG_READY_PROBE_TTL_S={self.llm_probe_ttl_s} 不能为负："
                 "0 表示每次健康检查都真探测，正数表示缓存该秒数。"
             )
-        if self.llm_probe_timeout_s <= 0:
+        if not math.isfinite(self.llm_probe_timeout_s) or self.llm_probe_timeout_s <= 0:
             problems.append(
                 f"RAG_READY_PROBE_TIMEOUT_S={self.llm_probe_timeout_s} 必须为正数。"
             )
