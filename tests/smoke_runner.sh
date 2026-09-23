@@ -79,8 +79,11 @@ if [ "$not_ready" -ne 0 ]; then
 fi
 
 echo "两个服务均已就绪，开始冒烟测试..."
-if ! python tests/api_smoke.py; then
-  code=$?
+# 注意：不能用 `if ! python ...; then code=$?`——`!` 取反后 $? 恒为 0，
+# 会把失败当成功放过去（CI 变绿但用例其实没过）。必须直接取命令的退出码。
+python tests/api_smoke.py
+code=$?
+if [ "$code" -ne 0 ]; then
   echo "SMOKE_EXIT=$code"
   exit "$code"
 fi
