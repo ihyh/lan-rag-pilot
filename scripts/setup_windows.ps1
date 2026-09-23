@@ -1,3 +1,7 @@
+﻿# 本文件必须保存为「UTF-8 with BOM」。Windows PowerShell 5.1（setup_windows.cmd
+# 调用的就是它）对无 BOM 的文件按 ANSI 解码，中文会变成乱码并直接导致语法错误，
+# 一键安装脚本就完全跑不起来。改动后请确认 BOM 仍在；tests/win_script_encoding_check.py
+# 会在 CI 上守住这一点。
 param(
     [string]$Python = "",
     [switch]$NoStart
