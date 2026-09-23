@@ -16,6 +16,7 @@ TESTS = {
     "probe": ("tests/llm_probe_check.py", "tests/config_guard_check.py"),
     "isolation": ("tests/parse_isolation_check.py",),
     "latency": ("tests/latency_stats_check.py",),
+    "retrieval": ("tests/hybrid_retrieval_check.py",),
     "encoding": ("tests/win_script_encoding_check.py",),
 }
 
@@ -67,6 +68,21 @@ def run_test(repository: Path, test: str) -> tuple[int, str]:
         return code, output.read().decode("utf-8", "replace")
 
 
+def failure_lines(output: str) -> list[str]:
+    """Lines that represent a failed check, whatever output style the test uses.
+
+    Most tests print explicit ``[FAIL]`` lines, and those are used exclusively when present so
+    phrase matching stays strict. Assert-style tests (e.g. tests/hybrid_retrieval_check.py)
+    put the message in a traceback instead; without this fallback their injections would be
+    reported as unproven even though the assertion did go red.
+    """
+    strict = [line.strip() for line in output.splitlines() if "[FAIL]" in line]
+    if strict:
+        return strict
+    markers = ("AssertionError", "Assertion failed", "Traceback (most recent call last)")
+    return [line.strip() for line in output.splitlines() if any(m in line for m in markers)]
+
+
 def run_group(repository: Path, group: str) -> int:
     tests = TESTS[group]
     print(f"\n== {group}: baseline ==", flush=True)
@@ -93,7 +109,7 @@ def run_group(repository: Path, group: str) -> int:
             code, output = run_test(repository, test)
         finally:
             target.write_bytes(before)
-        failed = [line.strip() for line in output.splitlines() if "[FAIL]" in line]
+        failed = failure_lines(output)
         expected_phrases = (expected,) if isinstance(expected, str) else expected
         hit = code not in (0, 124) and any(
             phrase in line for line in failed for phrase in expected_phrases
@@ -111,7 +127,7 @@ def run_group(repository: Path, group: str) -> int:
             code, output = run_test(repository, tests[0])
         finally:
             target.write_bytes(before)
-        failed = [line.strip() for line in output.splitlines() if "[FAIL]" in line]
+        failed = failure_lines(output)
         hit = code not in (0, 124) and any(inject_encoding.EXPECT in line for line in failed)
         print(f"[{'PASS' if hit else 'FAIL'}] encoding BOM removed (exit={code})", flush=True)
         if not hit:

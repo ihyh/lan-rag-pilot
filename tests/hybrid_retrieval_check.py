@@ -44,6 +44,20 @@ def main():
     assert index.search(q, 0, {1}, query_text="P20") == []
     lexical_only = index.search(q, 1, {1}, min_score=0.999, query_text="ArmElev P20")
     assert len(lexical_only) == 1 and lexical_only[0]["chunk_id"] == 121
+    # 一个"哪个切片里都没有"的标识符，绝不能把整个精确匹配通道打成空。
+    # 问题里出现文档中不存在的写法是常态——产品名写在文件名里、正文写的是别的型号——
+    # 而旧的 AND 语义（所有术语全要命中）下，这种问题会让精确匹配**静默**失效，
+    # 只剩向量检索，于是答成另一台设备的内容。真实语料上就发生过：
+    # 「Fortrend LP PxM 软件里，如何设置设备的通讯参数？」提取出 fortrend/lp/pxm，
+    # 而手册正文写的是 LP/PLM、LP-150，从没有 PxM，于是 AND 命中 0 个切片。
+    dead_term = index.search(q, 5, {1}, 0.25, query_text="ArmElev P20 ZZTOP")
+    assert dead_term[0]["chunk_id"] == 121, f"含不存在术语时精确匹配仍须生效：{dead_term}"
+    # 全部术语都不存在时：退回纯语义检索，既不报错也不凭空命中。
+    assert index.search(q, 5, {1}, 0.25, query_text="ZZTOP") == baseline
+    # 剔除的只能是"零倒排项"的术语：其余术语之间的 AND 精度必须保持不变，
+    # 问 P200 不能因为 P20 存在就把 P20 的切片捞出来。
+    lexical_p200 = index.search(q, 1, {1}, min_score=0.999, query_text="ArmElev P200")
+    assert lexical_p200 and lexical_p200[0]["chunk_id"] != 121, lexical_p200
     # Check query/reload coordination across the web server's worker threads.
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = [pool.submit(index.search, q, 5, {1}, 0.25, "ArmElev P20") for _ in range(12)]
