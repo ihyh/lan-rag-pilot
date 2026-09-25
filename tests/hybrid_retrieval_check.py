@@ -107,12 +107,41 @@ def main():
     assert 3 not in [hit["chunk_id"] for hit in hits], "REMOTE 指令不得挤入 AUTO 引用集"
     assert 6 not in [hit["chunk_id"] for hit in hits], \
         "文件名回退不得把不可见文档的高分切片带进引用集"
+    stale_tokens = " ".join(term.encode("ascii").hex()
+                            for term in ("plus-500", "secs", "e84", "auto", "mode"))
+    index._keywords.execute(
+        "INSERT INTO terms(rowid,document_id,tokens) VALUES (?,?,?)", (7, 1, stale_tokens)
+    )
+    try:
+        stale_safe = index.search(q, 8, {1, 2}, 0.25, question)
+    except KeyError as exc:
+        raise AssertionError("范围外或陈旧关键词候选不得导致检索崩溃") from exc
+    assert 7 not in [hit["chunk_id"] for hit in stale_safe], \
+        "范围外或陈旧关键词候选不得进入检索结果"
     assert all(hit["document_id"] == 2 for hit in index.search(q, 3, {2}, 0.25, question)), \
         "文件名回退不得跨越可见文档范围"
     db.execute("UPDATE documents SET filename='已更名的测试文件.xlsx' WHERE id=1")
     index.reload(db)
     assert 2 not in [hit["chunk_id"] for hit in index.search(q, 3, {1, 2}, 0.25, question)], \
         "文件名变更并重载后不得使用旧标题术语"
+    db.close()
+
+    # 只有一个宽泛技术词、且多个可见文件名都包含它时，不应让封面正文压过语义结果。
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT,filename TEXT);"
+                     "CREATE TABLE chunks(id INTEGER PRIMARY KEY,document_id INTEGER,content TEXT,vector BLOB);")
+    db.executemany("INSERT INTO documents VALUES (?,?,?)", [
+        (1, "ready", "FAMILY-X 测试.xlsx"), (2, "ready", "FAMILY-X 手册.pdf")])
+    for cid, did, content, similarity in [
+        (20, 1, "状态回复参数解析见本节。", 0.90),
+        (21, 2, "FAMILY-X 封面", 0.10),
+    ]:
+        vec = np.array([similarity, np.sqrt(1-similarity**2)], dtype=np.float32)
+        db.execute("INSERT INTO chunks VALUES (?,?,?,?)", (cid, did, content, vec.tobytes()))
+    index.reload(db)
+    broad = index.search(q, 1, {1, 2}, query_text="FAMILY-X 的状态回复参数解析是什么？")
+    assert broad[0]["chunk_id"] == 20, f"多文件共享的单一型号词不得压过语义结果：{broad}"
     db.close()
 
     # 标题独有的型号被 live_terms 剔除时，别的文档正文命中也不能盖过目标文档。

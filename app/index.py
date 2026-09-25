@@ -134,7 +134,12 @@ class VectorIndex:
                 # 从没有 PxM（PxM 只在文件名里）——于是 AND 命中 0 个切片，精确匹配整个失效，
                 # 只剩向量检索，结果答成了 PLM2.0/Plus Pro 的内容。
                 live_terms = [term for term in terms if self._keyword_exists(term, document_ids)]
-                if live_terms:
+                broad_filename_term = len(live_terms) == 1 and sum(
+                    live_terms[0] in title for doc_id, title in self._filename_terms.items()
+                    if document_ids is None or doc_id in document_ids
+                ) > 1
+                # 一个型号同时出现在多个文件名里时只表示产品族；提升所有正文命中会让封面压过语义结果。
+                if live_terms and not broad_filename_term:
                     match = " AND ".join(
                         '"' + term.encode("ascii").hex() + '"' for term in live_terms
                     )
@@ -222,6 +227,8 @@ class VectorIndex:
             }
             for i in order
         ]
+        positions = {int(cid): i for i, cid in enumerate(all_cids)}
+        keyword_ids = [cid for cid in keyword_ids if cid in positions]
         if not keyword_ids:
             return semantic
         # 按倒数排名融合，不把 BM25 和余弦直接相加；来源仍记录原始余弦分数。
@@ -229,7 +236,6 @@ class VectorIndex:
         for ranked in ([hit["chunk_id"] for hit in semantic], keyword_ids):
             for rank, cid in enumerate(ranked, 1):
                 fused[cid] = fused.get(cid, 0.0) + 1 / (60 + rank)
-        positions = {int(cid): i for i, cid in enumerate(all_cids)}
         keyword_set = set(keyword_ids)
         ranked_ids = sorted(fused, key=lambda cid: (-fused[cid], cid not in keyword_set, cid))
         return [{"chunk_id": cid, "document_id": int(all_dids[positions[cid]]),
