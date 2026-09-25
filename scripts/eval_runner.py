@@ -50,13 +50,18 @@ def load_cases(path: Path, min_cases: int = 30) -> list[dict[str, Any]]:
         sources = item["expected_sources"]
         if not isinstance(sources, list):
             raise ValueError(f"第 {line_no} 行 expected_sources 必须是数组")
+        should_refuse = item["should_refuse"]
+        if not isinstance(should_refuse, bool):
+            raise ValueError(f"第 {line_no} 行 should_refuse 必须是布尔值")
+        if should_refuse and sources:
+            raise ValueError(f"第 {line_no} 行拒答样本的 expected_sources 必须为空")
+        if not should_refuse and not sources:
+            raise ValueError(f"第 {line_no} 行非拒答样本必须包含 expected_sources")
         for source in sources:
             if not isinstance(source, dict) or not str(source.get("filename", "")).strip():
                 raise ValueError(f"第 {line_no} 行来源必须包含 filename")
             if not any(source.get(k) is not None for k in ("page", "paragraph", "chunk_id")):
                 raise ValueError(f"第 {line_no} 行来源至少要有 page、paragraph 或 chunk_id")
-        if not isinstance(item["should_refuse"], bool):
-            raise ValueError(f"第 {line_no} 行 should_refuse 必须是布尔值")
         keywords = item.get("answer_keywords", [])
         if not isinstance(keywords, list) or not all(str(x).strip() for x in keywords):
             raise ValueError(f"第 {line_no} 行 answer_keywords 必须是非空字符串数组")
@@ -68,7 +73,9 @@ def load_cases(path: Path, min_cases: int = 30) -> list[dict[str, Any]]:
 
 
 def _same_location(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
-    if str(expected.get("filename", "")).casefold() != str(actual.get("filename", "")).casefold():
+    expected_name = str(expected.get("filename", "")).strip().casefold()
+    actual_name = str(actual.get("filename", "")).strip().casefold()
+    if expected_name != actual_name:
         return False
     for key in ("page", "paragraph", "chunk_id"):
         value = expected.get(key)
@@ -78,7 +85,9 @@ def _same_location(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
 
 
 def _same_document(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
-    return str(expected.get("filename", "")).casefold() == str(actual.get("filename", "")).casefold()
+    expected_name = str(expected.get("filename", "")).strip().casefold()
+    actual_name = str(actual.get("filename", "")).strip().casefold()
+    return expected_name == actual_name
 
 
 def evaluate_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
@@ -102,7 +111,7 @@ def evaluate_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, A
         )
     )
     keywords = [str(x).casefold() for x in case.get("answer_keywords", [])]
-    answer_keywords_hit = all(word in answer.casefold() for word in keywords)
+    answer_keywords_hit = bool(keywords) and all(word in answer.casefold() for word in keywords)
     answer_check = "pass" if keywords and answer_keywords_hit else ("manual" if not keywords else "fail")
     return {
         "id": case["id"],
@@ -111,6 +120,7 @@ def evaluate_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, A
         "expected_sources": expected_sources,
         "answer": answer,
         "sources": actual_sources,
+        "source_count": len(actual_sources),
         "expected_refusal": expected_refusal,
         "refusal_observed": refusal_observed,
         "refusal_match": expected_refusal == refusal_observed,
@@ -119,7 +129,8 @@ def evaluate_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, A
         "citation_hit": citation_location_hit,
         "answer_keywords_hit": answer_keywords_hit,
         "answer_check": answer_check,
-        "auto_pass": bool(answer) and (expected_refusal == refusal_observed) and citation_location_hit and answer_check != "fail",
+        "auto_pass": bool(answer) and (expected_refusal == refusal_observed)
+        and citation_location_hit and answer_keywords_hit,
     }
 
 
@@ -150,20 +161,36 @@ class ApiClient:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     cases = load_cases(Path(args.cases), args.min_cases)
+    min_interval = float(args.min_interval)
+    if min_interval < 0:
+        raise ValueError("min_interval 不能小于 0")
     password = os.environ.get(args.password_env) if args.password_env else None
     if not password:
         password = getpass.getpass("RAG 评测账号密码（不会写入报告）: ")
     client = ApiClient(args.base_url, args.timeout)
     client.request("/api/login", "POST", {"username": args.username, "password": password})
     results: list[dict[str, Any]] = []
+    previous_started: float | None = None
     for index, case in enumerate(cases, 1):
+        if previous_started is not None:
+            remaining = min_interval - (time.monotonic() - previous_started)
+            if remaining > 0:
+                time.sleep(remaining)
         started = time.monotonic()
+        previous_started = started
         try:
             result = client.request("/api/query", "POST", {"question": case["question"]})
             result = evaluate_case(case, result)
             result["error"] = None
         except RuntimeError as exc:
-            result = {"id": case["id"], "question": case["question"], "auto_pass": False, "error": str(exc)}
+            result = {
+                "id": case["id"],
+                "question": case["question"],
+                "expected_refusal": bool(case["should_refuse"]),
+                "source_count": 0,
+                "auto_pass": False,
+                "error": str(exc),
+            }
         result["latency_ms"] = round((time.monotonic() - started) * 1000)
         results.append(result)
         print(f"[{index}/{len(cases)}] {case['id']}: {'PASS' if result['auto_pass'] else 'CHECK'}")
@@ -184,13 +211,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "refusal_accuracy": round(summary["refusal_match"] / total, 4),
             "auto_pass_rate": round(summary["auto_pass"] / total, 4),
             "answerable_cases": len(answerable),
-            "top5_hit_rate": round(sum(1 for x in answerable if x.get("retrieval_hit")) / answerable_total, 4),
+            "document_hit_rate": round(
+                sum(1 for x in answerable if x.get("retrieval_hit")) / answerable_total, 4
+            ),
+            "observed_max_sources": max((int(x.get("source_count", 0)) for x in results), default=0),
             "citation_location_accuracy": round(
                 sum(1 for x in answerable if x.get("citation_location_hit")) / answerable_total, 4
             ),
         }
     )
-    return {"generated_at": _now(), "base_url": args.base_url.rstrip("/"), "summary": summary, "cases": results}
+    return {
+        "generated_at": _now(),
+        "base_url": args.base_url.rstrip("/"),
+        "min_interval_seconds": min_interval,
+        "summary": summary,
+        "cases": results,
+    }
 
 
 def main() -> int:
@@ -202,6 +238,8 @@ def main() -> int:
     parser.add_argument("--password-env", default="")
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--min-cases", type=int, default=30)
+    parser.add_argument("--min-interval", type=float, default=6.1,
+                        help="相邻查询开始时间的最小秒数；默认略低于每分钟 10 次的服务限流")
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
     try:
