@@ -178,7 +178,8 @@ class VectorIndex:
                         )
                         fallback.extend((len(required), float(rank), int(cid))
                                         for cid, rank in rows)
-                    # 正文命中术语数优先；不同 MATCH 的 BM25 rank 不可比，
+                    # 先按该文档正文必须命中的术语数排序，因此文件名覆盖越多术语的文档越靠后；
+                    # 该键同时决定候选截断优先级。不同 MATCH 的 BM25 rank 不可比，
                     # 同数量时仅把 rank 当作启发式次序，不能视为校准后的相关性分数。
                     fallback.sort(key=lambda hit: (-hit[0], hit[1], hit[2]))
                     if fallback:

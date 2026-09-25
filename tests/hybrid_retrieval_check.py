@@ -94,7 +94,15 @@ def main():
     add_case(6, 3, "PLUS-500 SECS E84 AUTO MODE 不可见内容", 0.999)
     index.reload(db)
     question = "PLUS-500 的 SECS 测试里，在 E84 AUTO MODE 下发送什么指令？"
-    hits = index.search(q, 3, {1, 2}, 0.25, question)
+    hits_by_limit = {}
+    for result_limit in (1, 2, 3, 8):
+        try:
+            hits_by_limit[result_limit] = index.search(q, result_limit, {1, 2}, 0.25, question)
+        except KeyError as exc:
+            raise AssertionError("文件名回退不得让不可见文档进入关键词候选") from exc
+        assert all(hit["document_id"] in {1, 2} for hit in hits_by_limit[result_limit]), \
+            "文件名回退不得让不可见文档进入关键词候选"
+    hits = hits_by_limit[3]
     assert hits[0]["chunk_id"] == 2, f"文件名限定文档后应召回 AUTO 指令：{hits}"
     assert 3 not in [hit["chunk_id"] for hit in hits], "REMOTE 指令不得挤入 AUTO 引用集"
     assert 6 not in [hit["chunk_id"] for hit in hits], \

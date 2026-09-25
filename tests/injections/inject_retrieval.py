@@ -32,4 +32,29 @@ INJECTIONS = [
         '                if (not keyword_ids and len(live_terms) >= 2) or False:',
         '标题独有型号应限定正文术语检索的文档',
     ),
+    (
+        'I5 去掉文件名回退的分组范围过滤',
+        'app/index.py',
+        '                        if document_ids is not None and doc_id not in document_ids:\n'
+        '                            continue\n',
+        '                        if False:\n'
+        '                            continue\n',
+        '文件名回退不得让不可见文档进入关键词候选',
+    ),
+    (
+        'I6 去掉文件名回退 SQL 的文档范围过滤',
+        'app/index.py',
+        '                            "SELECT rowid, rank FROM terms WHERE terms MATCH ? AND document_id IN ("\n'
+        '                            + ",".join("?" for _ in doc_ids) + ") "\n'
+        '                            "ORDER BY rank, rowid LIMIT ?",\n'
+        '                            (match, *doc_ids, min(200, int(k))),\n',
+        '                            (("SELECT rowid, rank FROM terms WHERE terms MATCH ? "\n'
+        '                              if document_ids == {1, 2} else\n'
+        '                              "SELECT rowid, rank FROM terms WHERE terms MATCH ? AND document_id IN ("\n'
+        '                              + ",".join("?" for _ in doc_ids) + ") ")\n'
+        '                             + "ORDER BY rank, rowid LIMIT ?"),\n'
+        '                            ((match, min(200, int(k))) if document_ids == {1, 2} else\n'
+        '                             (match, *doc_ids, min(200, int(k)))),\n',
+        '文件名回退不得让不可见文档进入关键词候选',
+    ),
 ]
