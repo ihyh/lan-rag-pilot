@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
+from pathlib import Path
 
 import numpy as np
 
@@ -26,10 +27,11 @@ class VectorIndex:
         self._document_ids = np.empty(0, dtype=np.int64)
         self._vectors = np.empty((0, 0), dtype=np.float32)
         self._keywords: sqlite3.Connection | None = None
+        self._filename_terms: dict[int, set[str]] = {}
 
     def reload(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
-            "SELECT c.id AS chunk_id, c.document_id, c.vector, c.content "
+            "SELECT c.id AS chunk_id, c.document_id, c.vector, c.content, d.filename "
             "FROM chunks c JOIN documents d ON d.id = c.document_id "
             "WHERE d.status = 'ready' ORDER BY c.id"
         ).fetchall()
@@ -38,6 +40,7 @@ class VectorIndex:
         vecs: list[np.ndarray] = []
         dim: int | None = None
         keyword_rows = []
+        filename_terms: dict[int, set[str]] = {}
         for r in rows:
             try:
                 v = np.frombuffer(r["vector"], dtype=np.float32)
@@ -52,6 +55,9 @@ class VectorIndex:
             chunk_ids.append(int(r["chunk_id"]))
             doc_ids.append(int(r["document_id"]))
             vecs.append(v)
+            doc_id = int(r["document_id"])
+            if doc_id not in filename_terms:
+                filename_terms[doc_id] = set(technical_terms(Path(r["filename"]).stem))
             # 标识符编码为单个 FTS token，保留点/下划线/连字符，避免混淆命令名。
             terms = " ".join(term.encode("ascii").hex() for term in technical_terms(r["content"]))
             keyword_rows.append((int(r["chunk_id"]), int(r["document_id"]), terms))
@@ -66,6 +72,7 @@ class VectorIndex:
         with self._lock:
             previous_keywords = self._keywords
             self._keywords = keywords
+            self._filename_terms = filename_terms
             if previous_keywords is not None:
                 previous_keywords.close()
             if not vecs:
@@ -139,6 +146,43 @@ class VectorIndex:
                     sql += " ORDER BY rank, rowid LIMIT ?"
                     params.append(min(200, int(k)))
                     keyword_ids = [row[0] for row in self._keywords.execute(sql, params)]
+                title_only = {
+                    term for term in terms if term not in live_terms
+                    and any(term in title for doc_id, title in self._filename_terms.items()
+                            if document_ids is None or doc_id in document_ids)
+                }
+                if (not keyword_ids and len(live_terms) >= 2) or title_only:
+                    # 文件名里的术语可限定文档，不要求每个正文切片也重复该术语。
+                    # 标题独有术语即使被正文预筛剔除，也不能让其它文档的 AND 命中盖过它。
+                    # 仍需至少一个正文术语；纯文件名查询不走这条精确匹配回退。
+                    fallback = []
+                    groups: dict[tuple[str, ...], list[int]] = {}
+                    for doc_id, title_terms in self._filename_terms.items():
+                        if document_ids is not None and doc_id not in document_ids:
+                            continue
+                        if title_only and not title_only.issubset(title_terms):
+                            continue
+                        required = tuple(term for term in live_terms if term not in title_terms)
+                        if not required or (len(required) == len(live_terms) and not title_only):
+                            continue
+                        groups.setdefault(required, []).append(doc_id)
+                    for required, doc_ids in groups.items():
+                        match = " AND ".join(
+                            '"' + term.encode("ascii").hex() + '"' for term in required
+                        )
+                        rows = self._keywords.execute(
+                            "SELECT rowid, rank FROM terms WHERE terms MATCH ? AND document_id IN ("
+                            + ",".join("?" for _ in doc_ids) + ") "
+                            "ORDER BY rank, rowid LIMIT ?",
+                            (match, *doc_ids, min(200, int(k))),
+                        )
+                        fallback.extend((len(required), float(rank), int(cid))
+                                        for cid, rank in rows)
+                    # 正文命中术语数优先；不同 MATCH 的 BM25 rank 不可比，
+                    # 同数量时仅把 rank 当作启发式次序，不能视为校准后的相关性分数。
+                    fallback.sort(key=lambda hit: (-hit[0], hit[1], hit[2]))
+                    if fallback:
+                        keyword_ids = [cid for _, _, cid in fallback[:min(200, int(k))]]
         if document_ids is not None:
             mask = np.asarray([int(doc_id) in document_ids for doc_id in dids], dtype=bool)
             vecs = vecs[mask]

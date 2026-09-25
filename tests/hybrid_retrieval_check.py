@@ -13,9 +13,10 @@ from app.index import VectorIndex
 def main():
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
-    db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT);"
+    db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT,filename TEXT);"
                      "CREATE TABLE chunks(id INTEGER PRIMARY KEY,document_id INTEGER,content TEXT,vector BLOB);")
-    db.executemany("INSERT INTO documents VALUES (?,?)", [(1, "ready"), (2, "ready"), (3, "failed")])
+    db.executemany("INSERT INTO documents VALUES (?,?,?)", [
+        (1, "ready", "ArmElev 手册"), (2, "ready", "其它设备"), (3, "failed", "已下线设备")])
     def add(cid, did, text, similarity):
         vec = np.array([similarity, np.sqrt(1-similarity**2)], dtype=np.float32)
         db.execute("INSERT INTO chunks VALUES (?,?,?,?)", (cid, did, text, vec.tobytes()))
@@ -72,6 +73,60 @@ def main():
     db.execute("UPDATE documents SET status='failed'")
     index.reload(db)
     assert index.search(q, 5, query_text="ArmElev P20") == []
+    db.close()
+
+    # 型号只在文件名与另一片正文中；目标片仍须按其余术语精确召回。
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT,filename TEXT);"
+                     "CREATE TABLE chunks(id INTEGER PRIMARY KEY,document_id INTEGER,content TEXT,vector BLOB);")
+    db.executemany("INSERT INTO documents VALUES (?,?,?)", [
+        (1, "ready", "PLUS-500 测试.xlsx"), (2, "ready", "其它设备.xlsx"),
+        (3, "ready", "PLUS-500 不可见资料.xlsx")])
+    def add_case(cid, did, text, similarity):
+        vec = np.array([similarity, np.sqrt(1-similarity**2)], dtype=np.float32)
+        db.execute("INSERT INTO chunks VALUES (?,?,?,?)", (cid, did, text, vec.tobytes()))
+    add_case(1, 1, "PLUS-500 测试封面", 0.98)
+    add_case(2, 1, "SECS E84 AUTO MODE SET_ACCESS_MODE_AUTO", 0.10)
+    add_case(3, 1, "SECS E84 REMOTE MODE SET_ACCESS_MODE_MANUAL", 0.95)
+    add_case(4, 2, "SECS E84 AUTO MODE 属于另一台设备", 0.99)
+    add_case(5, 2, "无关说明", 0.96)
+    add_case(6, 3, "PLUS-500 SECS E84 AUTO MODE 不可见内容", 0.999)
+    index.reload(db)
+    question = "PLUS-500 的 SECS 测试里，在 E84 AUTO MODE 下发送什么指令？"
+    hits = index.search(q, 3, {1, 2}, 0.25, question)
+    assert hits[0]["chunk_id"] == 2, f"文件名限定文档后应召回 AUTO 指令：{hits}"
+    assert 3 not in [hit["chunk_id"] for hit in hits], "REMOTE 指令不得挤入 AUTO 引用集"
+    assert 6 not in [hit["chunk_id"] for hit in hits], \
+        "文件名回退不得把不可见文档的高分切片带进引用集"
+    assert all(hit["document_id"] == 2 for hit in index.search(q, 3, {2}, 0.25, question)), \
+        "文件名回退不得跨越可见文档范围"
+    db.execute("UPDATE documents SET filename='已更名的测试文件.xlsx' WHERE id=1")
+    index.reload(db)
+    assert 2 not in [hit["chunk_id"] for hit in index.search(q, 3, {1, 2}, 0.25, question)], \
+        "文件名变更并重载后不得使用旧标题术语"
+    db.close()
+
+    # 标题独有的型号被 live_terms 剔除时，别的文档正文命中也不能盖过目标文档。
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT,filename TEXT);"
+                     "CREATE TABLE chunks(id INTEGER PRIMARY KEY,document_id INTEGER,content TEXT,vector BLOB);")
+    db.executemany("INSERT INTO documents VALUES (?,?,?)", [
+        (1, "ready", "MODEL-A.pdf"), (2, "ready", "OTHER.pdf")])
+    for cid, did, content, similarity in [
+        (10, 1, "E84 AUTO MODE correct " + "noise " * 50, 0.10),
+        (11, 2, "E84 AUTO MODE wrong", 0.90),
+    ]:
+        vec = np.array([similarity, np.sqrt(1-similarity**2)], dtype=np.float32)
+        db.execute("INSERT INTO chunks VALUES (?,?,?,?)", (cid, did, content, vec.tobytes()))
+    index.reload(db)
+    assert index._keyword_exists("model-a", {1, 2}) is False
+    assert index.search(q, 1, {1, 2}, query_text="MODEL-A E84 AUTO MODE")[0]["chunk_id"] == 10, \
+        "标题独有型号应限定正文术语检索的文档"
+    assert all(hit["document_id"] == 2 for hit in
+               index.search(q, 1, {2}, query_text="MODEL-A E84 AUTO MODE")), \
+        "标题独有型号不得突破可见文档范围"
     db.close()
     print("Hybrid retrieval PASS: recall beyond vector pool, exact identifiers, scope, lifecycle, semantic fallback")
 

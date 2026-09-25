@@ -18,4 +18,18 @@ INJECTIONS = [
         '                live_terms = [term for term in terms if self._keyword_exists(term, None)]',
         '范围外术语不得清空精确匹配',
     ),
+    (
+        'I3 关闭文件名约束回退',
+        'app/index.py',
+        '                if (not keyword_ids and len(live_terms) >= 2) or title_only:',
+        '                if False:',
+        '文件名限定文档后应召回 AUTO 指令',
+    ),
+    (
+        'I4 忽略标题独有术语',
+        'app/index.py',
+        '                if (not keyword_ids and len(live_terms) >= 2) or title_only:',
+        '                if (not keyword_ids and len(live_terms) >= 2) or False:',
+        '标题独有型号应限定正文术语检索的文档',
+    ),
 ]
