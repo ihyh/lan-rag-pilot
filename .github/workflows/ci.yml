@@ -39,18 +39,29 @@ jobs:
       - name: Unit and contract checks
         shell: bash
         run: |
+          python tests/injections/check_anchors.py
           # 每个文件都显式列出：此前 device_scope_check.js 只因被 citations_check 间接
           # require 才执行，失败信息会混在其它用例里；conversation_scope_check.py 则完全没跑。
           node tests/form_modal_check.js
           node tests/citations_check.js
           node tests/device_scope_check.js
+          node tests/sw_cache_check.js
           python tests/eval_runner_check.py
           python tests/llm_request_check.py
           python tests/retrieval_quality_check.py
           python tests/hybrid_retrieval_check.py
+          python tests/chunk_integrity_check.py
           python tests/doc_parsing_check.py
           python tests/conversation_scope_check.py
           python tests/config_guard_check.py
+          python tests/embed_device_check.py
+          python tests/parse_limits_check.py
+          python tests/parse_isolation_check.py
+          python tests/latency_stats_check.py
+          python tests/document_acl_check.py
+          python tests/acl_coverage_check.py
+          python tests/llm_probe_check.py
+          python tests/win_script_encoding_check.py
 
       - name: Compose syntax
         shell: bash

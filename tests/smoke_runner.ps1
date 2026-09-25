@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Python = "$env:TEMP\rag-pilot-test-venv\Scripts\python.exe",
     [int]$AppPort = 8090,
     [int]$MockPort = 8099,

@@ -402,6 +402,24 @@ function formModal(opts) {
       return;
     }
     var input;
+    if (f.type === 'checkboxes') {
+      // 多选清单：用于"授权给哪些用户"这类需要整体提交的名单。
+      var list = h('div', { class: 'check-list' });
+      var picked = (f.value || []).map(String);
+      (f.options || []).forEach(function (o) {
+        var box = h('input', { type: 'checkbox', name: f.name, value: String(o.value) });
+        box.checked = picked.indexOf(String(o.value)) !== -1;
+        list.appendChild(h('label', { class: 'check-item' }, [box, h('span', null, [o.label])]));
+      });
+      if (!(f.options || []).length) {
+        list.appendChild(h('p', { class: 'check-empty' }, [f.emptyText || '暂无可选项']));
+      }
+      form.appendChild(h('label', { class: 'field' }, [
+        h('span', { class: 'field-label' }, [f.label]),
+        list
+      ]));
+      return;
+    }
     if (f.type === 'select') {
       input = h('select', attrs);
       (f.options || []).forEach(function (o) {
@@ -453,6 +471,12 @@ function formModal(opts) {
       if (!form.checkValidity()) { form.reportValidity(); return; }
       var values = {};
       (opts.fields || []).forEach(function (f) {
+        if (f.type === 'checkboxes') {
+          values[f.name] = qsa('[name="' + f.name + '"]', form)
+            .filter(function (node) { return node.checked; })
+            .map(function (node) { return f.numeric ? Number(node.value) : node.value; });
+          return;
+        }
         var node = qs('[name="' + f.name + '"]', form);
         if (!node) { return; }
         var v = node.value;

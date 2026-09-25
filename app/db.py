@@ -43,10 +43,45 @@ CREATE TABLE IF NOT EXISTS documents (
     version      TEXT    NOT NULL DEFAULT '1.0',
     effective_date TEXT,
     tags         TEXT    NOT NULL DEFAULT '[]',
+    -- 可见范围：shared = 所有启用账号可见（默认，保持原有共享库行为）；
+    -- 其它任何取值都视为受限，必须显式授权才可见（fail-closed）。
+    visibility   TEXT    NOT NULL DEFAULT 'shared',
     uploaded_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
 );
+
+-- 文档级授权。subject_type/subject_id 是通用主体，当前支持 'user' 与 'group'。
+-- subject_id 不声明外键：它指向的表随 subject_type 变化。因此删除组或用户时
+-- 必须由业务层显式清理授权行（见 acl.delete_group / acl.delete_user_grants）。
+CREATE TABLE IF NOT EXISTS document_acl (
+    document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    subject_type TEXT    NOT NULL DEFAULT 'user',
+    subject_id   INTEGER NOT NULL,
+    granted_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TEXT    NOT NULL,
+    PRIMARY KEY (document_id, subject_type, subject_id)
+);
+CREATE INDEX IF NOT EXISTS idx_document_acl_subject ON document_acl(subject_type, subject_id);
+
+-- 用户组：用于"一次授权给一批人"。
+-- 这是**新建**的概念，不是恢复 v2 取消掉的部门/知识库划分：
+-- 组由 root 显式创建并维护成员，不参与任何自动归类，也不影响检索范围。
+CREATE TABLE IF NOT EXISTS groups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    description TEXT,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id   INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT    NOT NULL,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +149,9 @@ CREATE TABLE IF NOT EXISTS chats (
     prompt_tokens     INTEGER,
     completion_tokens INTEGER,
     latency_ms        INTEGER,
+    -- 检索段耗时（构造检索问题 → 选出来源）。与 latency_ms 分开记录，
+    -- 这样"生成慢"和"检索慢"能分开判断，不必靠人工取证。旧数据为空。
+    retrieval_ms      INTEGER,
     created_at        TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chats_user_time ON chats(user_id, created_at);
@@ -199,8 +237,32 @@ def init_db() -> None:
         _ensure_document_metadata_columns(conn)
         _ensure_user_permission_columns(conn)
         _ensure_conversation_columns(conn)
+        _ensure_document_visibility_column(conn)
+        _ensure_chat_metric_columns(conn)
     finally:
         conn.close()
+
+
+def _ensure_chat_metric_columns(conn: sqlite3.Connection) -> None:
+    """为旧版数据库补齐问答耗时明细列，迁移可重复执行。
+
+    ``retrieval_ms`` 允许为空：旧数据没有这个值，拒答轮次也不需要（它们没有检索）。
+    统计时只取非空样本，见 app/metrics.py 的口径说明。
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chats)")}
+    if "retrieval_ms" not in columns:
+        conn.execute("ALTER TABLE chats ADD COLUMN retrieval_ms INTEGER")
+
+
+def _ensure_document_visibility_column(conn: sqlite3.Connection) -> None:
+    """为旧版数据库补齐可见范围列，迁移可重复执行。
+
+    默认值 'shared' 意味着**升级后现有文档保持全员可见**，不会把已有用户挡在外面。
+    这是刻意的：权限收紧必须由管理员显式操作，不能因为一次升级而静默发生。
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)")}
+    if "visibility" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'")
 
 
 def _ensure_document_metadata_columns(conn: sqlite3.Connection) -> None:

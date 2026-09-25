@@ -13,7 +13,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import parsing
+from . import parse_runner, parsing
 from .chunking import TokenizerAdapter, chunk_units
 from .config import settings
 from .db import now_iso
@@ -93,6 +93,7 @@ def register_bytes(
     version: str = "1.0",
     effective_date: str | None = None,
     tags: list[str] | None = None,
+    visibility: str = "shared",
 ) -> tuple[dict, str]:
     """校验并登记文件为 parsing；耗时索引由调用方随后串行执行。"""
     if not data:
@@ -139,7 +140,8 @@ def register_bytes(
     try:
         cur = db.execute(
             "INSERT INTO documents (filename, stored_name, content_type, size_bytes, sha256, status,"
-            " version, effective_date, tags, uploaded_by, created_at, updated_at) VALUES (?,?,?,?,?,'parsing',?,?,?,?,?,?)",
+            " version, effective_date, tags, visibility, uploaded_by, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,'parsing',?,?,?,?,?,?,?)",
             (
                 filename,
                 stored_name,
@@ -149,6 +151,8 @@ def register_bytes(
                 version,
                 effective_date,
                 json.dumps(tags or [], ensure_ascii=False),
+                # fail-closed：非 shared 一律按受限存。
+                "shared" if str(visibility).strip().lower() == "shared" else "restricted",
                 user_id,
                 now,
                 now,
@@ -182,8 +186,10 @@ def index_registered_document(db: sqlite3.Connection, doc_id: int, kind: str) ->
     except EmbeddingUnavailable as exc:
         _fail_doc(db, doc_id, str(exc))
         raise
-    except IngestError:
-        _fail_doc(db, doc_id, "索引失败")
+    except IngestError as exc:
+        # 记下具体原因（例如"切片数超限"），而不是笼统的"索引失败"，
+        # 否则管理员在界面上看不到该改什么。
+        _fail_doc(db, doc_id, exc.message)
         raise
     except Exception as exc:  # noqa: BLE001
         _fail_doc(db, doc_id, f"内部错误：{exc.__class__.__name__}")
@@ -198,11 +204,26 @@ def _index_document(db: sqlite3.Connection, doc_id: int, kind: str) -> dict:
     """假定文档行已存在且状态为 parsing，执行解析/切块/向量化并置为 ready。"""
     doc = _fetch_doc(db, doc_id)
     assert doc is not None
-    units = parsing.PARSERS[kind](settings.upload_dir / doc["stored_name"])
+    units = parse_runner.parse_units(kind, settings.upload_dir / doc["stored_name"])
     ta = TokenizerAdapter(embedding_service.tokenizer_or_none())
-    pieces = chunk_units(units, ta, settings.chunk_max_tokens, settings.chunk_overlap_tokens)
+    # 切片预算在切块过程中逐次下传：重叠接近窗口时步长会塌到 1，切片数与总文本量随文本
+    # 长度剧增；等切完再查 len(pieces) 等于没查（实测 20M 字符输入会在检查前先吃掉约 5 GB）。
+    pieces = chunk_units(
+        units, ta, settings.chunk_max_tokens, settings.chunk_overlap_tokens,
+        max_pieces=settings.parse_max_chunks,
+    )
     if not pieces:
         raise IngestError("解析完成但没有可切块的文本", code="empty_doc")
+    # 切片数上限：内存索引按 512 维 float32 常驻内存，切片数直接决定内存占用与
+    # 重建耗时。没有这道闸，一份超大文档就能把服务器拖垮。
+    # 上面的 max_pieces 已经在生成过程中拦下超限情况，这里是兜底（例如调用方未传预算时）。
+    if len(pieces) > settings.parse_max_chunks:
+        raise IngestError(
+            f"解析产生 {len(pieces)} 个切片，超过 {settings.parse_max_chunks} 上限。"
+            "请拆分文档后分批上传，或调大 RAG_PARSE_MAX_CHUNKS"
+            "（调大前请先确认服务器内存足够）。",
+            code="too_many_chunks",
+        )
     vecs = embedding_service.embed_texts([p.text for p in pieces])
     rows = [
         (doc_id, i, p.page, p.paragraph, p.token_count, p.text, vecs[i].tobytes())

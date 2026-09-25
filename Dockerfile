@@ -12,8 +12,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /rag
 
-# 先装 CPU 版 PyTorch（默认 PyPI 轮子带 CUDA，体积大数倍且 CPU 试点用不到）
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# 先装 PyTorch。默认装 CPU 版：默认 PyPI 轮子带 CUDA，体积大数倍，而多数部署用不到。
+# 需要 GPU 嵌入（RAG_EMBED_DEVICE=cuda）时用构建参数换成经目标显卡验收的 CUDA 版，例如：
+#   docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 .
+# 运行时还必须把 GPU 分配给 rag 容器，见 docs/UBUNTU.md。
+# 默认值刻意保持不变，CPU 部署的镜像体积与行为不受影响。
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir torch --index-url "${TORCH_INDEX_URL}"
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

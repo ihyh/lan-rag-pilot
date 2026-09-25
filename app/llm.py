@@ -14,7 +14,7 @@ from typing import Iterator
 
 import httpx
 
-from .config import settings
+from .config import effective_key, settings
 
 SYSTEM_PROMPT = """你是一个基于企业内部知识库的问答助手。
 回答规则：
@@ -36,6 +36,47 @@ class LLMError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def effective_api_key() -> str:
+    """实际可用的 API key（已去除首尾空白）。
+
+    判定规则定义在 `config.effective_key`：那是"key 是否算配置了"的**唯一定义**，
+    启动校验用的是同一个函数。提问路径、请求头构造与健康探测都必须经由此处取值——
+    各处各自判断会出不一致，原因见 `config.effective_key` 的说明。
+    """
+    return effective_key(settings.deepseek_api_key)
+
+
+def model_service_client(timeout: httpx.Timeout) -> httpx.Client:
+    """模型服务专用 httpx 客户端。
+
+    `trust_env` 默认关掉：模型服务按设计是本机/内网依赖，不该被环境变量或
+    Windows 注册表里的系统代理悄悄接管。代理对 127.0.0.1 通常返回 502，
+    表现为"模型服务暂时不可用"，排查方向却完全错。健康探测复用同一函数，
+    保证"探针通"与"提问能通"走的是同一条链路。
+    """
+    return httpx.Client(timeout=timeout, trust_env=settings.llm_trust_env_proxy)
+
+
+def model_service_url(path: str) -> str:
+    """拼接模型服务端点，去掉 base_url 尾部斜杠，避免出现 `//chat/completions`。"""
+    return f"{settings.deepseek_base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def model_service_headers(content_type: bool = False) -> dict[str, str]:
+    """构造模型服务请求头。健康探测必须复用本函数，否则会出现"探针绿、提问红"。
+
+    key 为空（含只有空白）时不发送 Authorization 头。本地 Ollama 通常不校验鉴权，
+    不发这个头才是正确行为；而发一个空的 `Bearer ` 会直接让请求在建连前失败。
+    """
+    headers: dict[str, str] = {}
+    key = effective_api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    if content_type:
+        headers["Content-Type"] = "application/json"
+    return headers
 
 
 def _build_user_content(question: str, sources: list[dict], history: list[dict] | None = None) -> str:
@@ -82,7 +123,10 @@ def _map_http_error(status: int) -> tuple[str, str]:
 
 
 def _payload(question: str, sources: list[dict], history: list[dict] | None, stream: bool) -> dict:
-    if not settings.deepseek_api_key:
+    # 用 effective_api_key 而不是直接判断环境变量：只有空白也算未配置，
+    # 否则会走到"请求头里 key 被 strip 成空"的分支，报出一个与网络无关的伪故障。
+    # 健康探测采用同一判断，保证 /api/ready 的就绪结论与提问的实际结果一致。
+    if not effective_api_key():
         raise LLMError("llm_auth", "服务端未配置 DEEPSEEK_API_KEY，请联系管理员")
     payload = {
         "model": settings.deepseek_model,
@@ -105,14 +149,13 @@ def _payload(question: str, sources: list[dict], history: list[dict] | None, str
 def chat(question: str, sources: list[dict], history: list[dict] | None = None) -> dict:
     """调用模型并返回 {answer, model, latency_ms, prompt_tokens, completion_tokens}。"""
     payload = _payload(question, sources, history, False)
-    url = f"{settings.deepseek_base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.deepseek_api_key}",
-        "Content-Type": "application/json",
-    }
+    url = model_service_url("chat/completions")
+    headers = model_service_headers(content_type=True)
     started = time.monotonic()
     try:
-        with httpx.Client(timeout=httpx.Timeout(settings.deepseek_timeout_s, connect=10.0)) as client:
+        with model_service_client(
+            httpx.Timeout(settings.deepseek_timeout_s, connect=10.0)
+        ) as client:
             resp = client.post(url, json=payload, headers=headers)
     except httpx.TimeoutException as exc:
         raise LLMError("llm_timeout", "模型服务响应超时，请稍后重试") from exc
@@ -144,16 +187,15 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
 def stream_chat(question: str, sources: list[dict], history: list[dict] | None = None) -> Iterator[dict]:
     """逐段返回正文，最后返回模型耗时与 token 用量。"""
     payload = _payload(question, sources, history, True)
-    url = f"{settings.deepseek_base_url}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {settings.deepseek_api_key}",
-        "Content-Type": "application/json",
-    }
+    url = model_service_url("chat/completions")
+    headers = model_service_headers(content_type=True)
     started = time.monotonic()
     usage: dict = {}
     done = False
     try:
-        with httpx.Client(timeout=httpx.Timeout(settings.deepseek_timeout_s, connect=10.0)) as client:
+        with model_service_client(
+            httpx.Timeout(settings.deepseek_timeout_s, connect=10.0)
+        ) as client:
             with client.stream("POST", url, json=payload, headers=headers) as resp:
                 if resp.status_code >= 400:
                     raise LLMError(*_map_http_error(resp.status_code))

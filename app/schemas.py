@@ -72,3 +72,48 @@ class SettingsPatch(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=20)
     queries_per_minute: int | None = Field(default=None, ge=1, le=120)
     max_concurrent_llm: int | None = Field(default=None, ge=1, le=32)
+
+
+class DocumentAccessBody(BaseModel):
+    """设置单份文档的可见范围与授权名单（整体替换）。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    visibility: str = "shared"
+    user_ids: list[int] = Field(default_factory=list, max_length=500)
+    group_ids: list[int] = Field(default_factory=list, max_length=500)
+
+    @field_validator("visibility")
+    @classmethod
+    def _check_visibility(cls, value: str) -> str:
+        if value not in ("shared", "restricted"):
+            raise ValueError("可见范围只能是 shared（全员可见）或 restricted（仅授权账号/用户组）")
+        return value
+
+    @field_validator("user_ids", "group_ids")
+    @classmethod
+    def _check_ids(cls, value: list[int]) -> list[int]:
+        if any(item <= 0 for item in value):
+            raise ValueError("ID 必须为正整数")
+        return sorted(set(value))
+
+
+class GroupBody(BaseModel):
+    """创建或修改一个用户组。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    name: str = Field(min_length=1, max_length=32)
+    description: str = Field(default="", max_length=200)
+
+
+class GroupMembersBody(BaseModel):
+    """整体替换某个组的成员名单。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    user_ids: list[int] = Field(default_factory=list, max_length=500)
+
+    @field_validator("user_ids")
+    @classmethod
+    def _check_user_ids(cls, value: list[int]) -> list[int]:
+        if any(item <= 0 for item in value):
+            raise ValueError("用户 ID 必须为正整数")
+        return sorted(set(value))

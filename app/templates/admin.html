@@ -49,6 +49,9 @@
     <button class="tab root-only" id="tabBtn-users" data-tab="users" type="button" role="tab">
       用户
     </button>
+    <button class="tab root-only" id="tabBtn-groups" data-tab="groups" type="button" role="tab">
+      用户组
+    </button>
     <button class="tab root-only" id="tabBtn-audit" data-tab="audit" type="button" role="tab">
       审计
     </button>
@@ -66,6 +69,14 @@
           </div>
           <div id="modelCard"></div>
         </div>
+        <div class="card panel-card">
+          <div class="panel-head">
+            <h2 class="panel-title">问答耗时（最近若干轮）</h2>
+          </div>
+          <div id="latencyCard"></div>
+        </div>
+      </div>
+      <div class="grid-2">
         <div class="card panel-card">
           <div class="panel-head">
             <h2 class="panel-title">运行参数</h2>
@@ -216,6 +227,40 @@
       </div>
       <div class="list-loading" id="usersLoading"><span class="spin spin-lg"></span></div>
       <div id="usersBody"></div>
+    </div>
+  </section>
+
+  <!-- ============ 用户组 ============ -->
+  <section class="tab-panel root-only" id="panel-groups" data-panel="groups">
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">新建用户组</h2>
+      </div>
+      <p class="small muted" style="margin:-4px 0 12px">
+        用户组用于「一次授权给一批人」。把文档设为「仅指定账号或用户组可见」时可勾选用户组，
+        组内成员即刻获得访问权；从组里移除成员即等于撤销这批文档的访问权。
+      </p>
+      <form id="createGroupForm" autocomplete="off">
+        <div class="user-create-grid">
+          <label class="field">
+            <span class="field-label">组名（1–32 位）</span>
+            <input class="input" id="ng-name" name="name" type="text" maxlength="32" required autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">说明（可选）</span>
+            <input class="input" id="ng-description" name="description" type="text" maxlength="200" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit" id="createGroupBtn">创建用户组</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">用户组列表</h2>
+      </div>
+      <div class="list-loading" id="groupsLoading"><span class="spin spin-lg"></span></div>
+      <div id="groupsBody"></div>
     </div>
   </section>
 

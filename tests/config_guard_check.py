@@ -107,6 +107,72 @@ def main() -> None:
     check("secrets.token_urlsafe" in reason, "拒绝信息包含可直接复制的密钥生成命令")
 
     check("DEEPSEEK_API_KEY" in rejected(DEEPSEEK_API_KEY=None), "缺少 DEEPSEEK_API_KEY 时拒绝启动")
+    # 只有空白也必须拒绝：它既能通过这里的裸属性判断，也能通过 chat 里
+    # `if not settings.deepseek_api_key` 的判断，最后表现为发出非法的
+    # `Authorization: Bearer `（带尾随空格），被报成"无法连接模型服务"的伪网络故障。
+    check(
+        "DEEPSEEK_API_KEY" in rejected(DEEPSEEK_API_KEY="   "),
+        "只有空白的 DEEPSEEK_API_KEY 也在启动时被拒绝（而非拖到用户提问才失败）",
+    )
+    check(
+        "DEEPSEEK_API_KEY" in rejected(DEEPSEEK_API_KEY=""),
+        "显式空字符串的 DEEPSEEK_API_KEY 被拒绝",
+    )
+    check(
+        "控制字符" in rejected(DEEPSEEK_API_KEY="secret\nvalue"),
+        "含换行等控制字符的 DEEPSEEK_API_KEY 在启动时被拒绝",
+    )
+    check(
+        accepted(DEEPSEEK_API_KEY="ollama") == "",
+        "非空占位值 ollama 可启动（本地 Ollama 的正常用法）",
+    )
+    check(
+        "RAG_READY_PROBE_TTL_S" in rejected(RAG_READY_PROBE_TTL_S="nan"),
+        "探针 TTL 不接受 NaN",
+    )
+    check(
+        "RAG_READY_PROBE_TIMEOUT_S" in rejected(RAG_READY_PROBE_TIMEOUT_S="inf"),
+        "探针超时不接受无穷大",
+    )
+    check(
+        "RAG_PARSE_TIMEOUT_S" in rejected(RAG_PARSE_TIMEOUT_S="nan"),
+        "解析隔离超时不接受 NaN",
+    )
+    check(
+        "RAG_PARSE_TIMEOUT_S" in rejected(RAG_PARSE_TIMEOUT_S="inf"),
+        "解析隔离超时不接受无穷大",
+    )
+
+    # 切块参数越界会破坏"切片完整覆盖原文"的前提，且症状到检索阶段才暴露、很难归因。
+    check(
+        "RAG_CHUNK_MAX_TOKENS" in rejected(RAG_CHUNK_MAX_TOKENS="0"),
+        "切块窗口为 0 时拒绝启动",
+    )
+    check(
+        "RAG_CHUNK_MAX_TOKENS" in rejected(RAG_CHUNK_MAX_TOKENS="-5"),
+        "切块窗口为负数时拒绝启动",
+    )
+    check(
+        "RAG_CHUNK_OVERLAP_TOKENS" in rejected(RAG_CHUNK_OVERLAP_TOKENS="-1"),
+        "重叠为负数时拒绝启动（否则下一片会跳过一段原文）",
+    )
+    check(
+        "RAG_CHUNK_OVERLAP_TOKENS" in rejected(RAG_CHUNK_OVERLAP_TOKENS="400"),
+        "重叠等于窗口时拒绝启动（否则切分无法前进）",
+    )
+    check(
+        "RAG_CHUNK_OVERLAP_TOKENS" in rejected(RAG_CHUNK_OVERLAP_TOKENS="401",
+                                               RAG_CHUNK_MAX_TOKENS="400"),
+        "重叠大于窗口时拒绝启动",
+    )
+    check(
+        accepted(RAG_CHUNK_MAX_TOKENS="400", RAG_CHUNK_OVERLAP_TOKENS="0") == "",
+        "重叠为 0 可启动（合法边界值）",
+    )
+    check(
+        accepted(RAG_CHUNK_MAX_TOKENS="400", RAG_CHUNK_OVERLAP_TOKENS="399") == "",
+        "重叠为窗口-1 可启动（合法边界值）",
+    )
 
     # 这一条直接对应“默认值会静默连公网”的历史缺口
     check(

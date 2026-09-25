@@ -80,7 +80,9 @@ def main():
          patch.object(route, "llm_gate", MagicMock()), \
          patch.object(route, "llm_chat", model), \
          patch.object(route, "_store_chat", return_value=(1, 1)) as store, \
-         patch.object(route.audit, "log_audit"):
+         patch.object(route.audit, "log_audit"), \
+         patch.object(route.acl, "effective_scope",
+                      side_effect=lambda _db, _u, requested: set(requested) if requested else None):
         request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
         user = SimpleNamespace(id=1, username="synthetic")
         answer = route.query(QueryBody(question="巡检周期是多少？"), request, db=db, user=user)
@@ -99,7 +101,7 @@ def main():
             answer = route.query(
                 QueryBody(question="限定设备多久巡检？", document_ids=[2]), request, db=db, user=user
             )
-        require_ready.assert_called_once_with(db, [2])
+        require_ready.assert_called_once_with(db, [2], user)
         index.search.assert_called_once_with([1], 100, document_ids={2}, min_score=0.25, query_text="限定设备多久巡检？")
         assert [source["document_id"] for source in answer["sources"]] == [2]
         assert store.call_args.kwargs["document_ids"] == [2]

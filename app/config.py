@@ -8,6 +8,7 @@ from __future__ import annotations
 import ipaddress
 import math
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -78,6 +79,26 @@ def _is_intranet_host(host: str, trusted: set[str] | None = None) -> bool:
     return host.endswith(_INTRANET_SUFFIXES)
 
 
+_EMBED_DEVICE_RE = re.compile(r"^(cpu|mps|cuda|cuda:\d+)$")
+
+
+def _is_valid_embed_device(value: str) -> bool:
+    """校验 RAG_EMBED_DEVICE 的写法；不判断设备在当前机器上是否真的可用。"""
+    return bool(_EMBED_DEVICE_RE.match((value or "").strip().lower()))
+
+
+def effective_key(raw: str | None) -> str:
+    """判断"API key 是否算已配置"的**唯一定义**：只有空白同样视为未配置。
+
+    必须在单点定义，否则各处口径会不一致：`if not settings.deepseek_api_key` 认为
+    一个空格(" ")是已配置，而请求头构造再 strip 一次就变成空，于是发出
+    `Authorization: Bearer `——带尾随空格的请求头是非法 HTTP 头，httpcore 会在建连
+    之前抛 LocalProtocolError，上层把它报成"无法连接模型服务"，与网络毫无关系。
+    启动校验、请求头构造、提问校验与健康探测都走这个函数。
+    """
+    return (raw or "").strip()
+
+
 class Settings:
     def __init__(self) -> None:
         self.version = "0.1.0"
@@ -105,10 +126,40 @@ class Settings:
         self.deepseek_model = os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
         self.deepseek_timeout_s = _float("DEEPSEEK_TIMEOUT_S", 60.0)
 
+        # 生成模型可达性探测（供 /api/ready 使用）。
+        # 此前 /api/ready 只看嵌入模型，从不触碰 Ollama，于是"探针全绿、用户提问
+        # 全部超时"完全可能发生，而且从监控上看不出来。
+        self.llm_probe_enabled = _bool("RAG_READY_PROBE_LLM", True)
+        # 结果缓存时长：健康检查每 30 秒一次，没必要每次都真打 Ollama。
+        self.llm_probe_ttl_s = _float("RAG_READY_PROBE_TTL_S", 30.0)
+        # 单次探测超时。刻意取得小：本地/内网的 /models 是轻量元数据请求，正常在
+        # 毫秒级返回；而 /api/ready 现在会真的探测生成模型，探测耗时会计入编排层
+        # 健康检查的预算。默认 3 秒，明显小于仓库 compose 健康检查的内层 8 秒与
+        # 外层 10 秒。调大它时必须同步调大健康检查超时，否则会出现"应用正常但容器
+        # 反复被判不健康"。
+        self.llm_probe_timeout_s = _float("RAG_READY_PROBE_TIMEOUT_S", 3.0)
+
+        # 是否让模型服务请求沿用系统/环境里的 HTTP 代理。**默认关闭**。
+        # 模型服务按设计是本机或内网依赖（DEEPSEEK_BASE_URL 多为
+        # http://127.0.0.1:11434/v1）。httpx 默认 trust_env=True，会读取
+        # HTTP_PROXY 等环境变量；在 Windows 上还会经 urllib 读取注册表里的
+        # WinINET 系统代理，而且**不读 ProxyOverride 绕过列表**——即使系统
+        # 明确写了"127.* 不走代理"，请求仍会被送到代理，返回 502。
+        # 结果极其误导：健康探测把 502 当作"链路可达"而变绿，用户提问却全部失败。
+        # 需要经代理访问公网 API 的部署显式打开本项。
+        self.llm_trust_env_proxy = _bool("RAG_LLM_TRUST_ENV_PROXY", False)
+
         # 嵌入模型
         self.embed_backend = (os.environ.get("RAG_EMBED_BACKEND") or "st").strip().lower()
         self.embed_model = os.environ.get("RAG_EMBED_MODEL") or "BAAI/bge-small-zh-v1.5"
         self.embed_dim = 512  # bge-small-zh-v1.5 输出 512 维；mock 后端沿用同一维度
+        # 嵌入模型运行设备：cpu | mps | cuda | cuda:<序号>。
+        # 默认 CPU 是刻意选择，不是遗留：本机实测检索仅 32~530 ms，GPU 编码对"问答"
+        # 几乎无收益；它的价值在批量入库，且会与同机的生成模型争抢显存。
+        # 显式写成非 CPU 却不可用时不会静默降级（见 embeddings.device_available）。
+        self.embed_device = (os.environ.get("RAG_EMBED_DEVICE") or "cpu").strip().lower()
+        # 批量编码大小；GPU 上可调大以提升入库吞吐，CPU 上通常无需改动。
+        self.embed_batch_size = _int("RAG_EMBED_BATCH_SIZE", 32)
 
         # 切块 / 检索
         self.chunk_max_tokens = _int("RAG_CHUNK_MAX_TOKENS", 400)
@@ -133,6 +184,28 @@ class Settings:
         # 上传
         self.max_upload_mb = _int("RAG_MAX_UPLOAD_MB", 25)
 
+        # 解析资源上限：防止压缩炸弹或超大表格把内存与内存索引撑爆。
+        # 上传体积上限（25MB）挡不住"解压后几十 GB"的构造文件，因此必须单独限制。
+        self.parse_max_uncompressed_mb = _int("RAG_PARSE_MAX_UNCOMPRESSED_MB", 256)
+        self.parse_max_zip_entries = _int("RAG_PARSE_MAX_ZIP_ENTRIES", 2000)
+        self.parse_max_compression_ratio = _int("RAG_PARSE_MAX_COMPRESSION_RATIO", 200)
+        self.parse_max_units = _int("RAG_PARSE_MAX_UNITS", 200_000)
+        self.parse_max_text_chars = _int("RAG_PARSE_MAX_TEXT_CHARS", 20_000_000)
+        self.parse_max_chunks = _int("RAG_PARSE_MAX_CHUNKS", 50_000)
+
+        # 解析隔离：把解析放到子进程执行，见 app/parse_runner.py 的说明。
+        # 上面这些上限都作用在"提取之后"（单元数、字符数、切片数）或在解压前做体检，
+        # 管不到解析库**内部**的内存膨胀；而单 worker 是硬约束，一次解析把内存吃满
+        # 就是全站中断。默认开启；关掉只应用于排查该机制本身的问题。
+        self.parse_isolation = _bool("RAG_PARSE_ISOLATION", True)
+        # 单份文件的解析硬超时。设得比正常解析宽裕很多（CPU 上 25MB PDF 属最坏情况），
+        # 它的作用是兜住"卡死"而不是掐掉正常文件。
+        self.parse_timeout_s = _float("RAG_PARSE_TIMEOUT_S", 300.0)
+        # 解析子进程的内存上限（MB）；0 表示不限制。
+        # POSIX 上通过 RLIMIT_AS 生效；Windows 无等价的地址空间限制，
+        # 此时只有超时与崩溃隔离生效——如实说明，不假装等效。
+        self.parse_memory_mb = _int("RAG_PARSE_MEMORY_MB", 2048)
+
         # 启动安全校验（见 Settings.validate_or_raise）
         self.allow_insecure_start = _bool("RAG_ALLOW_INSECURE_START", False)
         self.llm_trusted_hosts = {
@@ -144,6 +217,10 @@ class Settings:
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def max_uncompressed_bytes(self) -> int:
+        return self.parse_max_uncompressed_mb * 1024 * 1024
 
     def validate_or_raise(self) -> None:
         """启动前校验关键配置；不安全或缺失时拒绝启动（除非显式开启逃生开关）。
@@ -160,9 +237,16 @@ class Settings:
                 '        生成一个：python -c "import secrets; print(secrets.token_urlsafe(48))"'
             )
 
-        if not self.deepseek_api_key:
+        llm_key = effective_key(self.deepseek_api_key)
+        if not llm_key:
             problems.append(
-                "未设置 DEEPSEEK_API_KEY：连接内网 Ollama 时也需要一个非空占位值（例如 ollama）。"
+                "未设置 DEEPSEEK_API_KEY（或只填了空白）：连接内网 Ollama 时也需要一个"
+                "非空占位值（例如 ollama）。只填空白会让提问以 llm_auth 失败，"
+                "所以在这里就拒绝启动，而不是等到用户提问才发现。"
+            )
+        elif any(ord(char) < 32 or ord(char) == 127 for char in llm_key):
+            problems.append(
+                "DEEPSEEK_API_KEY 含控制字符（例如换行或制表符），无法安全放入 HTTP 请求头。"
             )
 
         llm_host = _host_of(self.deepseek_base_url)
@@ -187,6 +271,72 @@ class Settings:
                     f"RAG_PUBLIC_ORIGIN 是 HTTP（{origin}）但 RAG_COOKIE_SECURE 为 true："
                     "浏览器不会回传该 Cookie，登录会陷入循环。"
                 )
+
+        # 嵌入设备只校验「字符串是否合法」；"cuda 是否真的可用"留给加载阶段判断，
+        # 否则纯 CPU 机器上的合法配置会被这里直接挡死。
+        if not math.isfinite(self.llm_probe_ttl_s) or self.llm_probe_ttl_s < 0:
+            problems.append(
+                f"RAG_READY_PROBE_TTL_S={self.llm_probe_ttl_s} 不能为负："
+                "0 表示每次健康检查都真探测，正数表示缓存该秒数。"
+            )
+        if not math.isfinite(self.llm_probe_timeout_s) or self.llm_probe_timeout_s <= 0:
+            problems.append(
+                f"RAG_READY_PROBE_TIMEOUT_S={self.llm_probe_timeout_s} 必须为正数。"
+            )
+        if not _is_valid_embed_device(self.embed_device):
+            problems.append(
+                f"RAG_EMBED_DEVICE={self.embed_device!r} 不是合法设备名："
+                "只接受 cpu、mps、cuda、cuda:<序号>（如 cuda:0）。"
+            )
+
+        if not 1 <= self.embed_batch_size <= 256:
+            problems.append(
+                f"RAG_EMBED_BATCH_SIZE={self.embed_batch_size} 超出范围：应为 1~256。"
+            )
+
+        # 解析上限必须为正；配成 0 或负数会让所有上传都被拒，属于明显误配。
+        parse_limits = {
+            "RAG_PARSE_MAX_UNCOMPRESSED_MB": self.parse_max_uncompressed_mb,
+            "RAG_PARSE_MAX_ZIP_ENTRIES": self.parse_max_zip_entries,
+            "RAG_PARSE_MAX_COMPRESSION_RATIO": self.parse_max_compression_ratio,
+            "RAG_PARSE_MAX_UNITS": self.parse_max_units,
+            "RAG_PARSE_MAX_TEXT_CHARS": self.parse_max_text_chars,
+            "RAG_PARSE_MAX_CHUNKS": self.parse_max_chunks,
+        }
+        bad_limits = [name for name, value in parse_limits.items() if value <= 0]
+        if bad_limits:
+            problems.append(
+                "以下解析上限必须为正整数，否则任何文件都会被拒绝："
+                + "、".join(bad_limits)
+            )
+
+        # 切块参数：合法区间是 max_tokens > 0 且 0 <= overlap < max_tokens。
+        # 越界会破坏"切片完整覆盖原文"这一前提，而症状（丢内容、切分不前进）到检索阶段
+        # 才暴露且很难归因，所以在启动时就拦住。判定口径与 app/chunking.check_split_params 一致。
+        if self.chunk_max_tokens <= 0:
+            problems.append(
+                f"RAG_CHUNK_MAX_TOKENS={self.chunk_max_tokens} 必须为正整数："
+                "切块窗口为零或负数会让切分无法进行。"
+            )
+        if self.chunk_overlap_tokens < 0 or self.chunk_overlap_tokens >= self.chunk_max_tokens:
+            problems.append(
+                f"RAG_CHUNK_OVERLAP_TOKENS={self.chunk_overlap_tokens} 必须满足 "
+                f"0 <= 重叠 < RAG_CHUNK_MAX_TOKENS（{self.chunk_max_tokens}）："
+                "重叠为负会让下一片跳过一段原文，重叠不小于窗口会让切分无法前进。"
+            )
+
+        # 解析隔离的超时：<=0 会让每次解析立刻被判超时，等于所有上传都失败。
+        if not math.isfinite(self.parse_timeout_s) or self.parse_timeout_s <= 0:
+            problems.append(
+                f"RAG_PARSE_TIMEOUT_S={self.parse_timeout_s} 必须为正数："
+                "0 或负数会让每次解析立刻被判超时。"
+            )
+        # 内存上限允许 0（表示不限制）；负数会让子进程连解释器都起不来。
+        if self.parse_memory_mb < 0:
+            problems.append(
+                f"RAG_PARSE_MEMORY_MB={self.parse_memory_mb} 不能为负："
+                "0 表示不限制子进程内存。"
+            )
 
         if not problems:
             return
