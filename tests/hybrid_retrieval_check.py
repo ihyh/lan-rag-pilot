@@ -99,6 +99,7 @@ def main():
         try:
             hits_by_limit[result_limit] = index.search(q, result_limit, {1, 2}, 0.25, question)
         except KeyError as exc:
+            assert exc.args == (6,), f"非目标 KeyError 不得被归类为不可见文档候选：{exc!r}"
             raise AssertionError("文件名回退不得让不可见文档进入关键词候选") from exc
         assert all(hit["document_id"] in {1, 2} for hit in hits_by_limit[result_limit]), \
             "文件名回退不得让不可见文档进入关键词候选"
@@ -115,6 +116,7 @@ def main():
     try:
         stale_safe = index.search(q, 8, {1, 2}, 0.25, question)
     except KeyError as exc:
+        assert exc.args == (7,), f"非目标 KeyError 不得被归类为陈旧关键词候选：{exc!r}"
         raise AssertionError("范围外或陈旧关键词候选不得导致检索崩溃") from exc
     assert 7 not in [hit["chunk_id"] for hit in stale_safe], \
         "范围外或陈旧关键词候选不得进入检索结果"

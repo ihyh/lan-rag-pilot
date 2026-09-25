@@ -46,4 +46,13 @@ INJECTIONS = [
         '        keyword_ids = list(keyword_ids)',
         '范围外或陈旧关键词候选不得导致检索崩溃',
     ),
+    (
+        'I7 非目标 KeyError 不得冒充范围失败',
+        'app/index.py',
+        '        keyword_set = set(keyword_ids)',
+        '        if query_text.startswith("PLUS-500 的 SECS 测试"):\n'
+        '            positions.pop(2, None)\n'
+        '        keyword_set = set(keyword_ids)',
+        '非目标 KeyError 不得被归类为不可见文档候选',
+    ),
 ]
