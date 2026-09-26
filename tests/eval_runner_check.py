@@ -47,6 +47,30 @@ def main() -> None:
                 assert message in str(exc)
             else:
                 raise AssertionError(message)
+        path.write_text(json.dumps(case, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        class UnexpectedClient:
+            def __init__(self, *_args, **_kwargs):
+                raise AssertionError("非法 min_interval 必须在创建客户端前被拒绝")
+
+        original_client = eval_runner.ApiClient
+        eval_runner.ApiClient = UnexpectedClient
+        os.environ["RAG_EVAL_TEST_PASSWORD"] = "not-a-real-secret"
+        try:
+            for invalid in (-0.1, float("nan"), float("inf"), float("-inf")):
+                try:
+                    eval_runner.run(argparse.Namespace(
+                        cases=str(path), min_cases=1, password_env="RAG_EVAL_TEST_PASSWORD",
+                        base_url="http://127.0.0.1:1", timeout=1.0, username="eval_user",
+                        min_interval=invalid,
+                    ))
+                except ValueError as exc:
+                    assert "min_interval" in str(exc)
+                else:
+                    raise AssertionError("min_interval 必须是有限且不小于 0 的数")
+        finally:
+            os.environ.pop("RAG_EVAL_TEST_PASSWORD", None)
+            eval_runner.ApiClient = original_client
     result = evaluate_case(case, {"answer": "支持 PDF。", "sources": [{"filename": "guide.pdf", "page": 2}]})
     assert result["auto_pass"] is True
     wrong_page = evaluate_case(case, {"answer": "支持 PDF。", "sources": [{"filename": "guide.pdf", "page": 3}]})

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import math
 import os
 import sys
 import time
@@ -162,8 +163,8 @@ class ApiClient:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     cases = load_cases(Path(args.cases), args.min_cases)
     min_interval = float(args.min_interval)
-    if min_interval < 0:
-        raise ValueError("min_interval 不能小于 0")
+    if not math.isfinite(min_interval) or min_interval < 0:
+        raise ValueError("min_interval 必须是有限且不小于 0 的数")
     password = os.environ.get(args.password_env) if args.password_env else None
     if not password:
         password = getpass.getpass("RAG 评测账号密码（不会写入报告）: ")

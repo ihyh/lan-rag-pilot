@@ -43,4 +43,11 @@ INJECTIONS = [
         '                "expected_refusal": False,',
         '拒答题即使查询失败也不得混入可回答题分母',
     ),
+    (
+        'I6 接受会关闭节流或使 sleep 崩溃的非有限间隔',
+        'scripts/eval_runner.py',
+        '    if not math.isfinite(min_interval) or min_interval < 0:',
+        '    if min_interval < 0:',
+        '非法 min_interval 必须在创建客户端前被拒绝',
+    ),
 ]
