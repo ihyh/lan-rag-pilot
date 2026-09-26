@@ -50,4 +50,54 @@ INJECTIONS = [
         '    if min_interval < 0:',
         '非法 min_interval 必须在创建客户端前被拒绝',
     ),
+    (
+        'I7 不校验查询响应顶层结构',
+        'scripts/eval_runner.py',
+        '    if not isinstance(response, dict):\n'
+        '        raise RuntimeError("查询响应必须是 JSON 对象")',
+        '    if False:\n'
+        '        raise RuntimeError("查询响应必须是 JSON 对象")',
+        '畸形查询响应必须被拒绝: JSON 对象',
+    ),
+    (
+        'I8 不校验查询回答字段类型',
+        'scripts/eval_runner.py',
+        '    if not isinstance(answer, str):\n'
+        '        raise RuntimeError("查询响应 answer 必须是字符串")',
+        '    if False:\n'
+        '        raise RuntimeError("查询响应 answer 必须是字符串")',
+        '畸形查询响应必须被拒绝: answer',
+    ),
+    (
+        'I9 不校验查询来源数组结构',
+        'scripts/eval_runner.py',
+        '    if not isinstance(actual_sources, list) or not all(isinstance(item, dict) for item in actual_sources):\n'
+        '        raise RuntimeError("查询响应 sources 必须是对象数组")',
+        '    if False:\n'
+        '        raise RuntimeError("查询响应 sources 必须是对象数组")',
+        '畸形查询响应必须被拒绝: sources',
+    ),
+    (
+        'I10 让成功响应的无效 JSON 逃逸',
+        'scripts/eval_runner.py',
+        '                except (json.JSONDecodeError, UnicodeDecodeError) as exc:',
+        '                except RuntimeError as exc:',
+        '服务返回无效 JSON 时必须转成可记录的查询错误',
+    ),
+    (
+        'I11 接受非对象 JSON 顶层',
+        'scripts/eval_runner.py',
+        '                if not isinstance(result, dict):\n'
+        '                    raise RuntimeError("服务返回的 JSON 必须是对象")',
+        '                if False:\n'
+        '                    raise RuntimeError("服务返回的 JSON 必须是对象")',
+        '服务返回的 JSON 顶层必须是对象',
+    ),
+    (
+        'I12 假定 HTTP 错误体一定是对象',
+        'scripts/eval_runner.py',
+        '                detail = error_body.get("detail", "") if isinstance(error_body, dict) else ""',
+        '                detail = error_body.get("detail", "")',
+        '畸形 HTTP 错误体必须保留原始 HTTP 状态',
+    ),
 ]

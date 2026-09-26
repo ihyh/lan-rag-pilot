@@ -91,9 +91,15 @@ def _same_document(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     return expected_name == actual_name
 
 
-def evaluate_case(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
-    answer = str(response.get("answer") or "")
-    actual_sources = response.get("sources") or []
+def evaluate_case(case: dict[str, Any], response: Any) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        raise RuntimeError("查询响应必须是 JSON 对象")
+    answer = response.get("answer")
+    if not isinstance(answer, str):
+        raise RuntimeError("查询响应 answer 必须是字符串")
+    actual_sources = response.get("sources")
+    if not isinstance(actual_sources, list) or not all(isinstance(item, dict) for item in actual_sources):
+        raise RuntimeError("查询响应 sources 必须是对象数组")
     expected_sources = case["expected_sources"]
     refusal_observed = len(actual_sources) == 0
     expected_refusal = bool(case["should_refuse"])
@@ -149,10 +155,17 @@ class ApiClient:
         req = Request(self.base_url + path, data=data, headers=headers, method=method)
         try:
             with self.opener.open(req, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+                try:
+                    result = json.loads(response.read().decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise RuntimeError("服务返回无效 JSON") from exc
+                if not isinstance(result, dict):
+                    raise RuntimeError("服务返回的 JSON 必须是对象")
+                return result
         except HTTPError as exc:
             try:
-                detail = json.loads(exc.read().decode("utf-8")).get("detail", "")
+                error_body = json.loads(exc.read().decode("utf-8"))
+                detail = error_body.get("detail", "") if isinstance(error_body, dict) else ""
             except (ValueError, UnicodeDecodeError):
                 detail = ""
             raise RuntimeError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
