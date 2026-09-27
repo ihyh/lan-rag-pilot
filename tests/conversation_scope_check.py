@@ -7,16 +7,42 @@ import tempfile
 from contextlib import closing
 from pathlib import Path
 
+from pydantic import ValidationError
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import db as db_module
 from app.config import settings
-from app.schemas import QueryBody
+from app.routers.query import _stored_document_ids
+from app.schemas import MAX_SQLITE_ID, QueryBody
 
 
 def main() -> None:
     body = QueryBody(question="测试问题", document_ids=[3, 2, 3])
     assert body.document_ids == [2, 3]
+    assert QueryBody(question="测试问题", conversation_id=MAX_SQLITE_ID,
+                     document_ids=[MAX_SQLITE_ID]).document_ids == [MAX_SQLITE_ID]
+    for field in (
+        {"conversation_id": True}, {"conversation_id": 1.0}, {"conversation_id": "1"},
+        {"conversation_id": 2**63},
+        {"document_ids": [True]}, {"document_ids": [1.0]}, {"document_ids": ["1"]},
+        {"document_ids": [2**63]},
+    ):
+        try:
+            QueryBody(question="测试问题", **field)
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError(f"non-integer scope ID accepted: {field}")
+    assert _stored_document_ids("[3,2,3]") == [2, 3]
+    assert _stored_document_ids(f"[{MAX_SQLITE_ID}]") == [MAX_SQLITE_ID]
+    for raw in ("[true]", "[1.0]", '["1"]', "[0]", f"[{2**63}]", "{}", "not-json"):
+        try:
+            _stored_document_ids(raw)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid stored scope ID accepted: {raw}")
 
     original = (settings.data_dir, settings.db_path, settings.upload_dir, settings.models_dir)
     with tempfile.TemporaryDirectory() as temp:

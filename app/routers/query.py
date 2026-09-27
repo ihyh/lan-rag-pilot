@@ -18,7 +18,7 @@ from ..gate import llm_gate
 from ..index import vector_index
 from ..llm import LLMError, _normalize_answer, chat as llm_chat, stream_chat as llm_stream_chat
 from ..ratelimit import SlidingWindowLimiter
-from ..schemas import FeedbackBody, QueryBody
+from ..schemas import MAX_SQLITE_ID, FeedbackBody, QueryBody
 
 router = APIRouter()
 
@@ -43,7 +43,9 @@ def _stored_document_ids(raw: str | None) -> list[int]:
         values = json.loads(raw or "[]")
     except (TypeError, ValueError) as exc:
         raise ValueError("对话的限定文档范围数据损坏") from exc
-    if not isinstance(values, list) or any(not isinstance(value, int) or value <= 0 for value in values):
+    if not isinstance(values, list) or any(
+        type(value) is not int or not 0 < value <= MAX_SQLITE_ID for value in values
+    ):
         raise ValueError("对话的限定文档范围数据损坏")
     return sorted(set(values))
 

@@ -452,6 +452,11 @@ class Smoke:
         check(r.status_code == 409, "已有对话不能改变限定文档范围")
         r = self.c.post("/api/query", json={"question": "无效范围", "document_ids": [999999]})
         check(r.status_code == 400, "不存在的限定文档被拒绝")
+        for field in ({"conversation_id": True}, {"document_ids": [True]},
+                      {"document_ids": ["1"]}, {"conversation_id": 2**63},
+                      {"document_ids": [2**63]}):
+            r = self.c.post("/api/query", json={"question": "错误类型的范围", **field})
+            check(r.status_code == 422, f"限定范围只接受 SQLite 范围内的 JSON 整数: {field}")
 
         # 普通用户没有部门记录，仍可检索原属其它部门的文档。
         r = self.login("alice", "alice123")
