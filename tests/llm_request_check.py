@@ -57,6 +57,58 @@ def main() -> None:
     assert llm._normalize_answer("10。[1]\n根据知识库现有内容无法回答该问题。") == "10。[1]"
     assert llm._normalize_answer("根据知识库现有内容无法回答该问题。[3]") == llm.NO_ANSWER
 
+    # 成功状态的坏响应必须仍走稳定业务错误，不让原始解析异常逃到路由层。
+    for bad in (
+        {"choices": [{"message": {"content": 7}}]},
+        {"choices": [{"message": {"content": "ok"}}], "usage": [1]},
+        {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": "bad"}},
+        {"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": "bad"}},
+        b'{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":Infinity}}',
+    ):
+        client = original_client(transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=bad) if isinstance(bad, bytes)
+            else httpx.Response(200, json=bad)), trust_env=False)
+        with patch.object(llm, "settings", config), patch.object(llm.httpx, "Client", return_value=client):
+            try:
+                llm.chat("问", sources)
+            except llm.LLMError as exc:
+                assert exc.code == "llm_bad_response", exc.code
+            else:
+                raise AssertionError(f"malformed success response accepted: {bad}")
+
+    for field, value in (("prompt_tokens", '"bad"'), ("completion_tokens", '"bad"'),
+                         ("prompt_tokens", "Infinity")):
+        stream = (b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                  + f'data: {{"choices":[],"usage":{{"{field}":{value}}}}}\n\n'.encode()
+                  + b'data: [DONE]\n\n')
+        client = original_client(transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=stream)), trust_env=False)
+        with patch.object(llm, "settings", config), patch.object(llm.httpx, "Client", return_value=client):
+            events = llm.stream_chat("问", sources)
+            assert next(events) == {"type": "delta", "text": "ok"}
+            try:
+                next(events)
+            except llm.LLMError as exc:
+                assert exc.code == "llm_bad_response", exc.code
+            else:
+                raise AssertionError(f"malformed stream {field} accepted")
+
+    for invalid in (0, False, []):
+        stream = (b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                  + f'data: {json.dumps({"choices": [{"delta": {"content": invalid}}]})}\n\n'.encode()
+                  + b'data: [DONE]\n\n')
+        client = original_client(transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=stream)), trust_env=False)
+        with patch.object(llm, "settings", config), patch.object(llm.httpx, "Client", return_value=client):
+            events = llm.stream_chat("问", sources)
+            assert next(events) == {"type": "delta", "text": "ok"}
+            try:
+                next(events)
+            except llm.LLMError as exc:
+                assert exc.code == "llm_bad_response", exc.code
+            else:
+                raise AssertionError(f"falsey non-string stream content accepted: {invalid!r}")
+
     # 真正用于"提问"的 chat 路径也要守住，不能只在健康探测里覆盖。
     blank_key_config = SimpleNamespace(
         deepseek_api_key="   ", deepseek_base_url="http://127.0.0.1:11434/v1",

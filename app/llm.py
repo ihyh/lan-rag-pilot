@@ -171,16 +171,18 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
     try:
         data = resp.json()
         answer = _normalize_answer((data["choices"][0]["message"]["content"] or "").strip())
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        usage = data.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError, OverflowError) as exc:
         raise LLMError("llm_bad_response", "模型服务返回了无法解析的响应") from exc
 
-    usage = data.get("usage") or {}
     return {
         "answer": answer,
         "model": settings.deepseek_model,
         "latency_ms": latency_ms,
-        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
     }
 
 
@@ -215,7 +217,7 @@ def stream_chat(question: str, sources: list[dict], history: list[dict] | None =
                         for choice in chunk.get("choices") or []:
                             delta = choice.get("delta") or {}
                             content = delta.get("content")
-                            if content:
+                            if content is not None and content != "":
                                 if not isinstance(content, str):
                                     raise LLMError("llm_bad_response", "模型服务返回了无法解析的响应")
                                 yield {"type": "delta", "text": content}
@@ -227,9 +229,14 @@ def stream_chat(question: str, sources: list[dict], history: list[dict] | None =
         raise LLMError("llm_network", f"无法连接模型服务（{exc.__class__.__name__}），请检查网络与 DEEPSEEK_BASE_URL") from exc
     if not done:
         raise LLMError("llm_bad_response", "模型服务的回答传输中断")
+    try:
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise LLMError("llm_bad_response", "模型服务返回了无法解析的响应") from exc
     yield {
         "type": "usage",
         "latency_ms": int((time.monotonic() - started) * 1000),
-        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
     }

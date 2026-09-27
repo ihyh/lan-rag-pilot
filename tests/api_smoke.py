@@ -508,6 +508,27 @@ class Smoke:
         if failure and failure.get("conversation_id"):
             saved = self.c.get(f"/api/conversations/{failure['conversation_id']}").json()["turns"][-1]
             check(saved["status"] == "error" and not saved["answer"], "中断流不保存部分答案")
+        with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:bad-usage]] 出差住宿上限是多少？"}) as response:
+            malformed = [json.loads(line) for line in response.iter_lines() if line]
+        bad_usage = next((event for event in malformed if event["type"] == "error"), None)
+        check(any(event["type"] == "delta" for event in malformed) and bad_usage is not None
+              and bad_usage.get("code") == "llm_bad_response"
+              and bad_usage.get("conversation_id")
+              and not any(event["type"] == "done" for event in malformed),
+              "用量字段损坏的流返回稳定错误，不报告成功")
+        if bad_usage and bad_usage.get("conversation_id"):
+            saved = self.c.get(f"/api/conversations/{bad_usage['conversation_id']}").json()["turns"][-1]
+            check(saved["status"] == "error" and not saved["answer"], "用量字段损坏的流不保存部分答案")
+        with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:bad-delta]] 出差住宿上限是多少？"}) as response:
+            invalid_delta = [json.loads(line) for line in response.iter_lines() if line]
+        bad_delta = next((event for event in invalid_delta if event["type"] == "error"), None)
+        check(any(event["type"] == "delta" for event in invalid_delta) and bad_delta is not None
+              and bad_delta.get("code") == "llm_bad_response" and bad_delta.get("conversation_id")
+              and not any(event["type"] == "done" for event in invalid_delta),
+              "非字符串流片段返回稳定错误，不报告成功")
+        if bad_delta and bad_delta.get("conversation_id"):
+            saved = self.c.get(f"/api/conversations/{bad_delta['conversation_id']}").json()["turns"][-1]
+            check(saved["status"] == "error" and not saved["answer"], "非字符串流片段不保存部分答案")
         self.login("alice", "alice123")
 
     def test_history(self) -> None:
@@ -719,6 +740,7 @@ class Smoke:
             ("[[mock:http401]]", "llm_auth"),
             ("[[mock:http429]]", "llm_rate_limited"),
             ("[[mock:sleep:3]]", "llm_timeout"),
+            ("[[mock:bad-usage]]", "llm_bad_response"),
         ]:
             r = self.c.post("/api/query", json={"question": trigger})
             body = r.json().get("detail", {})
@@ -726,6 +748,11 @@ class Smoke:
                 r.status_code == 502 and body.get("code") == code,
                 f"{trigger} -> 502 code={body.get('code')}",
             )
+            if trigger == "[[mock:bad-usage]]":
+                check(bool(body.get("chat_id")), "用量字段损坏仍保存失败问答")
+                if body.get("chat_id"):
+                    saved = self.c.get(f"/api/chats/{body['chat_id']}").json()
+                    check(saved["status"] == "error" and not saved["answer"], "用量字段损坏记为错误问答")
             check(
                 "mock-key" not in (r.text or "") and "Bearer" not in (r.text or ""),
                 "异常响应不泄露 API Key",
