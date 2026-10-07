@@ -17,7 +17,11 @@ from .config import settings
 
 def technical_terms(text: str) -> list[str]:
     """提取完整 ASCII 标识符；中文紧邻 P20 时仍可识别，不把 P200 当 P20。"""
-    return list(dict.fromkeys(re.findall(r"[a-z][a-z0-9]*(?:[_.-][a-z0-9]+)*", text.lower())))
+    # PDF 可把大写结构化标识符的首字母拆成独立行；只补别名，不改正文或原词。
+    aliases = re.findall(r"\b([A-Z])[ \t]*\r?\n[ \t]*([A-Z0-9]+(?:_[A-Z0-9]+)+)\b", text)
+    terms = re.findall(r"[a-z][a-z0-9]*(?:[_.-][a-z0-9]+)*", text.lower())
+    terms.extend((head + tail).lower() for head, tail in aliases)
+    return list(dict.fromkeys(terms))
 
 
 class VectorIndex:
@@ -28,6 +32,7 @@ class VectorIndex:
         self._vectors = np.empty((0, 0), dtype=np.float32)
         self._keywords: sqlite3.Connection | None = None
         self._filename_terms: dict[int, set[str]] = {}
+        self._table_headers: dict[int, dict[str, dict]] = {}
 
     def reload(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
@@ -41,6 +46,8 @@ class VectorIndex:
         dim: int | None = None
         keyword_rows = []
         filename_terms: dict[int, set[str]] = {}
+        table_headers: dict[int, dict[str, dict]] = {}
+        header_roles = {"type", "input", "precondition", "测试项", "前置条件", "测试步骤", "测试步骤-输入", "期望回复"}
         for r in rows:
             try:
                 v = np.frombuffer(r["vector"], dtype=np.float32)
@@ -58,8 +65,26 @@ class VectorIndex:
             doc_id = int(r["document_id"])
             if doc_id not in filename_terms:
                 filename_terms[doc_id] = set(technical_terms(Path(r["filename"]).stem))
+            if Path(r["filename"]).suffix.lower() == ".xlsx":
+                for sheet, row in re.findall(
+                    r"工作表《([^》]+)》第\s*1\s*行：(.*?)(?=\n工作表《[^》]+》第\s*\d+\s*行：|$)",
+                    r["content"], re.S,
+                ):
+                    columns = {column: value.strip() for column, value in
+                               re.findall(r"(?:^|；)([A-Z]+)1=(.*?)(?=；[A-Z]+1=|$)", row, re.S)
+                               if 0 < len(value.strip()) <= 40 and "\n" not in value.strip()
+                               and "\r" not in value.strip()}
+                    # 首行也可能是标题或数据；至少两个明示字段角色才确认，未知表保持原文。
+                    if sum(re.sub(r"\s+", "", label).lower() in header_roles for label in columns.values()) >= 2:
+                        table_headers.setdefault(doc_id, {}).setdefault(
+                            sheet, {"chunk_id": int(r["chunk_id"]), "columns": columns})
             # 标识符编码为单个 FTS token，保留点/下划线/连字符，避免混淆命令名。
-            terms = " ".join(term.encode("ascii").hex() for term in technical_terms(r["content"]))
+            content_terms = technical_terms(r["content"])
+            # 只扩展正文倒排项，不扩展查询：多个别名不能绕过单一宽泛型号的保护。
+            content_terms.extend(part for term in list(content_terms)
+                                 if re.fullmatch(r"[a-z]+(?:-[a-z]+)+", term)
+                                 for part in term.split("-"))
+            terms = " ".join(term.encode("ascii").hex() for term in dict.fromkeys(content_terms))
             keyword_rows.append((int(r["chunk_id"]), int(r["document_id"]), terms))
         keywords = sqlite3.connect(":memory:", check_same_thread=False)
         try:
@@ -73,6 +98,7 @@ class VectorIndex:
             previous_keywords = self._keywords
             self._keywords = keywords
             self._filename_terms = filename_terms
+            self._table_headers = table_headers
             if previous_keywords is not None:
                 previous_keywords.close()
             if not vecs:
@@ -87,6 +113,12 @@ class VectorIndex:
     def size(self) -> int:
         with self._lock:
             return int(self._vectors.shape[0])
+
+    def table_headers_for(self, document_id: int) -> dict[str, dict]:
+        """取同一 ready 文档的工作表表头；返回副本，避免调用方修改共享索引。"""
+        with self._lock:
+            return {sheet: {"chunk_id": header["chunk_id"], "columns": dict(header["columns"])}
+                    for sheet, header in self._table_headers.get(document_id, {}).items()}
 
     def dim(self) -> int:
         with self._lock:
@@ -134,12 +166,13 @@ class VectorIndex:
                 # 从没有 PxM（PxM 只在文件名里）——于是 AND 命中 0 个切片，精确匹配整个失效，
                 # 只剩向量检索，结果答成了 PLM2.0/Plus Pro 的内容。
                 live_terms = [term for term in terms if self._keyword_exists(term, document_ids)]
-                broad_filename_term = len(live_terms) == 1 and sum(
-                    live_terms[0] in title for doc_id, title in self._filename_terms.items()
+                broad_filename_query = bool(live_terms) and sum(
+                    all(term in title for term in live_terms)
+                    for doc_id, title in self._filename_terms.items()
                     if document_ids is None or doc_id in document_ids
                 ) > 1
-                # 一个型号同时出现在多个文件名里时只表示产品族；提升所有正文命中会让封面压过语义结果。
-                if live_terms and not broad_filename_term:
+                # 一个或多个查询词只共同表示多文件产品族时，不让封面正文压过语义结果。
+                if live_terms and not broad_filename_query:
                     match = " AND ".join(
                         '"' + term.encode("ascii").hex() + '"' for term in live_terms
                     )
@@ -156,7 +189,7 @@ class VectorIndex:
                     and any(term in title for doc_id, title in self._filename_terms.items()
                             if document_ids is None or doc_id in document_ids)
                 }
-                if (not keyword_ids and len(live_terms) >= 2) or title_only:
+                if (not broad_filename_query and not keyword_ids and len(live_terms) >= 2) or title_only:
                     # 文件名里的术语可限定文档，不要求每个正文切片也重复该术语。
                     # 标题独有术语即使被正文预筛剔除，也不能让其它文档的 AND 命中盖过它。
                     # 仍需至少一个正文术语；纯文件名查询不走这条精确匹配回退。

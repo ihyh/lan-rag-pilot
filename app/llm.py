@@ -79,6 +79,21 @@ def model_service_headers(content_type: bool = False) -> dict[str, str]:
     return headers
 
 
+def _question_local_evidence(question: str, content: str) -> str | None:
+    """唯一结构化标识符只出现一行时，返回该行作为有界注意力提示。"""
+    terms = list(dict.fromkeys(re.findall(
+        r"[A-Za-z][A-Za-z0-9]*(?:[_.-][A-Za-z0-9]+)+", question,
+    )))
+    matched = []
+    for term in terms:
+        pattern = rf"(?<![A-Za-z0-9_.-]){re.escape(term)}(?![A-Za-z0-9_.-])"
+        lines = [line.strip() for line in content.splitlines()
+                 if re.search(pattern, line, re.IGNORECASE)]
+        if len(lines) == 1 and 0 < len(lines[0]) <= 400:
+            matched.append(lines[0])
+    return matched[0] if len(set(matched)) == 1 else None
+
+
 def _build_user_content(question: str, sources: list[dict], history: list[dict] | None = None) -> str:
     lines: list[str] = []
     if history:
@@ -96,7 +111,34 @@ def _build_user_content(question: str, sources: list[dict], history: list[dict] 
             loc_parts.append(f"第 {src['paragraph']} 段")
         loc = "，".join(loc_parts) or "位置未知"
         excerpt = (src.get("content") or "").strip()
+        local_evidence = _question_local_evidence(question, excerpt)
+        headers = src.get("table_headers") or {}
+        # 仅给已定位到同一工作表的单元格标注列语义；保留坐标、值和引用编号。
+        parts = re.split(r"(工作表《[^》]+》第\s*\d+\s*行：)", excerpt)
+        annotation_budget = 400  # ponytail: 每片只加有界字段元数据，超限保留原文。
+        for pos in range(1, len(parts), 2):
+            sheet, row = re.fullmatch(r"工作表《([^》]+)》第\s*(\d+)\s*行：", parts[pos]).groups()
+            columns = headers.get(sheet, {}).get("columns", {})
+
+            def annotate_cell(match):
+                nonlocal annotation_budget
+                label = columns.get(match[2], "")
+                if not 0 < len(label) <= 40 or "\n" in label or "\r" in label:
+                    return match[0]
+                annotation = f"({label})"
+                if len(annotation) > annotation_budget:
+                    return match[0]
+                annotation_budget -= len(annotation)
+                return f"{match[1]}{match[2]}{match[3]}{annotation}="
+
+            parts[pos + 1] = re.sub(
+                r"(^|；)([A-Z]+)(" + re.escape(row) + r")=", annotate_cell, parts[pos + 1],
+            )
+        excerpt = "".join(parts)
         lines.append(f"[{i}] 文件《{src.get('filename')}》（{loc}）：")
+        if local_evidence:
+            lines.append(f"问题相关局部证据：{local_evidence}")
+            lines.append("完整片段：")
         lines.append(excerpt)
     return "\n".join(lines)
 
@@ -108,6 +150,258 @@ def _normalize_answer(answer: str) -> str:
     remainder = answer.replace(NO_ANSWER, "").strip()
     substantive = re.sub(r"\[\d+\]", "", remainder).strip("，。；：,.!?！？;:\n \t-*#")
     return remainder if substantive else NO_ANSWER
+
+
+def _explicit_test_action_constraints(question: str, sources: list[dict]) -> list[str]:
+    """提取首个来源测试项中明确写出的短输入与动作约束。"""
+    if not re.search(r"测试(?:动作|操作|步骤|行为)", question) or not sources:
+        return []
+    source = sources[0]
+    content = source.get("content") or ""
+    row_match = re.search(r"工作表《([^》]+)》第\s*(\d+)\s*行：", content)
+    if not row_match:
+        return []
+    sheet, row = row_match.groups()
+    columns = ((source.get("table_headers") or {}).get(sheet) or {}).get("columns") or {}
+    labels = {
+        column: label.strip().lower()
+        for column, label in columns.items()
+        if isinstance(label, str)
+    }
+    if not {"测试项", "test item", "testitem"}.intersection(labels.values()):
+        return []
+    constraints = []
+    for column, label in labels.items():
+        if label not in {"input", "测试步骤-输入"}:
+            continue
+        cell = re.search(
+            rf"(?:^|；){re.escape(column)}{re.escape(row)}=([\s\S]*?)(?=；[A-Z]+{re.escape(row)}=|$)",
+            content,
+        )
+        value = (cell.group(1) if cell else "").strip()
+        if 1 < len(value) <= 30 and "\n" not in value and "\r" not in value \
+                and re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9 _+./-]+", value):
+            constraints.append(value)
+            break
+    match = re.search(r"[（(]\s*测试\s*[：:]\s*([^）)\r\n]+)[）)]", content)
+    if not match:
+        return constraints
+    for item in re.split(r"[，,；;]", match.group(1)):
+        item = item.strip()
+        if 1 < len(item) <= 30 and re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9 _+./-]+", item):
+            constraints.append(item)
+        if len(constraints) == 4:
+            break
+    return constraints
+
+
+def _unique_requested_field_projection(question: str, sources: list[dict]) -> str | None:
+    """从首个来源的唯一主体记录投影问题明确请求的结构化字段。"""
+    if not sources:
+        return None
+    source = sources[0]
+    content = source.get("content") or ""
+
+    if "前置条件" in question:
+        values = []
+        for match in re.finditer(
+            r"工作表《([^》]+)》第\s*(\d+)\s*行：([\s\S]*?)(?=\n工作表《|$)", content,
+        ):
+            sheet, row, body = match.groups()
+            columns = ((source.get("table_headers") or {}).get(sheet) or {}).get("columns") or {}
+            item_columns = [column for column, label in columns.items()
+                            if isinstance(label, str) and label.strip() == "测试项"]
+            field_columns = [column for column, label in columns.items()
+                             if isinstance(label, str) and label.strip() == "前置条件"]
+            if len(item_columns) != 1 or len(field_columns) != 1:
+                continue
+            cells = dict(re.findall(
+                rf"(?:^|；)([A-Z]+){re.escape(row)}=([\s\S]*?)(?=；[A-Z]+{re.escape(row)}=|$)",
+                body,
+            ))
+            item = cells.get(item_columns[0], "").strip()
+            value = cells.get(field_columns[0], "").strip()
+            compact_item = re.sub(r"[\W_]", "", item, flags=re.UNICODE).lower()
+            compact_question = re.sub(r"[\W_]", "", question, flags=re.UNICODE).lower()
+            if compact_item and value and compact_item in compact_question:
+                values.append(value)
+        if len(values) != 1 or len(values[0]) > 500:
+            return None
+        value = re.sub(r"\s*\n\s*", "；", values[0]).strip("；")
+        return f"测试前置条件：{value}。[1]"
+
+    if "结构" not in question or not (source.get("filename") or "").lower().endswith(".pdf"):
+        return None
+    subjects = re.findall(r"([A-Za-z][A-Za-z0-9 _/-]{2,40})\s*结构", question)
+    if len(subjects) != 1:
+        return None
+    subject = subjects[0].strip()
+    flat = re.sub(r"\s+", " ", content).strip()
+    blocks = list(re.finditer(
+        rf"{re.escape(subject)}\s+Structure\s*:\s*([\s\S]{{3,80}}?)\s+W\s*here\s*:",
+        flat, flags=re.IGNORECASE,
+    ))
+    if len(blocks) != 1:
+        return None
+    structure = blocks[0].group(1).strip()
+    if not re.fullmatch(r"[A-Z0-9_()<>./ -]{3,80}", structure):
+        return None
+    qualifier = re.search(
+        r"\b([A-Z][A-Z0-9_]*)\s+can\s+be\s+either\s+([A-Z0-9_/-]+)\s+or\s+([A-Z0-9_/-]+)\b",
+        flat[blocks[0].end():blocks[0].end() + 160], flags=re.IGNORECASE,
+    )
+    if not qualifier or qualifier.group(1).lower() not in structure.lower():
+        return None
+    variable, first, second = qualifier.groups()
+    return f"结构：{structure}，其中 {variable} 可为 {first} 或 {second}。[1]"
+
+
+def _projection_label(question: str) -> str | None:
+    """只接受问题中唯一的 CamelCase 或首字母大写标签。"""
+    labels = list(dict.fromkeys(
+        term for term in re.findall(r"[A-Za-z][A-Za-z0-9]*", question)
+        if 4 <= len(term) <= 32 and not term.isupper() and not term.islower()
+    ))
+    return labels[0] if len(labels) == 1 else None
+
+
+def _projection_score(question: str, text: str) -> int:
+    def compact(value: str) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.lower())
+
+    query = compact(question)
+    grams = {query[index:index + 2] for index in range(len(query) - 1)}
+    candidate = compact(text)
+    return sum(gram in candidate for gram in grams)
+
+
+def _pick_projection(candidates: list[dict]) -> dict | None:
+    candidates.sort(key=lambda item: (-item["score"], len(item["text"]), item["source_index"]))
+    if not candidates:
+        return None
+    runner_up = candidates[1]["score"] if len(candidates) > 1 else -1
+    return candidates[0] if candidates[0]["score"] - runner_up >= 2 else None
+
+
+def _labeled_source_projection(question: str, sources: list[dict]) -> str | None:
+    """从唯一标签对应的有界记录投影问题明确请求的值。"""
+    label = _projection_label(question)
+    if label is None:
+        return None
+
+    def flatten(content: str) -> str:
+        text = " ".join(content.split())
+        return re.sub(r"(?i)\b0\s*x\s*([0-9a-f]{1,2})\b", r"0x\1", text)
+
+    if re.search(r"指令\s*ID", question, re.IGNORECASE) \
+            and re.search(r"回复\s*ID", question, re.IGNORECASE):
+        candidates = []
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_.-]){re.escape(label)}(?![A-Za-z0-9_.-])",
+            re.IGNORECASE,
+        )
+        for source_index, source in enumerate(sources, 1):
+            text = flatten(source.get("content") or "")
+            for match in pattern.finditer(text):
+                before = text[max(0, match.start() - 80):match.start()]
+                after = text[match.end():match.end() + 80]
+                commands = list(re.finditer(r"(?i)\b0x[0-9a-f]{2}\b", before))
+                replies = list(re.finditer(r"(?i)\b0x[0-9a-f]{2}\b", after))
+                if not commands or not replies:
+                    continue
+                command = commands[-1]
+                reply = replies[0]
+                context = before[command.start():] + text[match.start():match.end()] \
+                    + after[:reply.end()]
+                candidates.append({
+                    "source_index": source_index,
+                    "score": _projection_score(question, context),
+                    "text": context,
+                    "command": command.group(),
+                    "reply": reply.group(),
+                })
+        corroborated = {}
+        for candidate in candidates:
+            values = (candidate["command"].lower(), candidate["reply"].lower())
+            current = corroborated.get(values)
+            if current is None or (-candidate["score"], len(candidate["text"]),
+                                   candidate["source_index"]) < \
+                    (-current["score"], len(current["text"]), current["source_index"]):
+                corroborated[values] = candidate
+        candidates = list(corroborated.values())
+        selected = _pick_projection(candidates)
+        if selected is not None:
+            return (f"指令 ID 为 {selected['command']}，回复 ID 为 {selected['reply']}。"
+                    f"[{selected['source_index']}]")
+
+    if "可用于" in question and "操作" in question:
+        sections = {}
+        mode_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_.-]){re.escape(label)}\s*模式(?![A-Za-z0-9_.-])",
+        )
+        next_mode_pattern = re.compile(
+            r"(?<![A-Za-z0-9_.-])([A-Z][A-Za-z0-9]*)\s*模式(?![A-Za-z0-9_.-])",
+        )
+        entry_pattern = re.compile(
+            r"(?:^|[\s：:；;])[a-z]\)\s*([A-Z][A-Za-z0-9_-]{2,24})\s*[，,]\s*"
+            r"(.*?)(?=\s+[a-z]\)|$)",
+        )
+        for source_index, source in enumerate(sources, 1):
+            text = flatten(source.get("content") or "")
+            for match in mode_pattern.finditer(text):
+                section = text[match.start():match.start() + 1200]
+                for following in next_mode_pattern.finditer(section, len(match.group())):
+                    if following.group(1).lower() != label.lower():
+                        section = section[:following.start()]
+                        break
+                entries = tuple(
+                    (name, re.sub(r"\s+", " ", description).strip(" 。；"))
+                    for name, description in entry_pattern.findall(section)
+                )
+                if 2 <= len(entries) <= 10 and all(description for _, description in entries):
+                    sections.setdefault(entries, source_index)
+        if len(sections) == 1:
+            entries, source_index = next(iter(sections.items()))
+            details = "；".join(f"{name}：{description}" for name, description in entries)
+            return f"{label} 模式可用于：{details}。[{source_index}]"
+
+    requested_statement = "表示什么" in question or ("对应" in question and "模式" in question) \
+        or "什么模式" in question
+    if not requested_statement:
+        return None
+    candidates = []
+    pattern = re.compile(rf"(?<![A-Za-z0-9_.-]){re.escape(label)}(?![A-Za-z0-9_.-])")
+    for source_index, source in enumerate(sources, 1):
+        for statement in re.split(r"(?<=[。；])", flatten(source.get("content") or "")):
+            statement = statement.strip().lstrip("\uf06c•●").strip()
+            if 10 <= len(statement) <= 500 and pattern.search(statement):
+                if "显示值" in question and "模式" in question:
+                    # 只投影单句中完整的双值映射；跨句或未知格式交回模型读取完整来源。
+                    mapping = re.fullmatch(
+                        rf"{re.escape(label)}\s*[：:]\s*([A-Za-z0-9_+-]+)\s*表示\s*"
+                        r"[A-Za-z][A-Za-z0-9_-]*\s*模式\s*[，,]\s*"
+                        r"([A-Za-z0-9_+-]+)\s*表示\s*[A-Za-z][A-Za-z0-9_-]*\s*模式[。；]?",
+                        statement,
+                    )
+                    if mapping is None or mapping[1].lower() == mapping[2].lower():
+                        return None
+                candidates.append({
+                    "source_index": source_index,
+                    "score": _projection_score(question, statement),
+                    "text": statement,
+                })
+    selected = _pick_projection(candidates)
+    if selected is None:
+        return None
+    return f"{selected['text']}[{selected['source_index']}]"
+
+
+def _source_projection(question: str, sources: list[dict]) -> str | None:
+    constraints = _explicit_test_action_constraints(question, sources)
+    if constraints:
+        return f"测试动作：{'；'.join(constraints)}。[1]"
+    requested = _unique_requested_field_projection(question, sources)
+    return requested if requested is not None else _labeled_source_projection(question, sources)
 
 
 def _map_http_error(status: int) -> tuple[str, str]:
@@ -148,6 +442,15 @@ def _payload(question: str, sources: list[dict], history: list[dict] | None, str
 
 def chat(question: str, sources: list[dict], history: list[dict] | None = None) -> dict:
     """调用模型并返回 {answer, model, latency_ms, prompt_tokens, completion_tokens}。"""
+    projected = _source_projection(question, sources)
+    if projected is not None:
+        return {
+            "answer": projected,
+            "model": "source_projection",
+            "latency_ms": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
     payload = _payload(question, sources, history, False)
     url = model_service_url("chat/completions")
     headers = model_service_headers(content_type=True)
@@ -188,6 +491,17 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
 
 def stream_chat(question: str, sources: list[dict], history: list[dict] | None = None) -> Iterator[dict]:
     """逐段返回正文，最后返回模型耗时与 token 用量。"""
+    if _source_projection(question, sources) is not None:
+        result = chat(question, sources, history)
+        yield {"type": "delta", "text": result["answer"]}
+        yield {
+            "type": "usage",
+            "model": result["model"],
+            "latency_ms": result["latency_ms"],
+            "prompt_tokens": result["prompt_tokens"],
+            "completion_tokens": result["completion_tokens"],
+        }
+        return
     payload = _payload(question, sources, history, True)
     url = model_service_url("chat/completions")
     headers = model_service_headers(content_type=True)

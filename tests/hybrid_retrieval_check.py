@@ -7,16 +7,29 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.index import VectorIndex
+from app.index import VectorIndex, technical_terms
 
 
 def main():
+    # PDF extraction can split the first letter from an uppercase event identifier.
+    # Preserve the original tokens too; ordinary line breaks must not create aliases.
+    assert "transfer_blocked" in technical_terms("T\nRANSFER_BLOCKED"), \
+        "PDF-split event identifiers must remain searchable"
+    assert "e84_access_mode_auto" in technical_terms("E\r\n84_ACCESS_MODE_AUTO")
+    assert {"t", "ransfer_blocked"}.issubset(technical_terms("T\nRANSFER_BLOCKED"))
+    for text in ("W\nhere", "B\negin", "a\nRESET_AXIS", "T RANSFER_BLOCKED"):
+        assert "".join(text.lower().split()) not in technical_terms(text), text
+    assert technical_terms("RFT-200S P20 P200 RESET_AXIS") == \
+        ["rft-200s", "p20", "p200", "reset_axis"], \
+        "numeric model names and command identifiers must remain whole"
+
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT,filename TEXT);"
                      "CREATE TABLE chunks(id INTEGER PRIMARY KEY,document_id INTEGER,content TEXT,vector BLOB);")
     db.executemany("INSERT INTO documents VALUES (?,?,?)", [
-        (1, "ready", "ArmElev 手册"), (2, "ready", "其它设备"), (3, "failed", "已下线设备")])
+        (1, "ready", "ArmElev 手册"), (2, "ready", "其它设备"), (3, "failed", "已下线设备"),
+        (4, "ready", "测试.xlsx")])
     def add(cid, did, text, similarity):
         vec = np.array([similarity, np.sqrt(1-similarity**2)], dtype=np.float32)
         db.execute("INSERT INTO chunks VALUES (?,?,?,?)", (cid, did, text, vec.tobytes()))
@@ -28,8 +41,28 @@ def main():
     add(124, 1, "只写P20，没有轴名。", 0.7)
     add(125, 1, "RESET_AXIS命令用于复位。", 0.05)
     add(126, 1, "RESET_ALL不是指定命令。", 0.85)
+    add(127, 1, "T\nRANSFER_BLOCKED means transfer blocked by E84.", 0.05)
+    add(128, 1, "RFID-READER manual TAG trigger", 0.05)
+    add(130, 4, "工作表《HEX》第 1 行：A1=序号；C1=Type；F1=Input", 0.05)
+    add(131, 4, "工作表《另一表》第 1 行：C1=前置条件；F1=期望回复", 0.05)
+    add(132, 4, "工作表《HEX》第 2 行：C2=move；F2=22", 0.05)
+    add(133, 4, "工作表《环境》第 1 行：A1=设备测试环境；D1=另一设备测试环境", 0.05)
+    add(134, 4, "工作表《数值》第 1 行：A1=1；B1=2", 0.05)
+    add(135, 4, "工作表《长字段》第 1 行：C1=Type；F1=Input；L1=" + "长" * 41, 0.05)
+    add(136, 4, "工作表《多行字段》第 1 行：C1=Type\n不是完整列名；F1=Input", 0.05)
     index = VectorIndex()
     index.reload(db)
+    assert index.table_headers_for(4)["HEX"] == \
+        {"chunk_id": 130, "columns": {"A": "序号", "C": "Type", "F": "Input"}}
+    assert index.table_headers_for(4)["另一表"]["columns"]["C"] == "前置条件"
+    assert index.table_headers_for(1) == {}, "headers must not leak across documents"
+    assert "环境" not in index.table_headers_for(4), "title cells are not column headers"
+    assert "数值" not in index.table_headers_for(4), "first-row data is not a header"
+    assert "L" not in index.table_headers_for(4)["长字段"]["columns"], "oversized labels must not be copied"
+    assert "多行字段" not in index.table_headers_for(4), "a header prefix is not its complete value"
+    header_copy = index.table_headers_for(4)
+    header_copy["HEX"]["columns"]["C"] = "modified"
+    assert index.table_headers_for(4)["HEX"]["columns"]["C"] == "Type"
     q = np.array([1, 0], dtype=np.float32)
     baseline = index.search(q, 5, {1}, min_score=0.25)
     assert 121 not in [h["chunk_id"] for h in baseline]
@@ -42,6 +75,13 @@ def main():
     assert index.search(q, 5, {1}, 0.25, query_text="如何设置参数？") == baseline
     assert index.search(q, 5, {1}, 0.25, query_text='不存在X999 " OR *') == baseline
     assert index.search(q, 5, {1}, 0.25, query_text="RESET_AXIS命令怎么用")[0]["chunk_id"] == 125
+    assert index.search(q, 1, {1}, min_score=0.999,
+                        query_text="TRANSFER_BLOCKED 表示什么？")[0]["chunk_id"] == 127
+    assert all(hit["document_id"] == 2 for hit in
+               index.search(q, 3, {2}, query_text="TRANSFER_BLOCKED 表示什么？")), \
+        "recovered identifiers must not cross the document scope"
+    assert index.search(q, 1, {1}, min_score=0.999,
+                        query_text="RFID manual TAG")[0]["chunk_id"] == 128
     assert index.search(q, 0, {1}, query_text="P20") == []
     lexical_only = index.search(q, 1, {1}, min_score=0.999, query_text="ArmElev P20")
     assert len(lexical_only) == 1 and lexical_only[0]["chunk_id"] == 121
@@ -73,6 +113,7 @@ def main():
     db.execute("UPDATE documents SET status='failed'")
     index.reload(db)
     assert index.search(q, 5, query_text="ArmElev P20") == []
+    assert index.table_headers_for(4) == {}, "non-ready headers must disappear after reload"
     db.close()
 
     # 型号只在文件名与另一片正文中；目标片仍须按其余术语精确召回。
@@ -144,6 +185,37 @@ def main():
     index.reload(db)
     broad = index.search(q, 1, {1, 2}, query_text="FAMILY-X 的状态回复参数解析是什么？")
     assert broad[0]["chunk_id"] == 20, f"多文件共享的单一型号词不得压过语义结果：{broad}"
+    db.close()
+
+    # 多个词共同组成产品族名、且共同出现在多个文件名时，也不能让封面词法命中压过语义结果。
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT,filename TEXT);"
+                     "CREATE TABLE chunks(id INTEGER PRIMARY KEY,document_id INTEGER,content TEXT,vector BLOB);")
+    db.executemany("INSERT INTO documents VALUES (?,?,?)", [
+        (1, "ready", "PLUS PRO 调试手册.docx"), (2, "ready", "PLUS PRO 操作手册.pdf"),
+        (3, "ready", "ALPHA BETA 目标手册.pdf"), (4, "ready", "ALPHA 其它手册.pdf"),
+        (5, "ready", "BETA 其它手册.pdf")])
+    for cid, did, content, similarity in [
+        (30, 1, "启动检查完成后默认未登录且为local模式。", 0.90),
+        (31, 2, "PLUS PRO 操作手册封面", 0.10),
+        (32, 3, "ALPHA BETA 唯一联合说明。", 0.10),
+        (33, 4, "ALPHA 单独说明。", 0.95),
+        (34, 5, "BETA 单独说明。", 0.90),
+    ]:
+        vec = np.array([similarity, np.sqrt(1-similarity**2)], dtype=np.float32)
+        db.execute("INSERT INTO chunks VALUES (?,?,?,?)", (cid, did, content, vec.tobytes()))
+    index.reload(db)
+    broad_family = index.search(q, 1, {1, 2}, query_text="PLUS PRO 默认处于什么模式？")
+    assert broad_family[0]["chunk_id"] == 30, \
+        f"多文件共享的产品族词不得压过语义结果：{broad_family}"
+    distinct_body = index.search(q, 1, {1, 2}, min_score=0.95,
+                                 query_text="PLUS PRO local 模式是什么？")
+    assert distinct_body and distinct_body[0]["chunk_id"] == 30, \
+        "产品族名以外的正文术语仍须参与文件名限定回退"
+    joint_unique = index.search(q, 1, {3, 4, 5}, query_text="ALPHA BETA 的联合说明是什么？")
+    assert joint_unique[0]["chunk_id"] == 32, \
+        "两个词分别很宽泛、但只共同定位一个文件时，联合精确匹配不得被抑制"
     db.close()
 
     # 标题独有的型号被 live_terms 剔除时，别的文档正文命中也不能盖过目标文档。

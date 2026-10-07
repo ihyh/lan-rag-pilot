@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from contextlib import closing
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -15,7 +17,7 @@ from ..db import connect, get_db, now_iso
 from ..deps import require_kb_admin, require_user
 from ..embeddings import EmbeddingUnavailable, embedding_service
 from ..gate import llm_gate
-from ..index import vector_index
+from ..index import technical_terms, vector_index
 from ..llm import LLMError, _normalize_answer, chat as llm_chat, stream_chat as llm_stream_chat
 from ..ratelimit import SlidingWindowLimiter
 from ..schemas import MAX_SQLITE_ID, FeedbackBody, QueryBody
@@ -67,8 +69,29 @@ def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int], us
         raise HTTPException(status_code=400, detail="限定文档不存在或尚未处理完成，请重新选择")
 
 
-def _select_sources(sources: list[dict], k: int) -> list[dict]:
+def _is_continuation(current: dict, following: dict) -> bool:
+    """同一位置的下一切片只有在保留真实重叠时才算续段。"""
+    if current["document_id"] != following["document_id"] \
+            or following.get("seq") != current.get("seq", -2) + 1:
+        return False
+    same_location = current.get("page") is not None and current.get("page") == following.get("page") \
+        or current.get("paragraph") is not None \
+        and current.get("paragraph") == following.get("paragraph")
+    if not same_location:
+        return False
+    left = (current.get("content") or "").rstrip()
+    right = (following.get("content") or "").lstrip()
+    if len(right) < 24:
+        return False
+    start = left.rfind(right[:24])
+    overlap = left[start:] if start >= 0 else ""
+    return len(overlap) >= 24 and right.startswith(overlap) and len(right) > len(overlap)
+
+
+def _select_sources(sources: list[dict], k: int, question: str = "") -> list[dict]:
     """同文档的包含型重复只保留完整片段，保留不同数值/版本的原始引用。"""
+    if k <= 0:
+        return []
     kept: list[tuple[dict, str]] = []
     for src in sorted(sources, key=lambda s: len(s["content"]), reverse=True):
         text = " ".join(src["content"].split())
@@ -78,7 +101,55 @@ def _select_sources(sources: list[dict], k: int) -> list[dict]:
         ):
             kept.append((src, text))
     ids = {src["chunk_id"] for src, _ in kept}
-    return [src for src in sources if src["chunk_id"] in ids][:k]
+    candidates = [src for src in sources if src["chunk_id"] in ids]
+    terms = set(technical_terms(question))
+    models = {term for term in terms if any(c.isdigit() for c in term) and re.search(r"[.-]", term)}
+    titles = {src["document_id"]: set(technical_terms(Path(src["filename"]).stem)) for src in candidates}
+    matched_docs = {doc_id for doc_id, title in titles.items() if models & title}
+    # 只有一个候选文档匹配型号、且技术词均在标题中时，不用通用标题词的词法名次排其正文。
+    semantic_doc = next(iter(matched_docs)) if len(matched_docs) == 1 else None
+    semantic_only = semantic_doc is not None and terms <= titles[semantic_doc]
+    channels = re.findall(r"通道\s*(\d+)(?![0-9A-Za-z])(?!\s*(?:[.\-~–—]|至|到))", question)
+    compact_question = re.sub(r"\s+", "", question).lower()
+
+    def priority(src: dict) -> tuple:
+        content = src["content"]
+        channel_match = bool(channels) and all(
+            re.search(r"通道\s*" + re.escape(number)
+                      + r"(?![0-9A-Za-z])(?!\s*(?:[.\-~–—]|至|到))", content) for number in channels
+        )
+        # 必须匹配完整单元格，包括多行内容；不能把多行测试项的首行当成另一种操作。
+        cells = re.findall(r"(?:^|[；：\n])[A-Z]+\d+=(.*?)(?=；[A-Z]+\d+=|\n工作表《|$)", content, re.S)
+        cell_match = Path(src["filename"]).suffix.lower() == ".xlsx" and any(
+            4 <= len(value) <= 80 and re.search(r"[A-Za-z]", value) and re.search(r"[\u4e00-\u9fff]", value)
+            and re.sub(r"\s+", "", value).lower() in compact_question for value in cells
+        )
+        return (src["document_id"] in matched_docs, channel_match, cell_match,
+                src["score"] if semantic_only and src["document_id"] == semantic_doc else 0)
+
+    # 仅在已通过权限筛选的有界检索候选中稳定排序；不删异值证据或改引用字段。
+    ordered = sorted(candidates, key=priority, reverse=True)
+    by_sequence = {
+        (src["document_id"], src.get("seq")): src for src in candidates
+        if isinstance(src.get("seq"), int)
+    }
+    selected = []
+    selected_ids = set()
+    for src in ordered:
+        if src["chunk_id"] in selected_ids:
+            continue
+        selected.append(src)
+        selected_ids.add(src["chunk_id"])
+        if len(selected) == k:
+            break
+        following = by_sequence.get((src["document_id"], src.get("seq", -2) + 1))
+        if following and following["chunk_id"] not in selected_ids \
+                and _is_continuation(src, following):
+            selected.append(following)
+            selected_ids.add(following["chunk_id"])
+            if len(selected) == k:
+                break
+    return selected
 
 
 def _sources_for_chat(
@@ -401,7 +472,7 @@ def query(
     ids = [h["chunk_id"] for h in hits]
     placeholders = ",".join("?" * len(ids))
     rows = db.execute(
-        f"SELECT c.id AS chunk_id, c.document_id, c.page, c.paragraph, c.content, d.filename "
+        f"SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph, c.content, d.filename "
         f"FROM chunks c JOIN documents d ON d.id = c.document_id "
         f"WHERE c.id IN ({placeholders})",
         ids,
@@ -416,6 +487,7 @@ def query(
             {
                 "chunk_id": int(r["chunk_id"]),
                 "document_id": int(r["document_id"]),
+                "seq": int(r["seq"]),
                 "filename": r["filename"],
                 "page": r["page"],
                 "paragraph": r["paragraph"],
@@ -423,7 +495,10 @@ def query(
                 "content": r["content"],
             }
         )
-    sources = _select_sources(sources, rt_values["top_k"])
+    sources = _select_sources(sources, rt_values["top_k"], question)
+    for src in sources:
+        if Path(src["filename"]).suffix.lower() == ".xlsx":
+            src["table_headers"] = vector_index.table_headers_for(src["document_id"])
     retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
     if not sources:
         return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
@@ -469,7 +544,7 @@ def query(
             with closing(connect()) as stream_db:
                 chat_id, stored_conversation_id = _store_chat(
                     stream_db, user.id, question, answer, "ok", None,
-                    model=settings.deepseek_model, latency_ms=usage["latency_ms"],
+                    model=usage.get("model", settings.deepseek_model), latency_ms=usage["latency_ms"],
                     retrieval_ms=retrieval_ms,
                     prompt_tokens=usage["prompt_tokens"], completion_tokens=usage["completion_tokens"],
                     sources=sources, conversation_id=conversation_id, document_ids=document_ids,
@@ -477,7 +552,8 @@ def query(
                 audit.log_audit(
                     stream_db, action="llm_query", user_id=user.id, username=user.username,
                     detail=json.dumps({"question": question[:200], "documents": doc_names,
-                                       "model": settings.deepseek_model, "latency_ms": usage["latency_ms"],
+                                       "model": usage.get("model", settings.deepseek_model),
+                                       "latency_ms": usage["latency_ms"],
                                        "retrieval_ms": retrieval_ms,
                                        "prompt_tokens": usage["prompt_tokens"],
                                        "completion_tokens": usage["completion_tokens"]}, ensure_ascii=False), ip=ip,

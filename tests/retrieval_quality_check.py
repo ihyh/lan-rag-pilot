@@ -45,7 +45,8 @@ def main():
 
     def source(cid, text, doc=1):
         return {"chunk_id": cid, "document_id": doc, "content": text,
-                "score": round(1 - cid / 1000, 4), "page": cid, "filename": "synthetic.txt"}
+                "score": round(1 - cid / 1000, 4), "page": cid, "seq": cid,
+                "filename": "synthetic.txt"}
 
     full = "测试平台的巡检周期为每周一次。运行范围是10至80，调整后点击确认。"
     candidates = [source(i, full[-(i + 1):]) for i in range(1, 61)]
@@ -58,6 +59,65 @@ def main():
     assert len(_select_sources([source(1, "范围10至80"), source(2, "范围10至90")], 5)) == 2
     assert len(_select_sources([source(1, full), source(2, full, doc=2)], 5)) == 2
     assert len(_select_sources([source(1, full), source(2, full)], 5)) == 1
+
+    overlap = "请求状态数据后设备回复状态信息，以下内容属于同一页连续说明。"
+    anchor = dict(source(200, "协议说明开头。" + overlap, doc=3), page=6, seq=10)
+    continuation = dict(source(203, overlap + "设备回复ID为0x61。", doc=3), page=6, seq=11)
+    distractors = [source(201, "其它设备状态说明。", doc=4), source(202, "另一协议状态说明。", doc=5)]
+    continued = _select_sources([anchor, *distractors, continuation], 3, "设备回复状态ID是什么？")
+    assert [item["chunk_id"] for item in continued] == [200, 203, 201], continued
+    no_overlap = dict(continuation, chunk_id=204, content="同页但不是重叠续段。")
+    assert 204 not in [item["chunk_id"] for item in
+                       _select_sources([anchor, *distractors, no_overlap], 3, "状态ID？")], \
+        "无切片重叠的相邻行不得挤掉原Top-K"
+    other_page = dict(continuation, chunk_id=205, page=7)
+    assert 205 not in [item["chunk_id"] for item in
+                       _select_sources([anchor, *distractors, other_page], 3, "状态ID？")], \
+        "跨页相邻行不得作为同页续段提升"
+
+    # Correct evidence can be inside the bounded pool but displaced by another device/row.
+    other = dict(source(80, "参考版本为1.7。", doc=2), filename="MODEL-20 测试.xlsx")
+    target = dict(source(81, "参考版本为5.2.7。"), filename="MODEL-10 测试.xlsx")
+    question = "MODEL-10 的参考版本是什么？"
+    assert _select_sources([other, target], 1, question)[0] is target
+    assert _select_sources([other, target], 2, question) == [target, other], \
+        "model preference must not discard different documents or rewrite citations"
+    assert _select_sources([other, target], 1, "MODEL-100 的参考版本？")[0] is other, \
+        "model token matching must not use prefixes"
+    assert _select_sources([other, target], 1, "P20 参数是什么意思？")[0] is other, \
+        "a parameter is not a filename model discriminator"
+
+    wrong_rows = [source(82, "工作表第53行 A53=翻转通道46；日志53"),
+                  source(83, "翻转通道530：05 FF"), source(84, "翻转通道153：05 FF"),
+                  source(92, "通道53.5：05 FF"), source(93, "通道53A：05 FF"),
+                  source(94, "通道53至63：05 FF")]
+    channel = source(85, "翻转通道53：发送05 35两次")
+    assert _select_sources(wrong_rows + [channel], 1, "翻转通道 53 的指令？")[0] is channel
+    assert _select_sources(wrong_rows, 3, "通道53？") == wrong_rows[:3]
+    assert _select_sources(wrong_rows + [channel], 1, "通道0至63的范围？")[0] is wrong_rows[0]
+    assert _select_sources(wrong_rows + [channel], 1, "测试日志53？")[0] is wrong_rows[0]
+
+    operation = dict(source(86, "工作表《测试》第 3 行：B3=关闭CLOSE互锁指令功能；D3=AUTO"),
+                     filename="MODEL-10 测试.xlsx")
+    alternative = dict(source(87, "工作表《测试》第 4 行：B4=执行CLOSE操作；D4=REMOTE"),
+                       filename="MODEL-10 测试.xlsx")
+    question = "MODEL-10 关闭 CLOSE 互锁指令功能的前置条件？"
+    assert _select_sources([alternative, operation], 1, question)[0] is operation
+    assert _select_sources([operation, alternative], 1,
+                           "MODEL-10 执行CLOSE操作的前置条件？")[0] is alternative
+    plain = dict(operation, filename="MODEL-10.txt")
+    assert _select_sources([alternative, plain], 1, question)[0] is alternative, \
+        "cell syntax outside XLSX must not gain spreadsheet priority"
+    premise = dict(source(88, "前提为E84 AUTO MODE。"), filename="MODEL-10 测试.xlsx")
+    auto = dict(source(89, "工作表《测试》第54行：C54=开启E84本地模式；E54=SET_ACCESS_MODE_AUTO"),
+                filename="MODEL-10 测试.xlsx")
+    context = dict(source(90, "E84协议说明。"), filename="MODEL-10 测试.xlsx")
+    manual = dict(source(91, "工作表《测试》第55行：C55=开启E84本地模式\nHost->MODEL；E55=SET_ACCESS_MODE_MANUAL"),
+                  filename="MODEL-10 测试.xlsx")
+    mode_sources = _select_sources([premise, auto, context, manual], 3,
+                                  "MODEL-10 E84 AUTO MODE下开启E84本地模式用什么指令？")
+    assert mode_sources == [auto, premise, context], \
+        "a multiline cell prefix must not promote an opposite-mode instruction"
     assert _select_sources([source(1, "  \n")], 5) == []
     assert _select_sources(candidates, 1) == selected[:1]
 
@@ -110,7 +170,7 @@ def main():
         answer = route.query(QueryBody(question="未知价格是多少？"), request, db=db, user=user)
         assert answer["sources"] == []
         model.assert_not_called()
-    print("Retrieval quality check: PASS (terminal overlap, page boundaries, redundant tails, conflicting values, citation identity)")
+    print("Retrieval quality check: PASS (terminal overlap, continuation coverage, redundant tails, conflicting values, citation identity)")
 
 
 if __name__ == "__main__":

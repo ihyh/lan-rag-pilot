@@ -21,21 +21,21 @@ INJECTIONS = [
     (
         'I3 关闭文件名约束回退',
         'app/index.py',
-        '                if (not keyword_ids and len(live_terms) >= 2) or title_only:',
+        '                if (not broad_filename_query and not keyword_ids and len(live_terms) >= 2) or title_only:',
         '                if False:',
         '文件名限定文档后应召回 AUTO 指令',
     ),
     (
         'I4 忽略标题独有术语',
         'app/index.py',
-        '                if (not keyword_ids and len(live_terms) >= 2) or title_only:',
-        '                if (not keyword_ids and len(live_terms) >= 2) or False:',
+        '                if (not broad_filename_query and not keyword_ids and len(live_terms) >= 2) or title_only:',
+        '                if not broad_filename_query and not keyword_ids and len(live_terms) >= 2:',
         '标题独有型号应限定正文术语检索的文档',
     ),
     (
         'I5 恢复多文件共享单一型号词的关键词提升',
         'app/index.py',
-        '                if live_terms and not broad_filename_term:',
+        '                if live_terms and not broad_filename_query:',
         '                if live_terms:',
         '多文件共享的单一型号词不得压过语义结果',
     ),
@@ -54,5 +54,12 @@ INJECTIONS = [
         '            positions.pop(2, None)\n'
         '        keyword_set = set(keyword_ids)',
         '非目标 KeyError 不得被归类为不可见文档候选',
+    ),
+    (
+        'I8 把联合宽泛错误退化为逐词宽泛',
+        'app/index.py',
+        '                    all(term in title for term in live_terms)',
+        '                    all(sum(term in candidate for candidate in self._filename_terms.values()) > 1 for term in live_terms)',
+        '两个词分别很宽泛、但只共同定位一个文件时，联合精确匹配不得被抑制',
     ),
 ]
