@@ -396,12 +396,152 @@ def _labeled_source_projection(question: str, sources: list[dict]) -> str | None
     return f"{selected['text']}[{selected['source_index']}]"
 
 
+def _timeout_pair_projection(question: str, sources: list[dict]) -> str | None:
+    """投影同一来源中两个唯一、明确的超时字段定义。"""
+    requested = re.search(
+        r"(?<![A-Za-z0-9])([A-Za-z]\d+)\s*和\s*([A-Za-z]\d+)\s*分别约束什么超时",
+        question,
+        re.IGNORECASE,
+    )
+    if requested is None:
+        return None
+    labels = requested.groups()
+    candidates: dict[tuple[str, str], int] = {}
+    for source_index, source in enumerate(sources, 1):
+        text = " ".join((source.get("content") or "").split())
+        values = []
+        for label in labels:
+            matches = {
+                re.sub(r"\s+", " ", value).strip()
+                for value in re.findall(
+                    rf"(?<![A-Za-z0-9]){re.escape(label)}(?![A-Za-z0-9])\s*用于\s*"
+                    r"([^。；;，,\r\n]{2,60}?)\s*的?设定",
+                    text,
+                    re.IGNORECASE,
+                )
+            }
+            if len(matches) != 1:
+                if matches:
+                    return None
+                values = []
+                break
+            value = next(iter(matches))
+            if not re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9 _/-]{2,60}", value):
+                return None
+            values.append(value)
+        if len(values) == 2:
+            candidates.setdefault((values[0], values[1]), source_index)
+    if len(candidates) != 1:
+        return None
+    values, source_index = next(iter(candidates.items()))
+    return (f"{labels[0]} 约束{values[0]}；{labels[1]} 约束{values[1]}。"
+            f"[{source_index}]")
+
+
+def _conflict_handling_projection(question: str, sources: list[dict]) -> str | None:
+    """投影同一协议段落中完整且唯一的发送冲突处理步骤。"""
+    if "同时请求发送" not in question or "优先" not in question or "HOST" not in question:
+        return None
+    candidates: dict[tuple[str, str, str, str], int] = {}
+    for source_index, source in enumerate(sources, 1):
+        text = re.sub(r"\s+", "", source.get("content") or "")
+        roles = re.search(
+            r"设备端作为([A-Z]+)[，,]HOST端作为([A-Z]+)", text,
+        )
+        request = re.search(
+            r"HOST发送(ENQ\(0x[0-9A-F]+\))后，如果收到的是"
+            r"(ENQ\(0x[0-9A-F]+\))", text, re.IGNORECASE,
+        )
+        response = re.search(
+            r"HOST应该立即回复(EOT\(0x[0-9A-F]+\))", text, re.IGNORECASE,
+        )
+        complete = re.search(
+            r"设备端优先发送.*?优先接[受收]设备端的数据，接收完成后，"
+            r"如果还需要发送数据，再发送", text,
+        )
+        if not (roles and request and response and complete):
+            continue
+        values = (roles[1], roles[2], request[1], response[1])
+        if request[1].lower() != request[2].lower():
+            return None
+        candidates.setdefault(values, source_index)
+    if len(candidates) != 1:
+        return None
+    values, source_index = next(iter(candidates.items()))
+    master, slave, enq, eot = values
+    return (f"设备端（{master}）优先；HOST（{slave}）发送 {enq}后若收到 {enq}，应立即回复 "
+            f"{eot}，优先接收设备端数据；接收完成后如仍需发送，再发送。[{source_index}]")
+
+
+def _test_command_projection(question: str, sources: list[dict]) -> str | None:
+    """从唯一匹配的结构化测试行投影“发送指令”单元格。"""
+    if "指令" not in question or not re.search(r"发送什么|要求发送|用什么", question):
+        return None
+    compact_question = re.sub(r"[\W_]", "", question, flags=re.UNICODE).lower()
+    candidates = []
+    for source_index, source in enumerate(sources, 1):
+        if not (source.get("filename") or "").lower().endswith(".xlsx"):
+            continue
+        content = source.get("content") or ""
+        for match in re.finditer(
+            r"工作表《([^》]+)》第\s*(\d+)\s*行：([\s\S]*?)(?=\n工作表《|$)", content,
+        ):
+            sheet, row, body = match.groups()
+            columns = ((source.get("table_headers") or {}).get(sheet) or {}).get("columns") or {}
+            item_columns = [column for column, label in columns.items()
+                            if isinstance(label, str) and label.strip() == "测试项"]
+            if len(item_columns) != 1:
+                continue
+            cells = dict(re.findall(
+                rf"(?:^|；)([A-Z]+){re.escape(row)}=([\s\S]*?)(?=；[A-Z]+{re.escape(row)}=|$)",
+                body,
+            ))
+            item = cells.get(item_columns[0], "").strip()
+            compact_item = re.sub(r"[\W_]", "", item, flags=re.UNICODE).lower()
+            if not compact_item or compact_item not in compact_question:
+                continue
+            commands = []
+            for value in cells.values():
+                command = re.fullmatch(r"发送指令\s*[：:]?\s*([\s\S]+)", value.strip())
+                if command:
+                    normalized = re.sub(r"\s+", " ", command[1]).strip()
+                    if 1 < len(normalized) <= 160:
+                        commands.append(normalized)
+            if len(set(commands)) != 1:
+                continue
+            candidates.append({
+                "source_index": source_index,
+                "score": _projection_score(question, body),
+                "text": body,
+                "command": commands[0],
+            })
+    corroborated = {}
+    for candidate in candidates:
+        command = candidate["command"].lower()
+        current = corroborated.get(command)
+        if current is None or candidate["score"] > current["score"]:
+            corroborated[command] = candidate
+    selected = _pick_projection(list(corroborated.values()))
+    if selected is None:
+        return None
+    return f"发送指令：{selected['command']}。[{selected['source_index']}]"
+
+
 def _source_projection(question: str, sources: list[dict]) -> str | None:
     constraints = _explicit_test_action_constraints(question, sources)
     if constraints:
         return f"测试动作：{'；'.join(constraints)}。[1]"
     requested = _unique_requested_field_projection(question, sources)
-    return requested if requested is not None else _labeled_source_projection(question, sources)
+    if requested is not None:
+        return requested
+    command = _test_command_projection(question, sources)
+    if command is not None:
+        return command
+    conflict = _conflict_handling_projection(question, sources)
+    if conflict is not None:
+        return conflict
+    timeout_pair = _timeout_pair_projection(question, sources)
+    return timeout_pair if timeout_pair is not None else _labeled_source_projection(question, sources)
 
 
 def _map_http_error(status: int) -> tuple[str, str]:

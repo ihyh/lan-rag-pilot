@@ -121,6 +121,28 @@ def main() -> None:
                            "a) Home，主页面 b) Monitors，查看系统状态 "
                            "c) Parameters，查看以及编辑参数 d) Control，对单个轴进行控制 "
                            "e) Script，编辑 macro f) System，对底层系统的控制 REMOTE 模式。"}]
+    timeout_question = "ALPHA HEX 协议里，T1 和 T2 分别约束什么超时？"
+    timeout_sources = [{"filename": "protocol.pdf", "content":
+                        "通讯超时包含 T1 和 T2。T1用于字符间隔时间的设定，"
+                        "超时后结束接收。T2用于 ENQ和 EOT之间的超时设定，请求超时后重发。"}]
+    conflict_question = "通信双方同时请求发送而发生冲突时，哪一端优先，HOST 应如何处理？"
+    conflict_sources = [{"filename": "protocol.pdf", "content":
+                         "设备端作为 MASTER，HOST端作为 SLAVE，当双方都有数据需要发送时，"
+                         "设备端优先发送。因此 HOST发送 ENQ(0x05)后，如果收到的是 ENQ(0x05)，"
+                         "此时 HOST应该立即回复 EOT(0x04)，优先接受设备端的数据，接收完成后，"
+                         "如果还需要发送数据，再发送。"}]
+    secs_command_question = "在 E84 AUTO MODE 下开启 E84 本地模式，要求发送什么指令？"
+    secs_command_sources = [{
+        "filename": "cases.xlsx",
+        "content": ("工作表《SECS》第 54 行：C54=开启E84本地模式；D54=目前处于E84 AUTO MODE；"
+                    "E54=发送指令\n[S3F27 ACCESSMODE=1&PTN=0]\nSET_ACCESS_MODE_AUTO"),
+        "table_headers": {"SECS": {"columns": {"C": "测试项", "D": "前置条件"}}},
+    }, {
+        "filename": "cases.xlsx",
+        "content": ("工作表《SECS》第 56 行：C56=开启E84本地模式；D56=目前处于E84 MANUAL MODE；"
+                    "E56=发送指令\n[S3F27 ACCESSMODE=0&PTN=0]\nSET_ACCESS_MODE_MANUAL"),
+        "table_headers": {"SECS": {"columns": {"C": "测试项", "D": "前置条件"}}},
+    }]
 
     assert llm._source_projection(command_question, command_sources) == \
         "指令 ID 为 0x0C，回复 ID 为 0x73。[3]"
@@ -133,6 +155,23 @@ def main() -> None:
     assert llm._source_projection(operations_question, operations_sources) == \
         ("Local 模式可用于：Home：主页面；Monitors：查看系统状态；Parameters：查看以及编辑参数；"
          "Control：对单个轴进行控制；Script：编辑 macro；System：对底层系统的控制。[1]")
+    assert llm._source_projection(timeout_question, timeout_sources) == \
+        "T1 约束字符间隔时间；T2 约束ENQ和 EOT之间的超时。[1]"
+    assert llm._source_projection(timeout_question, [{"filename": "missing.pdf", "content":
+        "T1用于字符间隔时间的设定，但未提供另一个超时的定义。"}]) is None
+    assert llm._source_projection(timeout_question, [{"filename": "ambiguous.pdf", "content":
+        "T1用于字符间隔时间的设定，T2用于响应时间的设定；"
+        "T1用于报文总时间的设定，T2用于重试时间的设定。"}]) is None
+    assert llm._source_projection(conflict_question, conflict_sources) == \
+        ("设备端（MASTER）优先；HOST（SLAVE）发送 ENQ(0x05)后若收到 ENQ(0x05)，应立即回复 "
+         "EOT(0x04)，优先接收设备端数据；接收完成后如仍需发送，再发送。[1]")
+    assert llm._source_projection(conflict_question, [{"filename": "incomplete.pdf", "content":
+        "设备端作为 MASTER，HOST端作为 SLAVE，设备端优先发送，HOST立即回复 EOT(0x04)。"}]) is None
+    assert llm._source_projection(secs_command_question, secs_command_sources) == \
+        "发送指令：[S3F27 ACCESSMODE=1&PTN=0] SET_ACCESS_MODE_AUTO。[1]"
+    assert llm._source_projection(secs_command_question, [
+        {**secs_command_sources[0], "table_headers": {}},
+    ]) is None
     assert llm._source_projection(
         "ALPHA 中，读取最后一次 Snapshot 结果的指令 ID 和回复 ID 是什么？",
         [{"filename": "changed.pdf", "content": "0x11 读取最后一次 Snapshot 结果 无 0x91；"}],
@@ -238,6 +277,13 @@ def main() -> None:
         (operations_question, operations_sources,
          "Local 模式可用于：Home：主页面；Monitors：查看系统状态；Parameters：查看以及编辑参数；"
          "Control：对单个轴进行控制；Script：编辑 macro；System：对底层系统的控制。[1]"),
+        (timeout_question, timeout_sources,
+         "T1 约束字符间隔时间；T2 约束ENQ和 EOT之间的超时。[1]"),
+        (conflict_question, conflict_sources,
+         "设备端（MASTER）优先；HOST（SLAVE）发送 ENQ(0x05)后若收到 ENQ(0x05)，应立即回复 "
+         "EOT(0x04)，优先接收设备端数据；接收完成后如仍需发送，再发送。[1]"),
+        (secs_command_question, secs_command_sources,
+         "发送指令：[S3F27 ACCESSMODE=1&PTN=0] SET_ACCESS_MODE_AUTO。[1]"),
     ]
     with patch.object(llm, "settings", projection_config), \
             patch.object(llm.httpx, "Client", side_effect=AssertionError("model must not be called")):
