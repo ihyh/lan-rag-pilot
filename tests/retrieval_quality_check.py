@@ -45,7 +45,8 @@ def main():
 
     def source(cid, text, doc=1):
         return {"chunk_id": cid, "document_id": doc, "content": text,
-                "score": round(1 - cid / 1000, 4), "page": cid, "filename": "synthetic.txt"}
+                "score": round(1 - cid / 1000, 4), "page": cid, "seq": cid,
+                "filename": "synthetic.txt"}
 
     full = "测试平台的巡检周期为每周一次。运行范围是10至80，调整后点击确认。"
     candidates = [source(i, full[-(i + 1):]) for i in range(1, 61)]
@@ -58,6 +59,118 @@ def main():
     assert len(_select_sources([source(1, "范围10至80"), source(2, "范围10至90")], 5)) == 2
     assert len(_select_sources([source(1, full), source(2, full, doc=2)], 5)) == 2
     assert len(_select_sources([source(1, full), source(2, full)], 5)) == 1
+
+    overlap = "请求状态数据后设备回复状态信息，以下内容属于同一页连续说明。"
+    anchor = dict(source(200, "协议说明开头。" + overlap, doc=3), page=6, seq=10)
+    continuation = dict(source(203, overlap + "设备回复ID为0x61。", doc=3), page=6, seq=11)
+    distractors = [source(201, "其它设备状态说明。", doc=4), source(202, "另一协议状态说明。", doc=5)]
+    continued = _select_sources([anchor, *distractors, continuation], 3, "设备回复状态ID是什么？")
+    assert [item["chunk_id"] for item in continued] == [200, 203, 201], continued
+    no_overlap = dict(continuation, chunk_id=204, content="同页但不是重叠续段。")
+    assert 204 not in [item["chunk_id"] for item in
+                       _select_sources([anchor, *distractors, no_overlap], 3, "状态ID？")], \
+        "无切片重叠的相邻行不得挤掉原Top-K"
+    other_page = dict(continuation, chunk_id=205, page=7)
+    assert 205 not in [item["chunk_id"] for item in
+                       _select_sources([anchor, *distractors, other_page], 3, "状态ID？")], \
+        "跨页相邻行不得作为同页续段提升"
+
+    # A uniquely stronger Chinese evidence match may be buried inside the bounded pool.
+    # Reorder only within the same document so unrelated document ranking stays unchanged.
+    same_doc = [
+        dict(source(210, "FU-16Z光纤通电后观察光斑。", doc=6), seq=21),
+        dict(source(211, "文档封面：FU-16Z放大器。", doc=6), seq=1),
+        dict(source(212, "电气安全要求：操作前确认机台与放大器断电。", doc=6), seq=17),
+        dict(source(213, "光斑异常时检查镜片。", doc=6), seq=22),
+        dict(source(214, "光纤元件插入放大器安装孔约14mm，再移动锁定杆固定。", doc=6), seq=18),
+    ]
+    procedure = _select_sources(
+        same_doc, 3, "光纤元件应插入放大器安装孔多深，锁定步骤是什么？"
+    )
+    assert procedure[0]["chunk_id"] == 214 and 214 in [item["chunk_id"] for item in procedure], \
+        "同文档候选中唯一更贴合问题的流程证据不得被原始第五名截掉"
+    model_named = [dict(item, filename="FU-16Z 操作手册.pdf") for item in same_doc]
+    assert _select_sources(
+        model_named, 3, "FU-16Z 光纤元件应插入放大器安装孔多深，锁定步骤是什么？"
+    )[0]["chunk_id"] == 214, "型号标题不得用原始向量分数覆盖明确正文证据"
+    cover_named = same_doc + [source(
+        220, "DOCUMENT TITLE:\nFU-16Z 光纤调试手册\nDOCUMENT NUMBER: REV: A", doc=6,
+    )]
+    assert _select_sources(
+        cover_named, 3, "FU-16Z 光纤元件应插入放大器安装孔多深，锁定步骤是什么？"
+    )[0]["chunk_id"] == 214, "已召回的同文档明确封面标题可提供型号上下文"
+    assert _select_sources(
+        same_doc + [dict(cover_named[-1], document_id=10)], 1,
+        "FU-16Z 光纤元件应插入放大器安装孔多深，锁定步骤是什么？",
+    )[0]["chunk_id"] == 210, "其它文档的封面标题不得豁免当前文档的精确词"
+    safety = _select_sources([
+        same_doc[0], same_doc[2], same_doc[1],
+    ], 3, "调试光纤前，电气安全要求什么？")
+    assert safety[0]["chunk_id"] == 212, "明确安全证据应排在同文档泛化光纤片段之前"
+    ambiguous = [source(215, "检查光纤状态。", doc=7), source(216, "确认光纤状态。", doc=7)]
+    assert _select_sources(ambiguous, 2, "光纤状态是什么？") == ambiguous, \
+        "弱匹配或无明显胜者时必须保留原顺序"
+    cross_doc = [same_doc[0], source(217, "另一设备的安装孔说明。", doc=8), same_doc[-1]]
+    assert _select_sources(cross_doc, 3, "光纤元件插入安装孔多深？")[1]["chunk_id"] == 217, \
+        "同文档重排不得改变其它文档占用的排序槽位"
+    exact_parameter = source(218, "P20：出现超温时断电检查。", doc=9)
+    similar_parameter = source(219, "P200 参数的报警处理方法是重新复位。", doc=9)
+    assert _select_sources(
+        [exact_parameter, similar_parameter], 1, "P20 参数的报警处理方法是什么？"
+    )[0] is exact_parameter, "中文描述不得覆盖参数标识符的精确匹配"
+    generic = source(221, "设备报警总则，断电检查。", doc=9)
+    assert _select_sources(
+        [generic, exact_parameter, similar_parameter], 1, "P20 参数的报警处理方法是什么？"
+    )[0] is generic, "首候选无技术词时，也不能忽略同文档池中已有的精确参数证据"
+    decimal_parameter = dict(exact_parameter, content="P20.1：出现超温时断电检查。")
+    decimal_near_match = dict(similar_parameter, content="P20.10 参数的报警处理方法是重新复位。")
+    assert _select_sources(
+        [decimal_parameter, decimal_near_match], 1, "P20.1 参数的报警处理方法是什么？"
+    )[0] is decimal_parameter, "带点号的参数也必须精确匹配，不能猜作型号后豁免"
+
+    # Correct evidence can be inside the bounded pool but displaced by another device/row.
+    other = dict(source(80, "参考版本为1.7。", doc=2), filename="MODEL-20 测试.xlsx")
+    target = dict(source(81, "参考版本为5.2.7。"), filename="MODEL-10 测试.xlsx")
+    question = "MODEL-10 的参考版本是什么？"
+    assert _select_sources([other, target], 1, question)[0] is target
+    assert _select_sources([other, target], 2, question) == [target, other], \
+        "model preference must not discard different documents or rewrite citations"
+    assert _select_sources([other, target], 1, "MODEL-100 的参考版本？")[0] is other, \
+        "model token matching must not use prefixes"
+    assert _select_sources([other, target], 1, "P20 参数是什么意思？")[0] is other, \
+        "a parameter is not a filename model discriminator"
+
+    wrong_rows = [source(82, "工作表第53行 A53=翻转通道46；日志53"),
+                  source(83, "翻转通道530：05 FF"), source(84, "翻转通道153：05 FF"),
+                  source(92, "通道53.5：05 FF"), source(93, "通道53A：05 FF"),
+                  source(94, "通道53至63：05 FF")]
+    channel = source(85, "翻转通道53：发送05 35两次")
+    assert _select_sources(wrong_rows + [channel], 1, "翻转通道 53 的指令？")[0] is channel
+    assert _select_sources(wrong_rows, 3, "通道53？") == wrong_rows[:3]
+    assert _select_sources(wrong_rows + [channel], 1, "通道0至63的范围？")[0] is wrong_rows[0]
+    assert _select_sources(wrong_rows + [channel], 1, "测试日志53？")[0] is wrong_rows[0]
+
+    operation = dict(source(86, "工作表《测试》第 3 行：B3=关闭CLOSE互锁指令功能；D3=AUTO"),
+                     filename="MODEL-10 测试.xlsx")
+    alternative = dict(source(87, "工作表《测试》第 4 行：B4=执行CLOSE操作；D4=REMOTE"),
+                       filename="MODEL-10 测试.xlsx")
+    question = "MODEL-10 关闭 CLOSE 互锁指令功能的前置条件？"
+    assert _select_sources([alternative, operation], 1, question)[0] is operation
+    assert _select_sources([operation, alternative], 1,
+                           "MODEL-10 执行CLOSE操作的前置条件？")[0] is alternative
+    plain = dict(operation, filename="MODEL-10.txt")
+    assert _select_sources([alternative, plain], 1, question)[0] is alternative, \
+        "cell syntax outside XLSX must not gain spreadsheet priority"
+    premise = dict(source(88, "前提为E84 AUTO MODE。"), filename="MODEL-10 测试.xlsx")
+    auto = dict(source(89, "工作表《测试》第54行：C54=开启E84本地模式；E54=SET_ACCESS_MODE_AUTO"),
+                filename="MODEL-10 测试.xlsx")
+    context = dict(source(90, "E84协议说明。"), filename="MODEL-10 测试.xlsx")
+    manual = dict(source(91, "工作表《测试》第55行：C55=开启E84本地模式\nHost->MODEL；E55=SET_ACCESS_MODE_MANUAL"),
+                  filename="MODEL-10 测试.xlsx")
+    mode_sources = _select_sources([premise, auto, context, manual], 3,
+                                  "MODEL-10 E84 AUTO MODE下开启E84本地模式用什么指令？")
+    assert mode_sources == [auto, premise, context], \
+        "a multiline cell prefix must not promote an opposite-mode instruction"
     assert _select_sources([source(1, "  \n")], 5) == []
     assert _select_sources(candidates, 1) == selected[:1]
 
@@ -110,7 +223,7 @@ def main():
         answer = route.query(QueryBody(question="未知价格是多少？"), request, db=db, user=user)
         assert answer["sources"] == []
         model.assert_not_called()
-    print("Retrieval quality check: PASS (terminal overlap, page boundaries, redundant tails, conflicting values, citation identity)")
+    print("Retrieval quality check: PASS (terminal overlap, continuation coverage, redundant tails, conflicting values, citation identity)")
 
 
 if __name__ == "__main__":

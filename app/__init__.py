@@ -1,1 +1,1 @@
-"""局域网 RAG 试点（FastAPI 单体应用）。"""
+"""Windows 个人知识库（FastAPI 单体应用）。"""

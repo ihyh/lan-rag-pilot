@@ -1,4 +1,4 @@
-"""集中配置：全部来自环境变量（.env -> compose env_file）。默认值面向局域网试点。
+"""集中配置：来自环境变量，Windows 启动入口读取本目录 .env。
 
 注意：限流、并发闸门与内存向量索引都依赖“单进程”运行，
 因此必须以单 uvicorn worker 启动（本工程默认即如此）。
@@ -61,7 +61,7 @@ def _is_loopback_host(host: str) -> bool:
 def _is_intranet_host(host: str, trusted: set[str] | None = None) -> bool:
     """判断模型服务主机是否属于内网。
 
-    放行：显式信任列表、回环/私有/链路本地 IP、单标签主机名（如 Docker 服务名
+    放行：显式信任列表、回环/私有/链路本地 IP、单标签主机名（如内网主机名
     ``ollama``）、以及 ``.local``/``.internal`` 等内网后缀。
     拒绝：其余带点的域名，例如 ``api.deepseek.com``。
     """
@@ -104,7 +104,7 @@ class Settings:
         self.version = "0.1.0"
 
         # 服务
-        self.host = os.environ.get("RAG_HOST", "0.0.0.0")
+        self.host = os.environ.get("RAG_HOST", "127.0.0.1")
         self.port = _int("RAG_PORT", 8088)
         self.public_origin = (os.environ.get("RAG_PUBLIC_ORIGIN") or "").rstrip("/")
 
@@ -122,8 +122,8 @@ class Settings:
 
         # DeepSeek API（OpenAI 兼容接口）
         self.deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY") or ""
-        self.deepseek_base_url = (os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
-        self.deepseek_model = os.environ.get("DEEPSEEK_MODEL") or "deepseek-v4-flash"
+        self.deepseek_base_url = (os.environ.get("DEEPSEEK_BASE_URL") or "http://127.0.0.1:11434/v1").rstrip("/")
+        self.deepseek_model = os.environ.get("DEEPSEEK_MODEL") or "qwen3:4b-instruct"
         self.deepseek_timeout_s = _float("DEEPSEEK_TIMEOUT_S", 60.0)
 
         # 生成模型可达性探测（供 /api/ready 使用）。
@@ -133,10 +133,8 @@ class Settings:
         # 结果缓存时长：健康检查每 30 秒一次，没必要每次都真打 Ollama。
         self.llm_probe_ttl_s = _float("RAG_READY_PROBE_TTL_S", 30.0)
         # 单次探测超时。刻意取得小：本地/内网的 /models 是轻量元数据请求，正常在
-        # 毫秒级返回；而 /api/ready 现在会真的探测生成模型，探测耗时会计入编排层
-        # 健康检查的预算。默认 3 秒，明显小于仓库 compose 健康检查的内层 8 秒与
-        # 外层 10 秒。调大它时必须同步调大健康检查超时，否则会出现"应用正常但容器
-        # 反复被判不健康"。
+        # 毫秒级返回；探测耗时计入 Windows 启动验收的预算。
+        # 外层请求超时必须比本值更长，避免误报服务未就绪。
         self.llm_probe_timeout_s = _float("RAG_READY_PROBE_TIMEOUT_S", 3.0)
 
         # 是否让模型服务请求沿用系统/环境里的 HTTP 代理。**默认关闭**。
@@ -164,8 +162,7 @@ class Settings:
         # 切块 / 检索
         self.chunk_max_tokens = _int("RAG_CHUNK_MAX_TOKENS", 400)
         self.chunk_overlap_tokens = _int("RAG_CHUNK_OVERLAP_TOKENS", 60)
-        # 与 .env.example 保持一致：纯 CPU 机器上 3 条比 5 条快约一半，抽样答案内容相同。
-        # 取舍与实测数据见 .env.example 的「检索与切块」说明。
+        # 普通语义召回条数；精确 CEID 同号扩展不受此截断。
         self.top_k = _int("RAG_TOP_K", 3)
         # 真实嵌入的低相似度拒答阈值；mock 后端测试时由查询层跳过。
         raw_min_score = _float("RAG_MIN_RELEVANCE_SCORE", 0.25)
@@ -225,7 +222,7 @@ class Settings:
     def validate_or_raise(self) -> None:
         """启动前校验关键配置；不安全或缺失时拒绝启动（除非显式开启逃生开关）。
 
-        docs/SECURITY_AUDIT.md 第 2、3 条指出：模型地址缺失会回退公网、SESSION 密钥
+        历史安全检查发现：模型地址缺失会回退公网、SESSION 密钥
         缺失只警告不阻止启动，等于把数据边界交给运维的细心程度。这里把两条都改为
         fail-closed：宁可起不来，也不要带着错误边界对外服务。
         """
@@ -348,7 +345,7 @@ class Settings:
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                 "  INSECURE MODE：RAG_ALLOW_INSECURE_START=1，已跳过启动校验\n"
                 f"{detail}\n"
-                "  以上问题依然存在，仅可用于本机调试，禁止用于共享或企业环境。\n"
+                "  以上问题依然存在，仅可用于本机隔离调试，禁止用于实际服务。\n"
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
             )
             return
@@ -357,7 +354,7 @@ class Settings:
             "启动被拒绝：以下配置不安全或缺失。修复后重新启动，"
             "或仅在确认无风险时设置 RAG_ALLOW_INSECURE_START=1 临时跳过：\n"
             f"{detail}\n"
-            "  配置项说明见 docs/IT_handover.md；企业部署见 docs/UBUNTU.md。"
+            "  配置项说明见 docs/WINDOWS.md；安全边界见 docs/SECURITY.md。"
         )
 
     def ensure_dirs(self) -> None:

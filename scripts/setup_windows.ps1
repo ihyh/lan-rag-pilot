@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 $project = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $project ".venv\Scripts\python.exe"
 $envFile = Join-Path $project ".env"
+$defaultModel = "qwen3:4b-instruct"
 
 function Get-PythonVersion {
     param([string]$Executable)
@@ -170,7 +171,15 @@ Invoke-Checked $venvPython @("-m", "pip", "check") "Python dependency validation
 
 Write-Host "[3/6] Preparing Ollama model..."
 $env:NO_PROXY = "127.0.0.1,localhost"
-Invoke-Checked $ollama.Source @("pull", "qwen3:1.7b") "Ollama could not download qwen3:1.7b. Start Ollama, check its network access, and run setup_windows.cmd again."
+# 已有配置继续使用其模型；不能在保留.env时额外拉取旧的默认模型。
+$configuredModelLine = Get-Content -LiteralPath $envFile -ErrorAction SilentlyContinue |
+    Where-Object { $_ -match '^DEEPSEEK_MODEL=.' } | Select-Object -First 1
+$selectedModel = if ($configuredModelLine) { ($configuredModelLine -split '=', 2)[1].Trim() } else { $defaultModel }
+$installedModels = & $ollama.Source list
+if ($LASTEXITCODE -ne 0) { throw "Cannot reach Ollama. Start Ollama and run setup_windows.cmd again." }
+if (-not ($installedModels | Where-Object { ($_ -split '\s+')[0] -eq $selectedModel })) {
+    Invoke-Checked $ollama.Source @("pull", $selectedModel) "Ollama could not download $selectedModel. Check its network access and run setup_windows.cmd again."
+}
 
 Write-Host "[4/6] Preparing BGE model..."
 $installBge = Join-Path $PSScriptRoot "install_bge.py"
@@ -189,7 +198,7 @@ if (-not (Test-Path -LiteralPath $envFile)) {
     $lines = @(
         "DEEPSEEK_API_KEY=ollama",
         "DEEPSEEK_BASE_URL=http://127.0.0.1:11434/v1",
-        "DEEPSEEK_MODEL=qwen3:1.7b",
+        "DEEPSEEK_MODEL=$defaultModel",
         "RAG_EMBED_MODEL=models/bge-small-zh-v1.5",
         "RAG_SECRET_KEY=$secret",
         "RAG_ROOT_PASSWORD=$createdPassword",
@@ -244,7 +253,7 @@ function Test-Setup {
         $failed = $true
     }
 
-    $ollamaModel = Get-EnvFileValue "DEEPSEEK_MODEL" "qwen3:1.7b"
+    $ollamaModel = Get-EnvFileValue "DEEPSEEK_MODEL" $defaultModel
     $ollamaCmd = Get-Command ollama.exe -ErrorAction SilentlyContinue
     $listed = if ($ollamaCmd) { & $ollamaCmd.Source list 2>$null | Out-String } else { "" }
     if ($listed -match [regex]::Escape($ollamaModel)) {

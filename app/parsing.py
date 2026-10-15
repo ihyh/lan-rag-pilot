@@ -49,6 +49,7 @@ class Unit:
     text: str
     page: int | None = None          # 1 起始页码（仅 PDF）
     paragraph: int | None = None     # 1 起始段落号（DOC/DOCX/TXT/MD）
+    ceid_event: dict | None = None   # 原文识别的原子事件条目，非推断出的完整定义
 
 
 def detect_ext(filename: str) -> str:
@@ -307,7 +308,15 @@ def parse_docx(path: Path) -> list[Unit]:
     for p in doc.paragraphs:
         add(p.text)
     for table in doc.tables:
+        from .ceid import table_event
+        headers = [c.text for c in table.rows[0].cells] if table.rows else []
         for row in table.rows:
+            cells = [c.text for c in row.cells]
+            event = table_event(headers, cells)
+            if event:
+                add(" | ".join(cells))
+                units[-1].ceid_event = event
+                continue
             for cell in row.cells:
                 add(cell.text)
     if not units:
@@ -331,7 +340,12 @@ def parse_xlsx(path: Path) -> list[Unit]:
     budget = ParseBudget("XLSX")
     try:
         for sheet in workbook.worksheets:
+            from .ceid import table_event
+            ceid_headers: list[str] = []
             for row_no, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                values = [str(v) if v is not None else "" for v in row]
+                if any(re.sub(r"[\s_-]", "", v).lower() in ("ceid", "eventid", "事件id", "事件编号") for v in values):
+                    ceid_headers = values
                 cells = []
                 for col_no, value in enumerate(row, start=1):
                     if value is None:
@@ -342,7 +356,8 @@ def parse_xlsx(path: Path) -> list[Unit]:
                 if cells:
                     row_text = f"工作表《{sheet.title}》第 {row_no} 行：" + "；".join(cells)
                     budget.spend(row_text)
-                    units.append(Unit(text=row_text, paragraph=row_no))
+                    units.append(Unit(text=row_text, paragraph=row_no,
+                                      ceid_event=table_event(ceid_headers, values)))
                     if len(units) > settings.parse_max_units:
                         raise ParseError(
                             f"XLSX 解析出的行数已超过 {settings.parse_max_units} 上限"

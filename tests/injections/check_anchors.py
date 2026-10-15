@@ -5,6 +5,7 @@ from pathlib import Path
 
 import inject_chunking
 import inject_encoding
+import inject_eval
 import inject_isolation
 import inject_latency
 import inject_probe
@@ -13,6 +14,7 @@ import inject_retrieval
 REPO = Path(__file__).resolve().parents[2]
 GROUPS = {
     "probe": inject_probe.INJECTIONS,
+    "eval": inject_eval.INJECTIONS,
     "isolation": inject_isolation.INJECTIONS,
     "latency": inject_latency.INJECTIONS,
     "retrieval": inject_retrieval.INJECTIONS,

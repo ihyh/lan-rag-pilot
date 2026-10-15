@@ -29,7 +29,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 def _bootstrap() -> None:
-    """启动期一次性初始化（幂等，容器重启安全）。"""
+    """启动期一次性初始化（幂等，服务重启安全）。"""
     # 先做配置校验：不安全或缺失的关键配置必须让进程起不来，而不是只打一条警告。
     settings.validate_or_raise()
     init_db()
@@ -72,8 +72,8 @@ def create_app() -> FastAPI:
         print(
             "\n"
             "──────────────────────────────────────────────────────\n"
-            f"  局域网 RAG 试点 v{settings.version}\n"
-            f"  访问地址: http://{settings.host}:{settings.port}（容器内由 8088 映射）\n"
+            f"  Windows 个人知识库 v{settings.version}\n"
+            f"  访问地址: http://{settings.host}:{settings.port}\n"
             f"  对外地址: {settings.public_origin or '(未配置 RAG_PUBLIC_ORIGIN)'}\n"
             f"  嵌入模型: {settings.embed_model} [{settings.embed_backend}] 设备={settings.embed_device}\n"
             f"  模型接口: {settings.deepseek_base_url} ({settings.deepseek_model})\n"
@@ -82,8 +82,8 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(
-        title="局域网 RAG 试点",
-        description="FastAPI + SQLite + BGE 本地检索 + DeepSeek API（仅检索片段外发）",
+        title="Windows 个人知识库",
+        description="FastAPI + SQLite + BGE 混合检索 + 本机 Ollama 问答",
         version=settings.version,
         lifespan=lifespan,
     )

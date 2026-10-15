@@ -14,6 +14,7 @@ import inject_encoding
 
 TESTS = {
     "probe": ("tests/llm_probe_check.py", "tests/config_guard_check.py"),
+    "eval": ("tests/eval_runner_check.py",),
     "isolation": ("tests/parse_isolation_check.py",),
     "latency": ("tests/latency_stats_check.py",),
     "retrieval": ("tests/hybrid_retrieval_check.py",),

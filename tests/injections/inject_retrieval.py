@@ -21,40 +21,45 @@ INJECTIONS = [
     (
         'I3 关闭文件名约束回退',
         'app/index.py',
-        '                if (not keyword_ids and len(live_terms) >= 2) or title_only:',
+        '                if (not broad_filename_query and not keyword_ids and len(live_terms) >= 2) or title_only:',
         '                if False:',
         '文件名限定文档后应召回 AUTO 指令',
     ),
     (
         'I4 忽略标题独有术语',
         'app/index.py',
-        '                if (not keyword_ids and len(live_terms) >= 2) or title_only:',
-        '                if (not keyword_ids and len(live_terms) >= 2) or False:',
+        '                if (not broad_filename_query and not keyword_ids and len(live_terms) >= 2) or title_only:',
+        '                if not broad_filename_query and not keyword_ids and len(live_terms) >= 2:',
         '标题独有型号应限定正文术语检索的文档',
     ),
     (
-        'I5 去掉文件名回退的分组范围过滤',
+        'I5 恢复多文件共享单一型号词的关键词提升',
         'app/index.py',
-        '                        if document_ids is not None and doc_id not in document_ids:\n'
-        '                            continue\n',
-        '                        if False:\n'
-        '                            continue\n',
-        '文件名回退不得让不可见文档进入关键词候选',
+        '                if live_terms and not broad_filename_query:',
+        '                if live_terms:',
+        '多文件共享的单一型号词不得压过语义结果',
     ),
     (
-        'I6 去掉文件名回退 SQL 的文档范围过滤',
+        'I6 去掉融合前的关键词候选范围过滤',
         'app/index.py',
-        '                            "SELECT rowid, rank FROM terms WHERE terms MATCH ? AND document_id IN ("\n'
-        '                            + ",".join("?" for _ in doc_ids) + ") "\n'
-        '                            "ORDER BY rank, rowid LIMIT ?",\n'
-        '                            (match, *doc_ids, min(200, int(k))),\n',
-        '                            (("SELECT rowid, rank FROM terms WHERE terms MATCH ? "\n'
-        '                              if document_ids == {1, 2} else\n'
-        '                              "SELECT rowid, rank FROM terms WHERE terms MATCH ? AND document_id IN ("\n'
-        '                              + ",".join("?" for _ in doc_ids) + ") ")\n'
-        '                             + "ORDER BY rank, rowid LIMIT ?"),\n'
-        '                            ((match, min(200, int(k))) if document_ids == {1, 2} else\n'
-        '                             (match, *doc_ids, min(200, int(k)))),\n',
-        '文件名回退不得让不可见文档进入关键词候选',
+        '        keyword_ids = [cid for cid in keyword_ids if cid in positions]',
+        '        keyword_ids = list(keyword_ids)',
+        '范围外或陈旧关键词候选不得导致检索崩溃',
+    ),
+    (
+        'I7 非目标 KeyError 不得冒充范围失败',
+        'app/index.py',
+        '        keyword_set = set(keyword_ids)',
+        '        if query_text.startswith("PLUS-500 的 SECS 测试"):\n'
+        '            positions.pop(2, None)\n'
+        '        keyword_set = set(keyword_ids)',
+        '非目标 KeyError 不得被归类为不可见文档候选',
+    ),
+    (
+        'I8 把联合宽泛错误退化为逐词宽泛',
+        'app/index.py',
+        '                    all(term in title for term in live_terms)',
+        '                    all(sum(term in candidate for candidate in self._filename_terms.values()) > 1 for term in live_terms)',
+        '两个词分别很宽泛、但只共同定位一个文件时，联合精确匹配不得被抑制',
     ),
 ]

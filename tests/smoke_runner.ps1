@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Python = "$env:TEMP\rag-pilot-test-venv\Scripts\python.exe",
+    [string]$Python = "",
     [int]$AppPort = 8090,
     [int]$MockPort = 8099,
     [switch]$KeepRunning
@@ -8,6 +8,13 @@
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 $project = Split-Path -Parent $PSScriptRoot
+if (-not $Python) { $Python = Join-Path $project ".venv\Scripts\python.exe" }
+if (-not (Test-Path -LiteralPath $Python)) { throw "Python was not found: $Python" }
+foreach ($port in @($AppPort, $MockPort)) {
+    $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $port)
+    try { $listener.Start() } finally { $listener.Stop() }
+}
+if ($AppPort -eq $MockPort) { throw "AppPort and MockPort must differ." }
 $runDir = Join-Path $env:TEMP ("rag-smoke-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $runDir | Out-Null
 
@@ -20,6 +27,8 @@ $env:RAG_UPLOAD_DIR = Join-Path $runDir "uploads"
 $env:RAG_MODELS_DIR = Join-Path $runDir "models"
 $env:RAG_ROOT_PASSWORD = "fcd123"
 $env:RAG_SECRET_KEY = "smoke-secret-key-0123456789abcdef"
+$env:RAG_PUBLIC_ORIGIN = "http://127.0.0.1:$AppPort"
+$env:RAG_COOKIE_SECURE = "0"
 $env:RAG_QUERIES_PER_MINUTE = "10"
 $env:RAG_MAX_CONCURRENT_LLM = "3"
 $env:RAG_TOP_K = "5"

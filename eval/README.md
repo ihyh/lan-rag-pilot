@@ -1,37 +1,21 @@
-# RAG 评测集
+# 问答评测工具
 
-[返回首页](../README.md) · [模型选择与对比](../docs/MODELS.md)
+评测客户端针对一个显式指定的运行实例发题并保存结果。公开仓库只包含合成测试示例；私人问题、答案和证据放在被忽略的目录，不随 clone 分发。自动关键词检查不能代替人工核对事实与来源。
 
-这里存放由业务人员根据真实知识库文档填写的问题，不自动生成标准答案。
+在 PowerShell 中查看当前参数：
 
-每行一个 JSON 对象，字段示例：
+```powershell
+python scripts/eval_runner.py --help
+```
+
+问题集采用 JSONL，一行一个对象，例如：
 
 ```json
-{"id":"q001","question":"文档中的真实问题","expected_answer":"人工核对过的标准答案","expected_sources":[{"filename":"真实文件名.pdf","page":3}],"answer_keywords":["标准答案中的关键短语"],"should_refuse":false}
+{"id":"demo-01","question":"测试手册中事件11是什么？","expected_answer":"测试来源中的事件标签，完整定义未提供","expected_sources":[{"filename":"测试手册.pdf","page":1}],"should_refuse":false,"answer_keywords":["11"]}
 ```
 
-规则：
+先用 `--cases 问题集路径 --validate-only` 检查格式，该模式不登录、不发问。工具默认至少 30 条；少量诊断可显式传入 `--min-cases 1`，这不代表样本足以评价准确率。实际评测应针对独立测试目录和非生产端口，例如 `http://127.0.0.1:18088`；按 `--help` 提供文件、地址和普通测试账号，密码通过交互输入或 `--password-env` 指定的环境变量提供，不写入版本库。
 
-- 至少填写 30 条真实问题；`expected_answer` 和 `expected_sources` 必须人工核对。
-- PDF 优先填写 `page`；TXT/MD/DOCX 可填写 `paragraph` 或 `chunk_id`。
-- 无答案问题设置 `should_refuse: true`，并将 `expected_sources` 设为空数组。
-- `answer_keywords` 只用于粗略自动检查，答案最终仍需人工复核。
-- 不要把密码、API Key 或完整内部原文写入评测文件。
+保留运行使用的问题、源码版本、模型、检索来源、原答案和失败证据。把检索命中、事实正确、引用正确、拒答与信息覆盖分开分析，不以关键词命中等同语义正确，不将 mock 测试当作真实模型准确率。
 
-在受控 Ubuntu 验收环境运行（源码部署目录示例 /opt/rag，Python3 已离线安装）。先在该实例建立专用 eval_user 普通账号，将下列域名替换为实际内部 HTTPS 入口，系统必须信任内部 CA：
-
-```bash
-cd /opt/rag
-python3 scripts/eval_runner.py --validate-only
-python3 scripts/eval_runner.py --base-url https://rag.intra.example --username eval_user --out data/eval/reports/$(date -u +%Y%m%dT%H%M%SZ).json
-```
-
-密码会交互式输入，不会写入报告。评测会真实产生问答历史和审计记录，建议使用单独的 `user` 账号，不要使用 root。
-
-默认评测集为 `data/eval/questions.jsonl`，报告写入 `data/eval/reports/`，路径相对运行目录；这里指宿主机上的评测文件，不是自动从容器数据卷读取。整个 `data/` 已被 Git 忽略。报告含问题与结果，属于受控数据，不上传公网。
-
-报告 `summary` 给出 `top5_hit_rate`、`citation_location_accuracy`、`refusal_accuracy` 和 `auto_pass_rate`。Top-5 至少 90%、引用位置至少 95% 可作为待业务确认的验收目标，**不是已经达到的结果或通用保证**。记录实际 Top-K；指标名称不会自动让系统固定为 5。答案忠实度须人工逐条复核。
-
-Windows 可在独立验收副本用 `.\.venv\Scripts\python.exe` 运行同一脚本；个人 HTTP 回环实例用 `--base-url http://127.0.0.1:8088`，不要用 HTTP 测试要求 Secure Cookie 的 LAN 实例。正式运行仍禁止外网。
-
-脚本会连续调用查询接口；默认每分钟限流可能造成 429。按验收计划在独立实例安排请求速率或调整测试实例设置，不关闭生产限流。保留错误记录，不能将失败题排除后宣称通过。
+CEID 事件专项规则见 [CEID 说明](../docs/ceid-events.md)；公开单元与接口测试入口见 [README](../README.md)。生产发题与索引重建均是独立操作，不由代码同步或工具校验隐式触发。

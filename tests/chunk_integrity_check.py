@@ -333,7 +333,7 @@ def run_piece_budget() -> None:
 
 def run_real_tokenizer_replay() -> None:
     """真实 BGE tokenizer 可用时，重放已复现的两种真实形态与真实文件。"""
-    model_dir = os.environ.get("CHUNK_CHECK_MODEL") or r"C:/rag-personal/models/bge-small-zh-v1.5"
+    model_dir = os.environ.get("CHUNK_CHECK_MODEL") or str(Path(__file__).resolve().parents[1] / "models/bge-small-zh-v1.5")
     if not Path(model_dir).exists():
         skip(f"真实 tokenizer 重放：未找到本地模型目录 {model_dir}（CI 上属预期）")
         return
@@ -364,7 +364,7 @@ def run_real_tokenizer_replay() -> None:
         check(True, f"真实 tokenizer｜{label}：{len(pieces)} 片，"
                     f"最短 {min(n for _, n in pieces)} token，校验方式={mode}")
 
-    uploads = Path(os.environ.get("CHUNK_CHECK_UPLOADS") or r"C:\rag-personal\data\uploads")
+    uploads = Path(os.environ.get("CHUNK_CHECK_UPLOADS") or Path(__file__).resolve().parents[1] / "data/uploads")
     from app.parsing import PARSERS
 
     for label, name, kind in (

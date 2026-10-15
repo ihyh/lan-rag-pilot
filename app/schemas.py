@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+
+MAX_SQLITE_ID = 2**63 - 1
 
 
 class LoginBody(BaseModel):
@@ -21,16 +23,16 @@ class PasswordBody(BaseModel):
 class QueryBody(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     question: str = Field(min_length=1, max_length=2000)
-    conversation_id: int | None = Field(default=None, gt=0)
-    document_ids: list[int] | None = Field(default=None, max_length=100)
+    conversation_id: StrictInt | None = Field(default=None, gt=0, le=MAX_SQLITE_ID)
+    document_ids: list[StrictInt] | None = Field(default=None, max_length=100)
 
     @field_validator("document_ids")
     @classmethod
     def _normalize_document_ids(cls, value: list[int] | None) -> list[int] | None:
         if value is None:
             return None
-        if any(document_id <= 0 for document_id in value):
-            raise ValueError("文档 ID 必须为正整数")
+        if any(not 0 < document_id <= MAX_SQLITE_ID for document_id in value):
+            raise ValueError("文档 ID 必须在 SQLite 整数范围内")
         return sorted(set(value))
 
 

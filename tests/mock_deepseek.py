@@ -57,15 +57,26 @@ async def chat_completions(request: Request):
     if delay:
         await asyncio.sleep(delay)
 
+    answer = MOCK_ANSWER
+    if not re.search(r"(?m)^\[2\] 文件《", user_content):
+        answer = answer.replace("[2]", "[1]")
+    if "[[mock:bad-citation]]" in user_content:
+        answer = "这是包含无效来源的模拟回答。[999]"
+
+    usage = {"prompt_tokens": "bad", "completion_tokens": 87} if "[[mock:bad-usage]]" in user_content else {
+        "prompt_tokens": 123, "completion_tokens": 87,
+    }
     if body.get("stream"):
         async def events():
-            for part in (MOCK_ANSWER[:35], MOCK_ANSWER[35:]):
+            for index, part in enumerate((answer[:35], answer[35:])):
                 yield "data: " + json.dumps({"choices": [{"delta": {"content": part}}]}, ensure_ascii=False) + "\n\n"
                 await asyncio.sleep(0.05)
+                if index == 0 and "[[mock:bad-delta]]" in user_content:
+                    yield 'data: {"choices":[{"delta":{"content":0}}]}\n\n'
                 if "[[mock:stream-cut]]" in user_content:
                     return
             if (body.get("stream_options") or {}).get("include_usage"):
-                yield "data: " + json.dumps({"choices": [], "usage": {"prompt_tokens": 123, "completion_tokens": 87}}) + "\n\n"
+                yield "data: " + json.dumps({"choices": [], "usage": usage}) + "\n\n"
             yield "data: [DONE]\n\n"
         return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -77,11 +88,11 @@ async def chat_completions(request: Request):
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": MOCK_ANSWER},
+                "message": {"role": "assistant", "content": answer},
                 "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 123, "completion_tokens": 87, "total_tokens": 210},
+        "usage": {**usage, "total_tokens": 210},
     }
 
 

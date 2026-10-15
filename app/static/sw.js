@@ -1,6 +1,6 @@
 // Service Worker：只缓存与身份无关的静态资源，绝不缓存 HTML 页面或导航请求。
 //
-// 为什么这么改：企业部署走 HTTPS，浏览器才会注册 Service Worker，因此下面这些
+// 为什么这么改：手机 Tailscale 访问走 HTTPS，浏览器才会注册 Service Worker，因此下面这些
 // 问题在正式环境会真实生效（HTTP 试点阶段一直没暴露）：
 //   1) 旧版把 /login、/app、/admin 纳入预缓存。安装发生在已登录页面，但
 //      cache.addAll 是对页面发起普通 GET——未登录时会拿到 302 后的登录页，
