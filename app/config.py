@@ -162,7 +162,7 @@ class Settings:
         # 切块 / 检索
         self.chunk_max_tokens = _int("RAG_CHUNK_MAX_TOKENS", 400)
         self.chunk_overlap_tokens = _int("RAG_CHUNK_OVERLAP_TOKENS", 60)
-        # 普通语义召回条数；精确 CEID 同号扩展不受此截断。
+        # 混合检索最终返回的片段条数。
         self.top_k = _int("RAG_TOP_K", 3)
         # 真实嵌入的低相似度拒答阈值；mock 后端测试时由查询层跳过。
         raw_min_score = _float("RAG_MIN_RELEVANCE_SCORE", 0.25)

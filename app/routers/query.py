@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .. import acl, audit, ceid, runtime as rt
+from .. import acl, audit, runtime as rt
 from ..config import settings
 from ..db import connect, get_db, now_iso
 from ..deps import require_kb_admin, require_user
@@ -92,10 +92,6 @@ def _select_sources(sources: list[dict], k: int, question: str = "") -> list[dic
     """同文档的包含型重复只保留完整片段，保留不同数值/版本的原始引用。"""
     if k <= 0:
         return []
-    if ceid.is_query(question):
-        exhaustive = ceid.select_sources(sources, k, question)
-        if exhaustive is not None:
-            return exhaustive
     kept: list[tuple[dict, str]] = []
     for src in sorted(sources, key=lambda s: len(s["content"]), reverse=True):
         text = " ".join(src["content"].split())
@@ -536,14 +532,9 @@ def query(
                 "paragraph": r["paragraph"],
                 "score": round(float(h["score"]), 4),
                 "content": r["content"],
-                "ceid_events": vector_index.ceid_events_for(int(r["chunk_id"])),
-                "ceid_ids": vector_index.ceid_ids_for(int(r["chunk_id"])),
             }
         )
-    try:
-        sources = _select_sources(sources, rt_values["top_k"], question)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail={"code": "ceid_context_limit", "message": str(exc)}) from exc
+    sources = _select_sources(sources, rt_values["top_k"], question)
     for src in sources:
         if Path(src["filename"]).suffix.lower() == ".xlsx":
             src["table_headers"] = vector_index.table_headers_for(src["document_id"])

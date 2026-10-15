@@ -59,6 +59,6 @@ tailscale serve status
 
 ## 文档导入
 
-支持文本 PDF、DOCX、XLSX、TXT、Markdown；扫描 PDF 需先 OCR，旧 `.doc` 需要可用的 antiword 或另存 DOCX。等待管理页显示处理完成再提问。CEID 旧文档采用新切块时需显式重处理，事前备份；不要以拉取代码代替重建和质量验证。
+支持文本 PDF、DOCX、XLSX、TXT、Markdown；扫描 PDF 需先 OCR，旧 `.doc` 需要可用的 antiword 或另存 DOCX。等待管理页显示处理完成再提问。旧文档采用新解析或切块时需显式重处理，事前备份；不要以拉取代码代替重建和质量验证。
 
 更多：[模型](MODELS.md) · [排查](TROUBLESHOOTING.md) · [备份](OPERATIONS.md)

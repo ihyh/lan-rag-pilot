@@ -15,7 +15,7 @@ PYTHON_CHECKS = [
     "doc_parsing_check.py", "conversation_scope_check.py", "config_guard_check.py",
     "embed_device_check.py", "parse_limits_check.py", "parse_isolation_check.py",
     "latency_stats_check.py", "document_acl_check.py", "acl_coverage_check.py",
-    "llm_probe_check.py", "win_script_encoding_check.py", "ceid_check.py",
+    "llm_probe_check.py", "win_script_encoding_check.py",
     "filename_scope_check.py", "keyword_fallback_priority_check.py",
     "local_evidence_state_check.py", "secs_body_alias_check.py",
     "secs_structure_projection_check.py", "windows_release_check.py",
