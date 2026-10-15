@@ -52,7 +52,7 @@ spec.loader.exec_module(module)
 module.__file__ = str(project / 'scripts/run_personal_service.py')
 def verify(application, host, port):
     assert application == 'app.main:app' and host == '127.0.0.1' and port == 18987
-    assert pathlib.Path.cwd() == project
+    assert pathlib.Path.cwd().samefile(project)
     assert str(project / '.venv/Lib/site-packages') in sys.path
     print('ENTRY_OK', flush=True)
 uvicorn.run = verify
@@ -61,7 +61,8 @@ module.main()
         result = subprocess.run([sys.executable, "-X", "utf8", "-c", code,
                                  str(ROOT / "scripts/run_personal_service.py"), str(project)],
                                 capture_output=True, text=True, env=dict(os.environ, RAG_PORT="1"))
-        assert result.returncode == 0, result.stderr
+        errors = "\n".join(path.read_text(encoding="utf-8") for path in (project / "logs").glob("*.err.log"))
+        assert result.returncode == 0, result.stderr + errors
         logs = list((project / "logs").glob("*.out.log"))
         assert len(logs) == 1 and "ENTRY_OK" in logs[0].read_text(encoding="utf-8")
     print("Windows release: removed entries, documentation, 4B defaults and portable service entry passed.")
