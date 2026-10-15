@@ -239,6 +239,49 @@ def main():
                index.search(q, 1, {2}, query_text="MODEL-A E84 AUTO MODE")), \
         "标题独有型号不得突破可见文档范围"
     db.close()
+
+    # “日志”是明确的文档类型限定：即使其它文档已满足全局正文 AND，
+    # 也应使用文件名中的 LOG 将剩余正文术语限定到目标日志。
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE documents(id INTEGER PRIMARY KEY,status TEXT,filename TEXT);"
+                     "CREATE TABLE chunks(id INTEGER PRIMARY KEY,document_id INTEGER,content TEXT,vector BLOB);")
+    db.executemany("INSERT INTO documents VALUES (?,?,?)", [
+        (1, "ready", "PLM E84 LOG.txt"),
+        (2, "ready", "PLM2.0 Communication.xlsx"),
+        (3, "ready", "PLM RFID.txt"),
+        (4, "ready", "PLM ASCII LOG.txt"),
+    ])
+    for cid, did, content, similarity in [
+        (40, 1, "ARS WARNING E84 TP1 Timeout；ARS WARNING E84 TP5 Timeout", 0.10),
+        (41, 2, "PLM E84 TP SetTimer 参数说明", 0.99),
+        (42, 3, "PLM RFID RDRF DATA HCA DENIED", 0.98),
+        (43, 4, "E84 TP1 Timeout", 0.95),
+        (44, 1, "E84 connected", 0.90),
+        (45, 1, "E84 connected idle", 0.89),
+        (46, 1, "E84 connected running", 0.88),
+        (47, 1, "TPLink 网络设备说明，不是计时器。", 0.97),
+        (48, 2, "PLM E84 log TP SetTimer 参数说明", 0.96),
+    ]:
+        vec = np.array([similarity, np.sqrt(1-similarity**2)], dtype=np.float32)
+        db.execute("INSERT INTO chunks VALUES (?,?,?,?)", (cid, did, content, vec.tobytes()))
+    index.reload(db)
+    log_hits = index.search(q, 3, {1, 2, 3, 4}, 0.25, "PLM E84 日志中记录了哪些 TP 超时告警？")
+    assert log_hits[0]["chunk_id"] == 40, \
+        f"明确日志问题应让文件名限定候选与非空正文AND共存：{log_hits}"
+    scoped_log_hits = index.search(q, 3, {1}, 0.25, "PLM E84 日志中记录了哪些 TP 超时告警？")
+    assert scoped_log_hits[0]["chunk_id"] == 40, \
+        f"TP数字家族不得依赖其它可见文档中的裸TP，也不得匹配TPLink：{scoped_log_hits}"
+    settings_hits = index.search(q, 1, {1, 2}, 0.25, "PLM E84 TP 参数如何设置？")
+    assert settings_hits[0]["chunk_id"] == 41, \
+        "没有日志意图时不得把低语义日志强行提升"
+    rfid_hits = index.search(q, 1, {1, 2, 3, 4}, 0.25,
+                             "PLM RFID 日志里 RDRF 的 DATA 和 HCA DENIED 是什么？")
+    assert rfid_hits[0]["chunk_id"] == 42, "E84 日志别名不得改变其它日志类型的检索"
+    assert all(hit["document_id"] == 2 for hit in
+               index.search(q, 1, {2}, 0.25, "PLM E84 日志中记录了哪些 TP 超时告警？")), \
+        "日志文件名限定不得突破可见文档范围"
+    db.close()
     print("Hybrid retrieval PASS: recall beyond vector pool, exact identifiers, scope, lifecycle, semantic fallback")
 
 

@@ -57,12 +57,18 @@ async def chat_completions(request: Request):
     if delay:
         await asyncio.sleep(delay)
 
+    answer = MOCK_ANSWER
+    if not re.search(r"(?m)^\[2\] 文件《", user_content):
+        answer = answer.replace("[2]", "[1]")
+    if "[[mock:bad-citation]]" in user_content:
+        answer = "这是包含无效来源的模拟回答。[999]"
+
     usage = {"prompt_tokens": "bad", "completion_tokens": 87} if "[[mock:bad-usage]]" in user_content else {
         "prompt_tokens": 123, "completion_tokens": 87,
     }
     if body.get("stream"):
         async def events():
-            for index, part in enumerate((MOCK_ANSWER[:35], MOCK_ANSWER[35:])):
+            for index, part in enumerate((answer[:35], answer[35:])):
                 yield "data: " + json.dumps({"choices": [{"delta": {"content": part}}]}, ensure_ascii=False) + "\n\n"
                 await asyncio.sleep(0.05)
                 if index == 0 and "[[mock:bad-delta]]" in user_content:
@@ -82,7 +88,7 @@ async def chat_completions(request: Request):
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": MOCK_ANSWER},
+                "message": {"role": "assistant", "content": answer},
                 "finish_reason": "stop",
             }
         ],

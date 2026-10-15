@@ -1,148 +1,34 @@
-# 日常运维、备份、升级与迁移
+# Windows 个人服务运维
 
-[返回首页](../README.md)
+## 备份
 
-操作前确认你所在的是目标部署目录，知道数据实际路径/卷名，并有可恢复副本。以下示例对应 [Windows](WINDOWS.md) 的 C:\rag 和 [Ubuntu](UBUNTU.md) 的 /opt/rag。不要在未知实例上照抄恢复命令。
+先停止前台应用或它对应的计划任务，确认没有另一个实例写入。备份完整 `data`（含 SQLite、上传文件和相关状态）与 `.env`；不要只复制正在写入的单个 SQLite 文件，遗漏 WAL 会导致备份不一致。
 
-## 启停与重启
-
-| 场景 | 操作与成功标准 |
-|---|---|
-| Windows 启动 | 先启动同用户 Ollama，再运行 start_local.ps1 并明确 -Python；ready 后实际问答 |
-| Windows 停止 | RAG 窗口 Ctrl+C 等进程退出；Ollama 单独退出托盘 |
-| Ubuntu 临时停止 | 在 /opt/rag 执行 docker compose stop，保留数据卷 |
-| Ubuntu 恢复 | docker compose up -d --pull never --no-build；检查 ps、ready、HTTPS 与问答 |
-| 只重启现有进程 | docker compose restart rag，不会读取新的容器环境 |
-| 改过 .env/镜像 | docker compose up -d --pull never --no-build 使新配置生效 |
-
-Ubuntu 主机重启依赖 Docker/Nginx 自启动与容器 restart 策略；如果之前手动 stop 了容器，应显式 up。Windows 教程不自动安装服务，登录后需启动 Ollama 和 RAG。
-
-不要执行 `docker compose down -v` 或清理业务卷。不是所有历史部署都使用同样卷名，先核实最终 Compose 配置。备份脚本依赖默认 Compose 文件解析；本文部署副本使用 docker-compose.yml。若自定义文件名，需要同步安排脚本/计划任务的 COMPOSE_FILE 环境，不能假定 cron 继承终端变量。
-
-## 应当备份什么
-
-- data：rag.db、uploads 原文件；包含用户、密码哈希、会话、对话、反馈、审计、切片与向量。
-- 配置：.env、部署 Compose、Nginx 配置、内部证书及必要私钥（按密钥制度单独保管）。
-- 模型：精确的嵌入模型、Ollama 模型和摘要，不能只记一个可变标签。
-- 程序：与数据匹配的离线镜像/源码、依赖锁、版本清单。
-
-数据库和文件是一组，不能只备份其中之一。模型不必每天重复拷贝，但每个仍可能恢复的版本必须有可验证副本。备份含敏感信息，需加密介质、限制账号、与服务器分开保存；至少有一份离线或不可被服务账号改写的副本。保留期限和恢复目标由业务/IT 确认，不能无限保留。
-
-## Windows：停机备份
-
-先通知用户停止操作，Ctrl+C 正常停止 RAG，确认无残留应用写入进程。使用有足够空间、已加密的 E:\rag-backups（路径由管理员确认），PowerShell：
+下面假设安装在 `C:\rag`，目标盘存在且有空间；改成自己的实际路径：
 
 ```powershell
-$backupRoot = 'E:\rag-backups'
-$backupRun = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
-New-Item -ItemType Directory -Path $backupRun -ErrorAction Stop | Out-Null
-Copy-Item -LiteralPath C:\rag\data -Destination $backupRun -Recurse -ErrorAction Stop
-Copy-Item -LiteralPath C:\rag\.env -Destination $backupRun -ErrorAction Stop
-Get-ChildItem -LiteralPath (Join-Path $backupRun 'data') -Force
+$backupPath = Join-Path 'D:\rag-backups' (Get-Date -Format 'yyyyMMdd-HHmmss')
+New-Item -ItemType Directory -Path $backupPath -ErrorAction Stop
+Copy-Item -LiteralPath 'C:\rag\data' -Destination $backupPath -Recurse -ErrorAction Stop
+Copy-Item -LiteralPath 'C:\rag\.env' -Destination $backupPath -ErrorAction Stop
+git -C C:\rag rev-parse HEAD
+ollama list
 ```
 
-复制完整 data，不能在服务运行时只复制 rag.db；若有 WAL/SHM 也随完整目录保留。密钥配置另按组织要求加密，不把副本放公共共享盘。另记录对应模型/源码包摘要。
+另行保存输出中的源码版本、模型名称与标识。备份含私人资料与凭据，应限制访问并妥善加密保存；不要推送到 GitHub。
 
-备份后重启旧服务。恢复演练使用全新 C:\rag-restore 目录、独立 data、8089 回环端口和相同模型版本；把备份 data 复制到空目标，调整 .env 绝对路径后启动。不要覆盖 C:\rag\data，也不要让两个进程写同一数据库。
+## 更新
 
-## Ubuntu：使用现有备份脚本
+停服并备份后，在安装目录执行 `git pull --ff-only`，再运行 `setup_windows.cmd`。有本地源码修改时先保存并解决差异，不要强制覆盖。重新启动后检查 `/api/health`、`/api/ready`、登录和一条有明确证据的问答。
 
-脚本建立 SQLite 一致性副本，再打包 uploads；**两者不是同一瞬间的快照**。须安排维护窗口，禁止上传、删除、重处理；最稳妥的是临时封闭客户端入口并确认没有后台入库任务。容器本身需运行才能使用脚本。
+代码更新、生产部署、旧文档重新解析是三件事，分别记录时间、源码版本、模型和测试结果。改变嵌入模型需要重建向量；生成模型切换通常不需要重建。CEID 分块升级需要重处理相关旧文档，不会自动迁移已有切片。
 
-在 /opt/rag 执行（/srv/rag-backups 应是已准备的受限备份存储）：
+## 恢复演练与回滚
 
-```bash
-cd /opt/rag
-bash scripts/backup_data.sh /srv/rag-backups
-```
+在全新独立目录恢复备份，使用独立数据路径和非生产端口（例如 18088），不要覆盖运行中的服务。密钥、数据库和上传文件需要成套恢复。检查文档数量、权限、引用链接及已保存问答；确认后才安排生产切换。
 
-输出一个 rag_data_时间.tgz 和对应 sha256 文件。将真实文件名替换下列占位；不要把示例当作已经存在的备份：
+重处理可能更改片段标识，保留原始问题、答案与失败证据，不能仅以数量或探针通过认定恢复成功。回滚使用记录的源码版本及对应备份，不混用新旧数据。先停服，再切换，不并行启动同一数据库的两个应用。
 
-```bash
-sha256sum -c /srv/rag-backups/rag_data_REPLACE_TIMESTAMP.tgz.sha256
-bash scripts/restore_check.sh /srv/rag-backups/rag_data_REPLACE_TIMESTAMP.tgz
-```
+## 日常检查
 
-成功标准：校验 OK、restore check ok，用户/文档/切片数量符合预期。sha256 文件保存的是备份时绝对路径；跨机转移后可直接计算归档 hash 与可信记录比对，不能仅因旧路径不存在判断文件损坏。
-
-restore_check 只在临时目录解包并检查数据库完整性及数量，不执行正式恢复，不验证每份原文件或完整问答。备份脚本不含 .env/模型，必须另行保存。不同时运行两个备份任务，它们使用相同容器临时路径。
-
-计划任务可在管理员确认维护窗口后安装：
-
-```bash
-cd /opt/rag
-bash scripts/install_backup_cron.sh /srv/rag-backups 02:30
-crontab -l
-```
-
-这会修改当前账号的 crontab，时间使用主机本地时区；账号需具备 Docker 权限。检查首次实际运行、磁盘容量和日志；脚本不提供自动保留清理、加密或写入冻结。不能仅安装 cron 就声称备份合格。
-
-## 恢复到新 Ubuntu 实例
-
-先通过上一节的校验；只接受可信备份。用新部署目录 /opt/rag-restore、独立 Compose 项目与回环端口 8089，不切换正式入口。
-
-1. 按离线安装准备同版本镜像与模型，不复用可写的生产数据卷。
-2. 确认 rag-restore_data 卷不存在，才执行下面命令。
-3. 修改恢复副本的 Compose：name 改为 rag-restore，rag_data 的外部 name 改为 rag-restore_data，端口改为 127.0.0.1:8089:8088；其他卷使用另行导入的新卷，或经过确认的只读模型副本。不要沿用硬编码的生产外部卷名。
-4. 配置独立的受控 HTTPS 测试入口，保留正确 Secure Cookie 设置，不向其他人开放恢复库。
-
-把下面文件名替换为已校验归档后执行：
-
-```bash
-docker volume create rag-restore_data
-docker run --rm --network none -v rag-restore_data:/target -v /srv/rag-backups:/backup:ro rag-pilot:offline tar -xzf /backup/rag_data_REPLACE_TIMESTAMP.tgz -C /target
-cd /opt/rag-restore
-docker compose config --quiet
-docker compose up -d --pull never --no-build
-```
-
-数据卷根目录应直接包含 rag.db 和 uploads。卷已有内容时停止，不覆盖。必须先跑 restore_check 防止不可信归档路径/链接。
-
-恢复通过标准：ready、登录、用户角色、文档数量及状态、随机原文下载、旧引用、一次新问答均正常。重新导入/换嵌入的情况不属于原样恢复，历史引用需另行处理。测试产生的新问答不能误当备份原数据。
-
-恢复包含旧会话记录；若因泄露/账号事件恢复，须由管理员安排失效会话和凭据轮换。SECRET 改变会使旧会话失效，但不等于重置账号密码。
-
-## Windows 与 Ubuntu 相互迁移
-
-先在旧机停应用、冻结业务，完整备份。SQLite 与原文可迁移，Python 虚拟环境和 OS 安装组件不能跨平台复制。
-
-| 项目 | Windows → Ubuntu | Ubuntu → Windows |
-|---|---|---|
-| 数据 | 将停机 data 制成可信归档，导入全新数据卷 | 将已校验备份解压到全新 data 目录 |
-| 嵌入模型 | 完整目录导入模型卷，保持同一 revision | 完整目录放 Windows 本地路径 |
-| Ollama | 使用匹配版本验收的模型包，确认模型 ID | 退出 Ollama，导入新模型目录并重启 |
-| 路径/地址 | 改为 /rag/data、/rag/models 及容器服务名 | 改为本地绝对路径及 127.0.0.1 |
-| 环境 | 离线导入 Linux 镜像 | 重建 Windows venv，离线装 wheels |
-
-用户、对话与引用是否保留取决于完整数据与精确模型的一致性，不是仅搬运原文。先在新实例验收；切入口时确保只有一处生产写入。旧实例保留但不得继续接收业务，以便回退而不产生双写。
-
-## 升级与回退
-
-1. 准备机审核新版本，生成新离线包；运行机不能 git pull、pip 在线升级或拉模型。
-2. 先冻结并备份，记录当前模型/镜像/配置。新包放独立目录，不解压覆盖生产。
-3. 用备份数据副本做升级演练，检查是否有数据库迁移及可逆性，跑业务问题与权限回归。
-4. 维护窗口中停旧写入，将新实例验收后切入口。新版本拒绝通过时保持旧实例。
-5. 回退时恢复“旧代码/镜像 + 升级前数据 + 旧模型/配置”完整组合；不要用旧代码直接打开新版本改过的数据库。切换后新增数据如何处理必须事先约定。
-
-无论升级成功与否，都不自动删除旧数据卷。保留/销毁由管理员按数据制度确认。
-
-## 监控与事件
-
-定期检查 ready、真实问答、磁盘、失败入库、模型延迟、备份时间、证书有效期、账号和审计。日志可能包含路径、用户名和问题，禁止上传到公网日志平台。
-
-监控口径（探针已经分开，不要混用）：
-
-- `/api/health` 恒为 200，只说明进程活着。**不要拿它当“能回答问题”的证据**，也不要让编排层因为 Ollama 抖动就重启容器——它刻意不联系 Ollama。它带的 `checks.llm` 是**上次探测的回放快照**，只要没有新的就绪探测就可能持续过期。判断生成链路请看 `/api/ready`，并注意其响应中的 `cached` 与 `checked_at`；缓存有效期内也可能回放旧结论。
-- `/api/ready` 才会同时校验嵌入与生成两条链路，503 时响应体的 `reason`（`embed_not_ready` / `llm_not_ready`）与 `checks.embed`、`checks.llm` 指出是哪一条断了，并给出可操作说明。告警应挂在它上面。
-- 探测结果默认缓存 30 秒，所以告警抖动窗口约为该值的两倍；若要求更灵敏，调小 `RAG_READY_PROBE_TTL_S`，代价是更频繁地打扰 Ollama。
-- 探测只证明“模型服务可达、鉴权可用且模型存在”（服务没有模型清单端点时只能证明前两项），**不证明答案正确**。真实问答抽样仍是不可省略的巡检项。
-
-响应变慢时，先看管理页概览的「问答耗时」，不要直接凭感觉调参：
-
-- 它有**两段**：模型调用耗时（含冷加载）与检索耗时。前者不含并发排队或完整 HTTP 请求时间；若检索几百毫秒而模型调用几十秒，应优先检查生成模型与硬件。
-- 检索本身就到秒级 = 瓶颈在嵌入或索引，先核对 `RAG_EMBED_DEVICE`、切片总数与文档规模。
-- 概览同时给出拒答与失败计数。**拒答多不等于系统坏**：语料没覆盖、阈值偏高都会表现为拒答，应去看检索命中而不是重启服务。
-- 模型耗时只覆盖成功调用的轮次，检索耗时覆盖所有已发生检索的轮次；窗口是最近 500 轮。查看样本量和统计截至时间，样本少或记录过旧时不要据此做结论。
-- 需要核对某一次具体问答时，去审计里的 `llm_query` 明细，它带同样两项耗时。
-
-出现疑似泄露先限制入口与相关账号，保全证据并通过内部安全渠道处理；不要为“恢复正常”清空审计或删除数据库。
+查看后台入口 `logs`、管理页文档处理状态、模型实际加载情况与可用空间。保持主机不休眠并保持 Ollama/Tailscale 在线。安全边界见 [安全说明](SECURITY.md)，启动问题见 [故障排查](TROUBLESHOOTING.md)。

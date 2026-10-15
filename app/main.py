@@ -82,8 +82,8 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(
-        title="局域网 RAG 试点",
-        description="FastAPI + SQLite + BGE 本地检索 + DeepSeek API（仅检索片段外发）",
+        title="Windows 个人知识库",
+        description="FastAPI + SQLite + BGE 混合检索 + 本机 Ollama 问答",
         version=settings.version,
         lifespan=lifespan,
     )

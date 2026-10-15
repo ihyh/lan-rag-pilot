@@ -55,7 +55,7 @@ function Invoke-ProbeRequest {
     # 其次，这里显式设 Proxy = $null 让探针直连：.NET 的默认代理会遵守
     # ProxyOverride 绕过列表（回环通常已在其中），所以这更多是去掉对“目标机器
     # 代理配置恰好正确”的依赖，而不是修一个已发生的故障。模型服务那边的代理
-    # 接管问题见 docs/IT_handover.md 的“代理接管”一节。
+    # 接管问题见 docs/TROUBLESHOOTING.md 的模型连接排查。
     param([string]$Url, [int]$TimeoutSec = 3)
 
     $req = [System.Net.WebRequest]::Create($Url)

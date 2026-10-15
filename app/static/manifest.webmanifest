@@ -1,7 +1,7 @@
 {
-  "name": "局域网知识库助手",
+  "name": "个人知识库",
   "short_name": "知识库助手",
-  "description": "面向企业局域网的 RAG 知识问答试点",
+  "description": "Windows 个人文档问答与私有远程访问",
   "start_url": "/app",
   "scope": "/",
   "display": "standalone",

@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import settings
+from . import ceid
 
 
 def technical_terms(text: str) -> list[str]:
@@ -31,8 +32,11 @@ class VectorIndex:
         self._document_ids = np.empty(0, dtype=np.int64)
         self._vectors = np.empty((0, 0), dtype=np.float32)
         self._keywords: sqlite3.Connection | None = None
+        self._filenames: dict[int, str] = {}
         self._filename_terms: dict[int, set[str]] = {}
         self._table_headers: dict[int, dict[str, dict]] = {}
+        self._ceid_events: dict[int, list[dict]] = {}
+        self._ceid_mentions: dict[int, set[str]] = {}
 
     def reload(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
@@ -40,14 +44,23 @@ class VectorIndex:
             "FROM chunks c JOIN documents d ON d.id = c.document_id "
             "WHERE d.status = 'ready' ORDER BY c.id"
         ).fetchall()
+        ceid_events = ceid.catalog(db, rows)
         chunk_ids: list[int] = []
         doc_ids: list[int] = []
         vecs: list[np.ndarray] = []
         dim: int | None = None
         keyword_rows = []
+        filenames: dict[int, str] = {}
         filename_terms: dict[int, set[str]] = {}
         table_headers: dict[int, dict[str, dict]] = {}
         header_roles = {"type", "input", "precondition", "测试项", "前置条件", "测试步骤", "测试步骤-输入", "期望回复"}
+        secs_gap = r"[ \t]*(?:\r?\n[ \t]*)?"
+        # ponytail: 只认明确逗号分隔的正文编号；数字自身拆行时跳过，不猜短编号。
+        secs_headers = re.compile(
+            r"(?<![A-Za-z0-9_.-])S" + secs_gap + r"([0-9]{1,3})" + secs_gap
+            + "," + secs_gap + "F" + secs_gap + r"([0-9]{1,3})"
+            + r"(?![A-Za-z0-9_.-]|\s*[0-9])"
+        )
         for r in rows:
             try:
                 v = np.frombuffer(r["vector"], dtype=np.float32)
@@ -63,6 +76,7 @@ class VectorIndex:
             doc_ids.append(int(r["document_id"]))
             vecs.append(v)
             doc_id = int(r["document_id"])
+            filenames[doc_id] = " ".join(r["filename"].casefold().split())
             if doc_id not in filename_terms:
                 filename_terms[doc_id] = set(technical_terms(Path(r["filename"]).stem))
             if Path(r["filename"]).suffix.lower() == ".xlsx":
@@ -80,6 +94,11 @@ class VectorIndex:
                             sheet, {"chunk_id": int(r["chunk_id"]), "columns": columns})
             # 标识符编码为单个 FTS token，保留点/下划线/连字符，避免混淆命令名。
             content_terms = technical_terms(r["content"])
+            content_terms.extend(f"s{stream}f{function}" for stream, function
+                                 in secs_headers.findall(r["content"]))
+            # 保留词法别名只供 E84 日志的 TP 家族查询使用，不把 TPLink 当作计时器。
+            if any(re.fullmatch(r"tp\d*", term) for term in content_terms):
+                content_terms.append("tp#timer")
             # 只扩展正文倒排项，不扩展查询：多个别名不能绕过单一宽泛型号的保护。
             content_terms.extend(part for term in list(content_terms)
                                  if re.fullmatch(r"[a-z]+(?:-[a-z]+)+", term)
@@ -97,8 +116,11 @@ class VectorIndex:
         with self._lock:
             previous_keywords = self._keywords
             self._keywords = keywords
+            self._filenames = filenames
             self._filename_terms = filename_terms
             self._table_headers = table_headers
+            self._ceid_events = ceid_events
+            self._ceid_mentions = {int(r["chunk_id"]): ceid.mentioned_ids(r["content"]) for r in rows}
             if previous_keywords is not None:
                 previous_keywords.close()
             if not vecs:
@@ -124,6 +146,15 @@ class VectorIndex:
         with self._lock:
             return int(self._vectors.shape[1]) if self._vectors.size else int(settings.embed_dim)
 
+    def ceid_events_for(self, chunk_id: int) -> list[dict]:
+        with self._lock:
+            return [dict(e) for e in self._ceid_events.get(chunk_id, [])]
+
+    def ceid_ids_for(self, chunk_id: int) -> list[str]:
+        with self._lock:
+            return sorted(self._ceid_mentions.get(chunk_id, set()) |
+                          {e["ceid"] for e in self._ceid_events.get(chunk_id, [])})
+
     def _keyword_exists(self, term: str, document_ids: set[int] | None) -> bool:
         """该技术标识符在当前文档范围内是否存在倒排项（决定它该不该参与 AND）。
 
@@ -139,6 +170,39 @@ class VectorIndex:
         row = self._keywords.execute(sql + " LIMIT 1", params).fetchone()
         return row is not None
 
+    def _filename_scope(self, query_text: str, document_ids: set[int] | None) -> set[int] | None:
+        """完整文件名约束两路检索；不猜缩写，也不把否定提及当正向限定。"""
+        query = " ".join(query_text.casefold().split())
+        extension = r"\.(?:pdf|docx?|xlsx|txt|md)"
+        filename = r'[^=《》“”"`，,；;：:?？\n]+?' + extension
+        # ponytail: 只识别明示文档引用，不解析任意自然语言文件别名或否定目标。
+        # 语法独立于全库名称，避免通过不可见文件的有无探测其存在性。
+        references = (r"《(" + filename + r")》|"
+                      r'(?:(?:仅)?(?:根据|依据|按|在|参考|对照|与|和|及)\s*)[《“"`]?('
+                      + filename + r')[》”"`]?(?![a-z0-9_.-])|'
+                      r'^[“"`](' + filename + r')[”"`](?=\s*(?:中|里|内|的|与|和|及))|'
+                      r"^([a-z0-9][^=《》“”\"`，,；;：:?？\n]*?" + extension
+                      + r")(?=\s*(?:中|里|内|的|与|和|及))")
+        mentioned = set()
+        for match in re.finditer(references, query):
+            before = query[:match.start()]
+            after = query[match.end():]
+            prefix = re.split(r"[，,；;。！？?!]", before)[-1] + match.group()
+            if re.search(r"(?:文件名|路径|示例字符串)\s*(?:设(?:置)?为|是|为|=)|(?:保存|另存|命名)为", prefix) \
+                    or re.match(r"\s*这个字符串", after):
+                continue  # 输出文件名/字符串数据不是被查询的来源文档。
+            if re.search(r"(?:不|勿|别|不是|不要|排除|除了|而非|\bnot)(?:按|用|依据|参考|根据|对照|以)?\s*$", before) \
+                    or re.match(r"\s*(?:不要(?:按|用|参考|根据|依据)|别(?:按|用|参考)|不(?:用|作为|参考)|除外)", after):
+                continue
+            mentioned.add(next(value for value in match.groups() if value).strip())
+        if not mentioned:
+            return document_ids
+        names = {name for doc, name in self._filenames.items() if document_ids is None or doc in document_ids}
+        if not mentioned <= names:
+            return set()  # 明示缺失文件不能悄悄替换成相似文档。
+        matched = {doc for doc, name in self._filenames.items() if name in mentioned}
+        return matched if document_ids is None else matched & document_ids
+
     def search(
         self,
         query_vec: np.ndarray,
@@ -152,11 +216,29 @@ class VectorIndex:
         result_limit = int(k)
         q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
         terms = technical_terms(query_text)
+        if ceid.query_ids(query_text):
+            terms = [term for term in terms if term != "ceid"]
+        e84_log_intent = "日志" in query_text and "e84" in terms
+        if e84_log_intent:
+            terms = ["tp#timer" if term == "tp" else term for term in terms]
+            if "log" not in terms:
+                terms.append("log")
         keyword_ids = []
         with self._lock:
+            document_ids = self._filename_scope(query_text, document_ids)
+            if document_ids == set():
+                return []
             vecs = self._vectors
             cids = self._chunk_ids
             dids = self._document_ids
+            visible = {int(cid) for cid, did in zip(cids, dids)
+                       if document_ids is None or int(did) in document_ids}
+            catalog = [dict(e, chunk_id=cid) for cid, entries in self._ceid_events.items()
+                       if cid in visible for e in entries]
+            matching = ceid.relevant(query_text, catalog)
+            event_ids = ceid.query_ids(query_text) or {e["ceid"] for e in matching}
+            pinned = list(dict.fromkeys([e["chunk_id"] for e in matching] +
+                          [cid for cid, ids in self._ceid_mentions.items() if cid in visible and ids & event_ids]))
             # 仅有界召回精确技术标识符；普通中文问题保持原语义检索。
             if self._keywords is not None and 0 < len(terms) <= 16:
                 # 先剔除"在当前文档范围内任何切片里都不存在"的术语，再做 AND。
@@ -189,6 +271,8 @@ class VectorIndex:
                     and any(term in title for doc_id, title in self._filename_terms.items()
                             if document_ids is None or doc_id in document_ids)
                 }
+                if e84_log_intent:
+                    title_only.update(("e84", "log"))
                 if (not broad_filename_query and not keyword_ids and len(live_terms) >= 2) or title_only:
                     # 文件名里的术语可限定文档，不要求每个正文切片也重复该术语。
                     # 标题独有术语即使被正文预筛剔除，也不能让其它文档的 AND 命中盖过它。
@@ -221,7 +305,22 @@ class VectorIndex:
                     # 同数量时仅把 rank 当作启发式次序，不能视为校准后的相关性分数。
                     fallback.sort(key=lambda hit: (-hit[0], hit[1], hit[2]))
                     if fallback:
-                        keyword_ids = [cid for _, _, cid in fallback[:min(200, int(k))]]
+                        # 在合格标题范围内保留完整正文 AND，避免更宽的回退覆盖强证据。
+                        # 重新限定查询，不能依赖已被全局排名或回退 LIMIT 截断的候选。
+                        eligible_ids = sorted({doc_id for doc_ids in groups.values() for doc_id in doc_ids})
+                        match = " AND ".join(
+                            '"' + term.encode("ascii").hex() + '"' for term in live_terms
+                        )
+                        rows = self._keywords.execute(
+                            "SELECT rowid FROM terms WHERE terms MATCH ? AND document_id IN ("
+                            + ",".join("?" for _ in eligible_ids) + ") "
+                            "ORDER BY rank, rowid LIMIT ?",
+                            (match, *eligible_ids, min(200, int(k))),
+                        )
+                        keyword_ids = list(dict.fromkeys(
+                            [row[0] for row in rows] + [cid for _, _, cid in fallback]
+                        ))[:min(200, int(k))]
+        keyword_ids = list(dict.fromkeys(pinned + keyword_ids))
         if document_ids is not None:
             mask = np.asarray([int(doc_id) in document_ids for doc_id in dids], dtype=bool)
             vecs = vecs[mask]
@@ -273,7 +372,7 @@ class VectorIndex:
         ranked_ids = sorted(fused, key=lambda cid: (-fused[cid], cid not in keyword_set, cid))
         return [{"chunk_id": cid, "document_id": int(all_dids[positions[cid]]),
                  "score": float(all_scores[positions[cid]])}
-                for cid in ranked_ids[:result_limit]]
+                for cid in (pinned + [cid for cid in ranked_ids if cid not in set(pinned)][:max(0, result_limit - len(pinned))])]
 
 
 vector_index = VectorIndex()

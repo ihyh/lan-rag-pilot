@@ -1,7 +1,7 @@
 'use strict';
 // Service Worker 缓存路由的行为测试 + 管理页反馈的源码级回归守卫。
 //
-// 为什么需要它：Service Worker 只在 HTTPS 下注册，而企业部署正是 HTTPS，
+// 为什么需要它：Service Worker 只在 HTTPS 下注册，而手机 Tailscale 访问使用 HTTPS，
 // 因此 sw.js 的缓存策略在正式环境会真实生效，却一直没有任何自动化覆盖。
 // 这里用最小沙箱**真正执行** sw.js 并触发它的三个事件，验证路由行为。
 

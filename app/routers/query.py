@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .. import acl, audit, runtime as rt
+from .. import acl, audit, ceid, runtime as rt
 from ..config import settings
 from ..db import connect, get_db, now_iso
 from ..deps import require_kb_admin, require_user
@@ -92,6 +92,10 @@ def _select_sources(sources: list[dict], k: int, question: str = "") -> list[dic
     """同文档的包含型重复只保留完整片段，保留不同数值/版本的原始引用。"""
     if k <= 0:
         return []
+    if ceid.is_query(question):
+        exhaustive = ceid.select_sources(sources, k, question)
+        if exhaustive is not None:
+            return exhaustive
     kept: list[tuple[dict, str]] = []
     for src in sorted(sources, key=lambda s: len(s["content"]), reverse=True):
         text = " ".join(src["content"].split())
@@ -103,12 +107,48 @@ def _select_sources(sources: list[dict], k: int, question: str = "") -> list[dic
     ids = {src["chunk_id"] for src, _ in kept}
     candidates = [src for src in sources if src["chunk_id"] in ids]
     terms = set(technical_terms(question))
-    models = {term for term in terms if any(c.isdigit() for c in term) and re.search(r"[.-]", term)}
-    titles = {src["document_id"]: set(technical_terms(Path(src["filename"]).stem)) for src in candidates}
+    versions = {term for term in terms if re.fullmatch(r"v\d+(?:[._-]\d+)*", term)}
+    models = {term for term in terms if any(c.isdigit() for c in term)} - versions
+    titles = {src["document_id"]: set(technical_terms(Path(src["filename"]).stem))
+              | set(technical_terms(Path(src["filename"]).stem.replace("_", " "))) for src in candidates}
+    protocols = set(re.findall(r"(?<![a-z0-9])(?:ascii|hex|secs)(?![a-z0-9])", question.lower()))
+    title_protocols = {src["document_id"]: set(re.findall(
+        r"(?<![a-z0-9])(?:ascii|hex|secs)(?![a-z0-9])", Path(src["filename"]).stem.lower(),
+    )) for src in candidates}
+    context_titles = {doc: set(title) for doc, title in titles.items()}
+    for src in candidates:
+        for title in re.findall(r"(?im)^DOCUMENT TITLE:[ \t]*(?:\r?\n)?([^\r\n]+)", src["content"]):
+            context_titles[src["document_id"]].update(technical_terms(title))
+    strong_evidence_docs = set()
+    bigrams = {
+        segment[i:i + 2]
+        for segment in re.findall(r"[\u4e00-\u9fff]+", question)
+        for i in range(len(segment) - 1)
+    }
+    if bigrams:
+        def lexical_score(src: dict) -> int:
+            content = re.sub(r"\s+", "", src["content"])
+            if "工作表《" in content and Path(src["filename"]).suffix.lower() != ".xlsx":
+                return 0
+            return sum(term in content for term in bigrams)
+
+        for document_id in dict.fromkeys(src["document_id"] for src in candidates):
+            positions = [i for i, src in enumerate(candidates) if src["document_id"] == document_id]
+            scores = [(lexical_score(candidates[i]), i) for i in positions]
+            ranked = sorted(scores, reverse=True)
+            if ranked[0][0] >= 3 and (len(ranked) == 1 or ranked[0][0] >= ranked[1][0] + 2):
+                first, best = positions[0], ranked[0][1]
+                exact = terms - context_titles[document_id]
+                retained = exact & {term for i in positions for term in technical_terms(candidates[i]["content"])}
+                if not retained <= set(technical_terms(candidates[best]["content"])):
+                    continue
+                candidates[first], candidates[best] = candidates[best], candidates[first]
+                strong_evidence_docs.add(document_id)
     matched_docs = {doc_id for doc_id, title in titles.items() if models & title}
     # 只有一个候选文档匹配型号、且技术词均在标题中时，不用通用标题词的词法名次排其正文。
     semantic_doc = next(iter(matched_docs)) if len(matched_docs) == 1 else None
-    semantic_only = semantic_doc is not None and terms <= titles[semantic_doc]
+    semantic_only = semantic_doc is not None and terms <= titles[semantic_doc] \
+        and semantic_doc not in strong_evidence_docs
     channels = re.findall(r"通道\s*(\d+)(?![0-9A-Za-z])(?!\s*(?:[.\-~–—]|至|到))", question)
     compact_question = re.sub(r"\s+", "", question).lower()
 
@@ -124,10 +164,13 @@ def _select_sources(sources: list[dict], k: int, question: str = "") -> list[dic
             4 <= len(value) <= 80 and re.search(r"[A-Za-z]", value) and re.search(r"[\u4e00-\u9fff]", value)
             and re.sub(r"\s+", "", value).lower() in compact_question for value in cells
         )
-        return (src["document_id"] in matched_docs, channel_match, cell_match,
+        # 身份只取实际文件名，不让正文顺带提及另一设备/协议冒充匹配。
+        return (len(models & titles[src["document_id"]]),
+                len(protocols & title_protocols[src["document_id"]]),
+                len(versions & titles[src["document_id"]]), channel_match, cell_match,
                 src["score"] if semantic_only and src["document_id"] == semantic_doc else 0)
 
-    # 仅在已通过权限筛选的有界检索候选中稳定排序；不删异值证据或改引用字段。
+    # 仅在已通过权限筛选的有界检索候选中稳定排序；同文档词法顺序不改变跨文档槽位。
     ordered = sorted(candidates, key=priority, reverse=True)
     by_sequence = {
         (src["document_id"], src.get("seq")): src for src in candidates
@@ -493,9 +536,14 @@ def query(
                 "paragraph": r["paragraph"],
                 "score": round(float(h["score"]), 4),
                 "content": r["content"],
+                "ceid_events": vector_index.ceid_events_for(int(r["chunk_id"])),
+                "ceid_ids": vector_index.ceid_ids_for(int(r["chunk_id"])),
             }
         )
-    sources = _select_sources(sources, rt_values["top_k"], question)
+    try:
+        sources = _select_sources(sources, rt_values["top_k"], question)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "ceid_context_limit", "message": str(exc)}) from exc
     for src in sources:
         if Path(src["filename"]).suffix.lower() == ".xlsx":
             src["table_headers"] = vector_index.table_headers_for(src["document_id"])

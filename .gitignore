@@ -7,6 +7,12 @@
 data/
 models/
 backups/
+logs/
+
+# 本机规划与私有诊断记录不属于发布源码
+task_plan.md
+findings.md
+progress.md
 eval/reports/
 .smoke-data/
 .smoke-data*

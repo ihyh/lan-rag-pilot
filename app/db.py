@@ -96,6 +96,21 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(document_id);
 
+-- 不以(document_id, CEID)去重：同一文档同号的多场景定义必须全部保留。
+CREATE TABLE IF NOT EXISTS ceid_events (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id        INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_id           INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+    ceid               TEXT NOT NULL,
+    event_name         TEXT NOT NULL,
+    scenario           TEXT NOT NULL,
+    full_definition    TEXT NOT NULL,
+    description_status TEXT NOT NULL CHECK(description_status IN ('provided','label_only')),
+    page_end           INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ceid_events_id ON ceid_events(ceid);
+CREATE INDEX IF NOT EXISTS idx_ceid_events_chunk ON ceid_events(chunk_id);
+
 -- 兼容旧数据库的历史分类表；不再参与文档权限判定。
 CREATE TABLE IF NOT EXISTS departments (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -75,6 +75,59 @@ def main():
                        _select_sources([anchor, *distractors, other_page], 3, "状态ID？")], \
         "跨页相邻行不得作为同页续段提升"
 
+    # A uniquely stronger Chinese evidence match may be buried inside the bounded pool.
+    # Reorder only within the same document so unrelated document ranking stays unchanged.
+    same_doc = [
+        dict(source(210, "FU-16Z光纤通电后观察光斑。", doc=6), seq=21),
+        dict(source(211, "文档封面：FU-16Z放大器。", doc=6), seq=1),
+        dict(source(212, "电气安全要求：操作前确认机台与放大器断电。", doc=6), seq=17),
+        dict(source(213, "光斑异常时检查镜片。", doc=6), seq=22),
+        dict(source(214, "光纤元件插入放大器安装孔约14mm，再移动锁定杆固定。", doc=6), seq=18),
+    ]
+    procedure = _select_sources(
+        same_doc, 3, "光纤元件应插入放大器安装孔多深，锁定步骤是什么？"
+    )
+    assert procedure[0]["chunk_id"] == 214 and 214 in [item["chunk_id"] for item in procedure], \
+        "同文档候选中唯一更贴合问题的流程证据不得被原始第五名截掉"
+    model_named = [dict(item, filename="FU-16Z 操作手册.pdf") for item in same_doc]
+    assert _select_sources(
+        model_named, 3, "FU-16Z 光纤元件应插入放大器安装孔多深，锁定步骤是什么？"
+    )[0]["chunk_id"] == 214, "型号标题不得用原始向量分数覆盖明确正文证据"
+    cover_named = same_doc + [source(
+        220, "DOCUMENT TITLE:\nFU-16Z 光纤调试手册\nDOCUMENT NUMBER: REV: A", doc=6,
+    )]
+    assert _select_sources(
+        cover_named, 3, "FU-16Z 光纤元件应插入放大器安装孔多深，锁定步骤是什么？"
+    )[0]["chunk_id"] == 214, "已召回的同文档明确封面标题可提供型号上下文"
+    assert _select_sources(
+        same_doc + [dict(cover_named[-1], document_id=10)], 1,
+        "FU-16Z 光纤元件应插入放大器安装孔多深，锁定步骤是什么？",
+    )[0]["chunk_id"] == 210, "其它文档的封面标题不得豁免当前文档的精确词"
+    safety = _select_sources([
+        same_doc[0], same_doc[2], same_doc[1],
+    ], 3, "调试光纤前，电气安全要求什么？")
+    assert safety[0]["chunk_id"] == 212, "明确安全证据应排在同文档泛化光纤片段之前"
+    ambiguous = [source(215, "检查光纤状态。", doc=7), source(216, "确认光纤状态。", doc=7)]
+    assert _select_sources(ambiguous, 2, "光纤状态是什么？") == ambiguous, \
+        "弱匹配或无明显胜者时必须保留原顺序"
+    cross_doc = [same_doc[0], source(217, "另一设备的安装孔说明。", doc=8), same_doc[-1]]
+    assert _select_sources(cross_doc, 3, "光纤元件插入安装孔多深？")[1]["chunk_id"] == 217, \
+        "同文档重排不得改变其它文档占用的排序槽位"
+    exact_parameter = source(218, "P20：出现超温时断电检查。", doc=9)
+    similar_parameter = source(219, "P200 参数的报警处理方法是重新复位。", doc=9)
+    assert _select_sources(
+        [exact_parameter, similar_parameter], 1, "P20 参数的报警处理方法是什么？"
+    )[0] is exact_parameter, "中文描述不得覆盖参数标识符的精确匹配"
+    generic = source(221, "设备报警总则，断电检查。", doc=9)
+    assert _select_sources(
+        [generic, exact_parameter, similar_parameter], 1, "P20 参数的报警处理方法是什么？"
+    )[0] is generic, "首候选无技术词时，也不能忽略同文档池中已有的精确参数证据"
+    decimal_parameter = dict(exact_parameter, content="P20.1：出现超温时断电检查。")
+    decimal_near_match = dict(similar_parameter, content="P20.10 参数的报警处理方法是重新复位。")
+    assert _select_sources(
+        [decimal_parameter, decimal_near_match], 1, "P20.1 参数的报警处理方法是什么？"
+    )[0] is decimal_parameter, "带点号的参数也必须精确匹配，不能猜作型号后豁免"
+
     # Correct evidence can be inside the bounded pool but displaced by another device/row.
     other = dict(source(80, "参考版本为1.7。", doc=2), filename="MODEL-20 测试.xlsx")
     target = dict(source(81, "参考版本为5.2.7。"), filename="MODEL-10 测试.xlsx")

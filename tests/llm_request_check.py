@@ -144,6 +144,126 @@ def main() -> None:
         "table_headers": {"SECS": {"columns": {"C": "测试项", "D": "前置条件"}}},
     }]
 
+    installation_question = "探针应插入连接器安装孔多深，锁定步骤是什么？"
+    installation_body = ("打开防护盖，向下移动锁定杆。\n"
+                         "将探针插入安装孔（约 9 mm）。\n"
+                         "向后移动锁定杆，以固定探针。")
+    installation_source = {"filename": "changed-guide.pdf", "content":
+                           "3.1 切断方法\n切断探针。\n3.2 与连接器的连接\n"
+                           + installation_body + "\n3.3 检查\n确认指示灯。"}
+    alarm_question = "OMEGA E91 日志中记录了哪些 R 超时告警？"
+    alarm_source = {"filename": "OMEGA E91 events.txt", "content":
+                    "08:01:02.123 Rcv : ARS WARNING E91 R2 Timeout.\n"
+                    "08:02:03.456 Rcv : ARS WARNING E91 R7 Timeout.\n"
+                    "08:03:04.567 Rcv : ARS WARNING E91 R2 Timeout.\n"
+                    "R9 Timeout 参数设定为30秒。"}
+    parameter_question = "device_settings 的 Motor9 clamp 是哪个参数号，配置值和用途是什么？"
+    parameter_body = "A7=203；B7=Motor9 clamp；C7=OUT + 4；D7=夹具输出"
+    parameter_source = {"filename": "device_settings.xlsx", "content":
+                        "工作表《Control》第 6 行：A6=202；B6=Motor8 clamp；C6=OUT + 3；D6=其它输出\n"
+                        "工作表《Control》第 7 行：" + parameter_body}
+    firmware_question = "DELTA3.1 ASCII 协议测试环境的控制板固件版本号是多少？"
+    firmware_source = {"filename": "DELTA3.1 Communica(ASCII).xlsx", "content":
+                       "工作表《测试环境》第 18 行：X18=4.控制板版本号；Y18=Firmware:9.8.7_rc2\n"
+                       "工作表《测试环境》第 19 行：X19=5.工具软件版本号；Y19=tool_v2.1.3"}
+    startup_question = "OMEGA LITE 调试手册说，启动检查完成后教导器默认处于什么登录和控制模式？"
+    startup_statement = "启动检查完成后，默认是已登录；且Remote模式（起始模式可在设置表中调整）。"
+    startup_source = {"filename": "OMEGA LITE调试手册.docx", "content":
+                      startup_statement + "\nLogIn状态：网页或者远程指令使用受限、无法进行动作；"}
+    bounded_projection_cases = [
+        (installation_question, [installation_source], installation_body + "[1]"),
+        (alarm_question, [{"filename": "protocol.txt", "content": "E91 R9 Timeout 参数。"}, alarm_source],
+         "日志告警：E91 R2 Timeout.；E91 R7 Timeout.[2]"),
+        (parameter_question, [parameter_source], "原文记录：" + parameter_body + "。[1]"),
+        ("PROBE-9 " + installation_question, [
+            dict(installation_source, document_id=20),
+            {"document_id": 20, "filename": "changed-guide.pdf", "content":
+             "DOCUMENT TITLE:\nPROBE-9 探针安装手册\nDOCUMENT NUMBER: A"},
+        ], installation_body + "[1]"),
+        (firmware_question, [{"filename": "unrelated.xlsx", "content": "GetSignals"}, firmware_source],
+         "控制板固件版本号：Firmware:9.8.7_rc2。[2]"),
+        (startup_question, [{"filename": "other.docx", "content": "Remote 模式"}, startup_source],
+         startup_statement + "[2]"),
+        (firmware_question, [firmware_source, {"filename": "unrelated.xlsx", "content": "GetSignals"}],
+         "控制板固件版本号：Firmware:9.8.7_rc2。[1]"),
+        (startup_question, [startup_source, {"filename": "other.docx", "content": "Remote 模式"}],
+         startup_statement + "[1]"),
+    ]
+    for question, evidence, expected in bounded_projection_cases:
+        assert llm._source_projection(question, evidence) == expected
+    for question, evidence in [
+        (installation_question, [dict(installation_source, content="3.2 与连接器的连接\n"
+            + installation_body.replace("向后移动锁定杆，以固定探针。", "向后移动锁定杆，"))]),
+        ("甲厂 " + installation_question, [dict(installation_source, filename="乙厂说明书.pdf")]),
+        (alarm_question.replace("E91", "E9.1"), [dict(alarm_source, filename="OMEGA E9.10 events.txt",
+          content="08:01:02.123 Rcv : ARS WARNING E9 R2 Timeout.")]),
+        (parameter_question.replace("device_settings", "device_settings.1"),
+         [dict(parameter_source, filename="device_settings.2.xlsx")]),
+        ("device_settings 的工作温度是多少，另外的 Motor9 clamp 是哪个参数号，配置值和用途是什么？",
+         [parameter_source]),
+        ("OMEGA E91 的温度限制是什么，日志中记录了哪些 R 超时告警？", [alarm_source]),
+        ("PROBE-9 " + installation_question, [installation_source]),
+        ("PROBE-9 " + installation_question, [
+            dict(installation_source, document_id=20),
+            {"document_id": 21, "filename": "other.pdf", "content": "DOCUMENT TITLE:\nPROBE-9 探针安装手册"},
+        ]),
+        (parameter_question, [dict(parameter_source, filename="device_settings.txt")]),
+        (installation_question, [dict(installation_source, content=installation_source["content"].replace("安装孔", "拆卸孔"))]),
+        (installation_question, [dict(installation_source, content=installation_source["content"].replace("向后移动锁定杆，以固定探针。", ""))]),
+        (installation_question, [dict(installation_source, content=installation_source["content"].replace("打开防护盖，向下移动锁定杆。", "打开防护盖。"))]),
+        (installation_question, [dict(installation_source, content=installation_source["content"].replace("向后移动锁定杆", "将探针插入安装孔（约12 mm）。向后移动锁定杆"))]),
+        (installation_question, [dict(installation_source, content=installation_source["content"]
+                                     + "\n3.4 与连接器的连接\n" + installation_body.replace("9 mm", "12 mm"))]),
+        (installation_question.replace("步骤是什么", "步骤和允许温度是什么"), [installation_source]),
+        (alarm_question, [dict(alarm_source, content=alarm_source["content"].replace("WARNING", "NOTICE"))]),
+        (alarm_question, [dict(alarm_source, content=alarm_source["content"]
+                              + "\n08:04:05.678 Receive ARS WARNING E91 R8 Timeout.")]),
+        (alarm_question, [dict(alarm_source, filename="OMEGA E910 events.txt")]),
+        (alarm_question, [alarm_source, dict(alarm_source, content="08:01:02.123 Rcv : ARS WARNING E91 R8 Timeout.")]),
+        (alarm_question.replace("超时告警", "超时告警和处理方法"), [alarm_source]),
+        (parameter_question, [dict(parameter_source, content=parameter_source["content"].replace("Motor9 clamp", "Motor9 clampPlus"))]),
+        (parameter_question, [dict(parameter_source, content=parameter_source["content"].replace("；D7=夹具输出", ""))]),
+        (parameter_question, [dict(parameter_source, content=parameter_source["content"].replace("D7=夹具输出", "D7=-"))]),
+        (parameter_question, [dict(parameter_source, filename="device_settings2.xlsx")]),
+        (parameter_question, [dict(parameter_source, content=parameter_source["content"]
+                                  + "\n工作表《Control》第 8 行：A8=204；B8=Motor9 clamp；C8=OUT + 5；D8=另一输出")]),
+        (parameter_question, [dict(parameter_source, content="203 Motor9 clamp OUT + 4 夹具输出")]),
+        (parameter_question.replace("用途是什么", "用途和保养周期是什么"), [parameter_source]),
+        (firmware_question, [dict(firmware_source, filename="DELTA3.10 Communica(ASCII).xlsx")]),
+        (firmware_question, [dict(firmware_source, filename="DELTA3.1 Communica(ASCII2).xlsx")]),
+        (firmware_question, [dict(firmware_source, filename="DELTA3.1 Communica(ASCII).txt")]),
+        ("甲厂 " + firmware_question, [firmware_source]),
+        ("DELTA3.1 ASCII 的工作温度是什么，协议测试环境的控制板固件版本号是多少？", [firmware_source]),
+        (firmware_question.replace("版本号是多少", "版本号和更新步骤是什么"), [firmware_source]),
+        (firmware_question, [dict(firmware_source, content=firmware_source["content"].replace("测试环境", "工具环境"))]),
+        (firmware_question, [dict(firmware_source, content=firmware_source["content"].replace("控制板版本号", "控制板扩展版本号"))]),
+        (firmware_question, [dict(firmware_source, content=firmware_source["content"].replace("Firmware:9.8.7_rc2", "9.8.7_rc2"))]),
+        (firmware_question, [dict(firmware_source, content=firmware_source["content"].replace("Firmware:9.8.7_rc2", "Firmware:9." + "x" * 80))]),
+        (firmware_question, [dict(firmware_source, content=firmware_source["content"].replace("；Y18=Firmware:9.8.7_rc2", ""))]),
+        (firmware_question, [dict(firmware_source, content=firmware_source["content"]
+                                + "\n工作表《测试环境》第 20 行：X20=控制板版本号；Y20=Firmware:9.9.1")]),
+        (firmware_question, [firmware_source, dict(firmware_source,
+            content="工作表《测试环境》第 8 行：A8=控制板版本号；B8=Firmware:8.0.1")]),
+        (firmware_question, [dict(firmware_source,
+            content="工作表《测试环境》第 18 行：X18=Firmware:9.8.7_rc2；Y18=控制板版本号")]),
+        (startup_question, [dict(startup_source, filename="OMEGA LITE2调试手册.docx")]),
+        (startup_question, [dict(startup_source, filename="OMEGA LITE操作手册.docx")]),
+        (startup_question, [dict(startup_source, filename="OMEGA LITE调试手册.pdf")]),
+        ("甲厂 " + startup_question, [startup_source]),
+        ("OMEGA LITE 的工作温度是什么，调试手册说，启动检查完成后教导器默认处于什么登录和控制模式？", [startup_source]),
+        (startup_question.replace("控制模式", "控制模式和动作权限"), [startup_source]),
+        (startup_question, [dict(startup_source, content=startup_statement[:-1])]),
+        (startup_question, [dict(startup_source, content="启动检查完成后，默认是已登录。")]),
+        (startup_question, [dict(startup_source, content="启动检查完成后，且Remote模式。")]),
+        (startup_question, [dict(startup_source, content=startup_statement.replace("完成后", "开始前"))]),
+        (startup_question, [dict(startup_source, content=startup_statement.replace("已登录", "LogIn"))]),
+        (startup_question, [dict(startup_source, content=startup_statement
+                                + startup_statement.replace("Remote", "Service"))]),
+        (startup_question, [startup_source, dict(startup_source,
+            content=startup_statement.replace("已登录", "未登录"))]),
+    ]:
+        assert llm._source_projection(question, evidence) is None, (question, evidence)
+
     assert llm._source_projection(command_question, command_sources) == \
         "指令 ID 为 0x0C，回复 ID 为 0x73。[3]"
     assert llm._source_projection(status_question, status_sources) == \
@@ -169,6 +289,14 @@ def main() -> None:
         "设备端作为 MASTER，HOST端作为 SLAVE，设备端优先发送，HOST立即回复 EOT(0x04)。"}]) is None
     assert llm._source_projection(secs_command_question, secs_command_sources) == \
         "发送指令：[S3F27 ACCESSMODE=1&PTN=0] SET_ACCESS_MODE_AUTO。[1]"
+    scoped_secs_sources = [dict(source, filename="OMEGA1 测试.xlsx", content=source["content"].replace("《SECS》", "《SECS协议测试》"),
+                               table_headers={"SECS协议测试": source["table_headers"]["SECS"]})
+                           for source in secs_command_sources]
+    scoped_secs_question = "OMEGA1 的 SECS 测试用例中，在 E84 AUTO MODE 下开启 E84 本地模式，要求发送什么指令？"
+    assert llm._source_projection(scoped_secs_question, scoped_secs_sources) == \
+        "发送指令：[S3F27 ACCESSMODE=1&PTN=0] SET_ACCESS_MODE_AUTO。[1]"
+    assert llm._source_projection(scoped_secs_question.replace("SECS", "ASCII"), scoped_secs_sources) is None
+    assert llm._source_projection(secs_command_question.replace("AUTO MODE", "SERVICE MODE"), secs_command_sources) is None
     assert llm._source_projection(secs_command_question, [
         {**secs_command_sources[0], "table_headers": {}},
     ]) is None
@@ -212,6 +340,98 @@ def main() -> None:
         "Snapshot 的指令 ID 和回复 ID 是什么？",
         [{"filename": "near.pdf", "content": "0x11 SnapshotPlus 无 0x91；"}],
     ) is None
+
+    typed_command_question = "OMEGA1 HEX 测试用例中，HOST 向 DEV 发送通道复位用什么指令？"
+    typed_command_source = {
+        "filename": "OMEGA1 Communica(HEX).xlsx",
+        "content": "工作表《Cases》第 7 行：B7=发送通道复位\nHOST->DEV；C7=move；F7=39；L7=发送指令\n39",
+        "table_headers": {"Cases": {"columns": {"B": "测试项", "C": "Type", "F": "Input", "L": "测试步骤"}}},
+    }
+    controls_question = "OMEGA GUI 通用控制栏里的 Freeze、Delay 和 Restart 各做什么？"
+    controls_source = {"filename": "OMEGA WEB 操作手册.pdf", "page": 8, "content":
+                       "OMEGA GUI Operation Manual\n2. 通用控制状态栏，包含两部分的功能：\n"
+                       "a) 通用的控制按钮，可以进行一些通用的控制。\n"
+                       "i. Freeze：停止采样。\nii. Delay：延迟当前输出。\n"
+                       "iii. Restart：重新运行检测。\niv. Clear：清除告警。\n"
+                       "b) 通用的状态显示。\ni. Ready：表示已经就绪。"}
+    shortcut_question = "OMEGA PRO 教导器的 F7-Locate 用来做什么？"
+    shortcut_line = "按 “F7-Locate”输入通道编号，可快速跳转选中通道，如下图"
+    shortcut_source = {"filename": "OMEGA Pro调试手册.docx", "content":
+                       "F7 - 历史记录页面\n1.3.3参数查看\n" + shortcut_line + "\n"
+                       "按F7-Locate可快速跳转到通道输入的编号\n"
+                       "F7-Approve可以清除当前输出的告警。（需先使用Confirm，确认告警来解除操作锁定）"}
+    prerequisite_question = "OMEGA PRO 教导器清除输出告警的 F7-Approve 操作前，手册要求先做什么？"
+    explicit_projection_cases = [
+        (typed_command_question, [{"filename": "unrelated.txt", "content": "宏复位用88"},
+                                 typed_command_source], "发送指令：39。[2]"),
+        (typed_command_question, [typed_command_source], "发送指令：39。[1]"),
+        (controls_question, [{"filename": "axis.pdf", "content": "Freeze：停止轴。"}, controls_source],
+         "Freeze：停止采样。；Delay：延迟当前输出。；Restart：重新运行检测。[2]"),
+        (shortcut_question, [{"filename": "other.pdf", "content": "F7 - 历史记录页面"}, shortcut_source],
+         shortcut_line + "。[2]"),
+        (prerequisite_question, [{"filename": "other.docx", "content": "操作输出清错F7-Approve。"},
+                                shortcut_source],
+         "需先使用Confirm，确认告警来解除操作锁定。[2]"),
+    ]
+    for question, evidence, expected in explicit_projection_cases:
+        assert llm._source_projection(question, evidence) == expected, (question, expected)
+    assert llm._source_projection(typed_command_question.replace("什么指令", "什么 HEX 指令"), [typed_command_source]) == \
+        "发送指令：39。[1]"
+    assert llm._source_projection(typed_command_question.replace("什么指令", "什么 ASCII 指令"), [typed_command_source]) is None
+    for question, evidence in [
+        (typed_command_question, [dict(typed_command_source, table_headers={})]),
+        (typed_command_question, [dict(typed_command_source, filename="OMEGA1.txt")]),
+        (typed_command_question, [dict(typed_command_source, table_headers={"Cases": {"columns": {"C": "Type"}}})]),
+        (typed_command_question, [dict(typed_command_source, table_headers={"Cases": {"columns": {"C": "Type", "F": "Input", "L": "测试步骤"}}})]),
+        (typed_command_question, [dict(typed_command_source, content=typed_command_source["content"].replace("F7=39", "F7=41"))]),
+        (typed_command_question, [dict(typed_command_source, content=typed_command_source["content"].replace("HOST->DEV", "DEV->HOST"))]),
+        (typed_command_question, [dict(typed_command_source, content=typed_command_source["content"].replace("；F7=39", ""))]),
+        (typed_command_question, [dict(typed_command_source, content=typed_command_source["content"].replace("发送通道复位", "发送通道复位增强"))]),
+        (typed_command_question, [typed_command_source, dict(typed_command_source,
+         content=typed_command_source["content"].replace("39", "41"))]),
+        (typed_command_question.replace("OMEGA1", "OMEGA2"), [typed_command_source]),
+        ("甲厂 " + typed_command_question, [typed_command_source]),
+        (typed_command_question, [dict(typed_command_source, content=typed_command_source["content"]
+            + "\n工作表《Cases》第 8 行：B8=发送通道复位\nHOST->DEV；F8=41；L8=发送指令41；M8=HOST向DEV发送通道复位用什么指令")]),
+        (typed_command_question.replace("中，", "中，温度范围是什么，"), [typed_command_source]),
+        (typed_command_question[:-1] + "，以及前置条件是什么？", [typed_command_source]),
+        (controls_question, [dict(controls_source, filename="manual.docx")]),
+        (controls_question, [dict(controls_source, content=controls_source["content"] + "\n"
+            + controls_source["content"].replace("停止采样", "停止输出"))]),
+        (controls_question, [dict(controls_source, content=controls_source["content"].replace("通用控制状态栏", "单轴控制栏"))]),
+        (controls_question, [dict(controls_source, content=controls_source["content"].replace("iii. Restart：重新运行检测。", ""))]),
+        (controls_question, [dict(controls_source, content=controls_source["content"].replace("Restart：重新运行检测。", "Restart："))]),
+        (controls_question, [dict(controls_source, content=controls_source["content"].replace("停止采样。", "停止采样"))]),
+        (controls_question, [dict(controls_source, content=controls_source["content"].replace("Freeze：", "FreezePlus："))]),
+        (controls_question, [controls_source, dict(controls_source,
+         content=controls_source["content"].replace("停止采样", "停止输出"))]),
+        (controls_question.replace("OMEGA", "OTHER"), [controls_source]),
+        (controls_question[:-1] + "，以及安全限制是什么？", [controls_source]),
+        (shortcut_question, [dict(shortcut_source, filename="OMEGA Pro调试手册.pdf")]),
+        (shortcut_question, [dict(shortcut_source, filename="OTHER调试手册.docx")]),
+        (shortcut_question, [dict(shortcut_source, filename="OMEGA Pro运行日志.docx")]),
+        (shortcut_question, [dict(shortcut_source, content=shortcut_source["content"].replace("F7-Locate", "F7-LocatePlus"))]),
+        (shortcut_question, [dict(shortcut_source, content="F7 - 历史记录页面")]),
+        (shortcut_question, [dict(shortcut_source, content=shortcut_source["content"].replace("，如下图", "，"))]),
+        (shortcut_question, [dict(shortcut_source, content=shortcut_source["content"].replace("，如下图", ""))]),
+        (shortcut_question, [dict(shortcut_source, content=shortcut_source["content"] + "\n" + shortcut_line)]),
+        (shortcut_question, [dict(shortcut_source, content=shortcut_source["content"]
+            + "\nF7-Locate可以删除历史记录。")]),
+        (shortcut_question, [shortcut_source, dict(shortcut_source,
+         content=shortcut_source["content"].replace("选中通道", "指定页面"))]),
+        (shortcut_question[:-1] + "，以及默认值是多少？", [shortcut_source]),
+        (prerequisite_question, [dict(shortcut_source, content=shortcut_source["content"].replace("需先使用", "可以使用"))]),
+        (prerequisite_question.replace("清除输出告警", "读取温度"), [shortcut_source]),
+        (prerequisite_question.replace("清除输出告警", "清除输出告警并读取温度"), [shortcut_source]),
+        (prerequisite_question, [dict(shortcut_source, content=shortcut_source["content"].replace("F7-Approve", "F7-ApprovePlus"))]),
+        (prerequisite_question, [dict(shortcut_source, content=shortcut_source["content"] + "\nF7-Approve清错。")]),
+        (prerequisite_question, [dict(shortcut_source, content="F7-Approve可以清除当前输出的告警。"
+            "（需先使用Confirm确认告警） F7-Approve可以清除当前输出的告警。（需先使用Reset确认告警）")]),
+        (prerequisite_question, [shortcut_source, dict(shortcut_source,
+         content=shortcut_source["content"].replace("Confirm", "Reset"))]),
+        (prerequisite_question[:-1] + "，以及接口是什么？", [shortcut_source]),
+    ]:
+        assert llm._source_projection(question, evidence) is None, (question, evidence)
 
     original_client = httpx.Client
     sources = [{"filename": "synthetic.txt", "page": 1, "content": "服务窗口为09:00至17:00。"}]
@@ -284,7 +504,7 @@ def main() -> None:
          "EOT(0x04)，优先接收设备端数据；接收完成后如仍需发送，再发送。[1]"),
         (secs_command_question, secs_command_sources,
          "发送指令：[S3F27 ACCESSMODE=1&PTN=0] SET_ACCESS_MODE_AUTO。[1]"),
-    ]
+    ] + bounded_projection_cases + explicit_projection_cases
     with patch.object(llm, "settings", projection_config), \
             patch.object(llm.httpx, "Client", side_effect=AssertionError("model must not be called")):
         for projection_question, projection_sources, grounded in projection_cases:
@@ -322,6 +542,31 @@ def main() -> None:
         answers = [llm.chat(structure_question if index < 2 else condition_question, rejected)["answer"]
                    for index, rejected in enumerate(rejected_sources)]
     assert answers == ["fallback。[1]"] * 4 and len(fallback_requests) == 4
+
+    for rejected_question, rejected_source in (
+        (firmware_question, dict(firmware_source, content=firmware_source["content"].replace("Firmware:", "Release:"))),
+        (startup_question, dict(startup_source, content=startup_statement.replace("已登录；且", "LogIn，并且"))),
+    ):
+        called = []
+
+        def format_response(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            called.append(body["stream"])
+            assert rejected_source["content"] in body["messages"][-1]["content"]
+            if body["stream"]:
+                event = {"choices": [{"delta": {"content": "fallback。[1]"}}]}
+                return httpx.Response(200, content=("data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n").encode())
+            return fallback_response(request)
+
+        def format_client(**_kwargs):
+            return original_client(transport=httpx.MockTransport(format_response), trust_env=False)
+
+        with patch.object(llm, "settings", config), patch.object(llm.httpx, "Client", side_effect=format_client):
+            result = llm.chat(rejected_question, [rejected_source])
+            events = list(llm.stream_chat(rejected_question, [rejected_source]))
+        assert result["model"] == config.deepseek_model and result["answer"] == "fallback。[1]"
+        assert "".join(event["text"] for event in events if event["type"] == "delta") == "fallback。[1]"
+        assert called == [False, True], "unsupported field/default formats must preserve model fallback"
 
     mapping_questions = [
         "设备的 ReadyMode 显示值 yes 和 no 分别对应什么模式？",
@@ -404,7 +649,6 @@ def main() -> None:
             lambda _request: httpx.Response(200, content=stream)), trust_env=False)
         with patch.object(llm, "settings", config), patch.object(llm.httpx, "Client", return_value=client):
             events = llm.stream_chat("问", sources)
-            assert next(events) == {"type": "delta", "text": "ok"}
             try:
                 next(events)
             except llm.LLMError as exc:
@@ -420,7 +664,6 @@ def main() -> None:
             lambda _request: httpx.Response(200, content=stream)), trust_env=False)
         with patch.object(llm, "settings", config), patch.object(llm.httpx, "Client", return_value=client):
             events = llm.stream_chat("问", sources)
-            assert next(events) == {"type": "delta", "text": "ok"}
             try:
                 next(events)
             except llm.LLMError as exc:

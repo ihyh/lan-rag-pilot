@@ -2,9 +2,9 @@
 
 先准备两个进程：
   1) mock 模型:      uvicorn tests.mock_deepseek:app --port 8099
-  2) 应用(离线模式):  按 tests/smoke_runner.sh 内的环境变量设置后
+  2) 应用(离线模式):  按 tests/smoke_runner.ps1 内的环境变量设置后
      uvicorn app.main:app --port 8090
-     （Linux/Docker 环境下可直接：docker run --rm -v "$PWD:/rag" -w /rag <含依赖镜像> bash tests/smoke_runner.sh）
+     推荐通过 tests/smoke_runner.ps1 在独立临时目录中启动并验证。
 
 然后：.venv\\Scripts\\python tests\\api_smoke.py
 覆盖测试计划中的：登录/错误密码/注销、user 权限 403、root 全部管理、
@@ -494,7 +494,9 @@ class Smoke:
             events = [json.loads(line) for line in response.iter_lines() if line]
         deltas = [event["text"] for event in events if event["type"] == "delta"]
         completed = next((event for event in events if event["type"] == "done"), None)
-        check(status == 200 and len(deltas) >= 2 and completed is not None, "模型片段在完成事件前逐段到达")
+        check(status == 200 and len(deltas) == 1 and completed is not None
+              and events.index(completed) > next(i for i, event in enumerate(events) if event["type"] == "delta"),
+              "完整校验后的正文在完成事件前到达")
         if completed:
             saved = self.c.get(f"/api/conversations/{completed['conversation_id']}").json()["turns"][-1]
             check(saved["answer"] == "".join(deltas) and saved["sources"] and saved["status"] == "ok",
@@ -503,15 +505,16 @@ class Smoke:
         with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:stream-cut]] 出差住宿上限是多少？"}) as response:
             interrupted = [json.loads(line) for line in response.iter_lines() if line]
         failure = next((event for event in interrupted if event["type"] == "error"), None)
-        check(any(event["type"] == "delta" for event in interrupted) and failure is not None
-              and not any(event["type"] == "done" for event in interrupted), "中断流不会报告成功")
+        check(not any(event["type"] == "delta" for event in interrupted) and failure is not None
+              and failure.get("code") == "llm_bad_response"
+              and not any(event["type"] == "done" for event in interrupted), "中断流不显示部分正文或报告成功")
         if failure and failure.get("conversation_id"):
             saved = self.c.get(f"/api/conversations/{failure['conversation_id']}").json()["turns"][-1]
             check(saved["status"] == "error" and not saved["answer"], "中断流不保存部分答案")
         with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:bad-usage]] 出差住宿上限是多少？"}) as response:
             malformed = [json.loads(line) for line in response.iter_lines() if line]
         bad_usage = next((event for event in malformed if event["type"] == "error"), None)
-        check(any(event["type"] == "delta" for event in malformed) and bad_usage is not None
+        check(not any(event["type"] == "delta" for event in malformed) and bad_usage is not None
               and bad_usage.get("code") == "llm_bad_response"
               and bad_usage.get("conversation_id")
               and not any(event["type"] == "done" for event in malformed),
@@ -522,13 +525,23 @@ class Smoke:
         with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:bad-delta]] 出差住宿上限是多少？"}) as response:
             invalid_delta = [json.loads(line) for line in response.iter_lines() if line]
         bad_delta = next((event for event in invalid_delta if event["type"] == "error"), None)
-        check(any(event["type"] == "delta" for event in invalid_delta) and bad_delta is not None
+        check(not any(event["type"] == "delta" for event in invalid_delta) and bad_delta is not None
               and bad_delta.get("code") == "llm_bad_response" and bad_delta.get("conversation_id")
               and not any(event["type"] == "done" for event in invalid_delta),
               "非字符串流片段返回稳定错误，不报告成功")
         if bad_delta and bad_delta.get("conversation_id"):
             saved = self.c.get(f"/api/conversations/{bad_delta['conversation_id']}").json()["turns"][-1]
             check(saved["status"] == "error" and not saved["answer"], "非字符串流片段不保存部分答案")
+        with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:bad-citation]] 出差住宿上限是多少？"}) as response:
+            invalid_citation = [json.loads(line) for line in response.iter_lines() if line]
+        bad_citation = next((event for event in invalid_citation if event["type"] == "error"), None)
+        check(bad_citation is not None and bad_citation.get("code") == "llm_bad_response"
+              and bad_citation.get("conversation_id")
+              and not any(event["type"] in {"delta", "done"} for event in invalid_citation),
+              "无效引用流返回稳定错误，不显示正文或报告成功")
+        if bad_citation and bad_citation.get("conversation_id"):
+            saved = self.c.get(f"/api/conversations/{bad_citation['conversation_id']}").json()["turns"][-1]
+            check(saved["status"] == "error" and not saved["answer"], "无效引用流不保存错误正文")
         self.login("alice", "alice123")
 
     def test_history(self) -> None:
@@ -741,6 +754,7 @@ class Smoke:
             ("[[mock:http429]]", "llm_rate_limited"),
             ("[[mock:sleep:3]]", "llm_timeout"),
             ("[[mock:bad-usage]]", "llm_bad_response"),
+            ("[[mock:bad-citation]]", "llm_bad_response"),
         ]:
             r = self.c.post("/api/query", json={"question": trigger})
             body = r.json().get("detail", {})
@@ -748,11 +762,11 @@ class Smoke:
                 r.status_code == 502 and body.get("code") == code,
                 f"{trigger} -> 502 code={body.get('code')}",
             )
-            if trigger == "[[mock:bad-usage]]":
-                check(bool(body.get("chat_id")), "用量字段损坏仍保存失败问答")
+            if trigger in {"[[mock:bad-usage]]", "[[mock:bad-citation]]"}:
+                check(bool(body.get("chat_id")), f"{trigger} 仍保存失败问答")
                 if body.get("chat_id"):
                     saved = self.c.get(f"/api/chats/{body['chat_id']}").json()
-                    check(saved["status"] == "error" and not saved["answer"], "用量字段损坏记为错误问答")
+                    check(saved["status"] == "error" and not saved["answer"], f"{trigger} 记为错误问答且不保存正文")
             check(
                 "mock-key" not in (r.text or "") and "Bearer" not in (r.text or ""),
                 "异常响应不泄露 API Key",

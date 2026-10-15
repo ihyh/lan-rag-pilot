@@ -1,6 +1,6 @@
 """启动配置校验（fail-closed）的行为测试。
 
-docs/SECURITY_AUDIT.md 第 2、3 条记录了两个真实缺口：
+历史安全检查记录了两个真实缺口：
   - 模型地址缺失时会回退到公共 URL；
   - RAG_SECRET_KEY 缺失时只警告、不阻止启动。
 本测试直接断言这两条已被关闭，并覆盖内网判定的正反例。
@@ -67,6 +67,10 @@ def accepted(**overrides) -> str:
 def main() -> None:
     print("\n== 合法配置必须放行 ==")
     check(accepted() == "", "完整合法配置可启动")
+    defaults = settings_with(DEEPSEEK_BASE_URL=None)
+    check(defaults.deepseek_base_url == "http://127.0.0.1:11434/v1", "缺省模型接口只连接本机 Ollama")
+    check(defaults.deepseek_model == "qwen3:4b-instruct", "新安装缺省生成模型为 4B instruct")
+    check(defaults.host == "127.0.0.1", "缺省只监听本机")
     check(accepted(RAG_PUBLIC_ORIGIN=None) == "", "未配置 RAG_PUBLIC_ORIGIN 可启动")
     check(
         accepted(DEEPSEEK_BASE_URL="http://192.168.136.128:11434/v1") == "",
@@ -78,7 +82,7 @@ def main() -> None:
     )
     check(
         accepted(DEEPSEEK_BASE_URL="http://ollama:11434/v1") == "",
-        "单标签主机名（Docker 服务名 ollama）可启动",
+        "内网单标签主机名 ollama 可启动",
     )
     check(
         accepted(DEEPSEEK_BASE_URL="http://rag-llm.internal:11434/v1") == "",

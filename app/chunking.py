@@ -55,6 +55,7 @@ class Piece:
     token_count: int
     page: int | None = None
     paragraph: int | None = None
+    ceid_event: dict | None = None
 
 
 class TokenizerAdapter:
@@ -196,6 +197,7 @@ def chunk_units(
     缓冲都在生成过程中就地受限，而不是等整份文档切完再查总数（后者在重叠接近窗口时会先
     吃掉大量内存）。
     """
+    check_split_params(max_tokens, overlap_tokens)
     pieces_out: list[Piece] = []
     buffer_texts: list[str] = []
     buffer_page: int | None = None
@@ -229,11 +231,19 @@ def chunk_units(
         buffer_para = None
         buffer_tokens = 0
 
-    for unit in units:
+    from .ceid import event_units
+
+    for unit in event_units(units):
         t = (unit.text or "").strip()
         if not t:
             continue
         tk = ta.count(t)
+        if unit.ceid_event is not None:
+            flush()
+            remaining()
+            # 事件可超过普通窗口；保留整个原文，禁止用token窗口截成半条。
+            pieces_out.append(Piece(t, tk, unit.page, unit.paragraph, unit.ceid_event))
+            continue
         if buffer_texts and (buffer_page != unit.page or buffer_tokens + tk > max_tokens):
             flush()
         if not buffer_texts:
