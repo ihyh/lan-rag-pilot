@@ -406,7 +406,7 @@ def main() -> None:
         check(r.status_code == 200, f"两条链路都好 → 200（实际 {r.status_code}）")
         check(r.json()["checks"]["llm"]["ok"] is True, "checks.llm 显示生成可用")
 
-        # F4 存活探针不得触发探测（否则 Ollama 抖动会把容器判成不健康）
+        # F4 存活探针不得触发探测（否则 Ollama 抖动会把应用判成不健康）
         settings.deepseek_base_url = f"http://127.0.0.1:{closed_port()}"
         llm_probe.reset()
         hits_before = server.hits
