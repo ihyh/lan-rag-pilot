@@ -40,7 +40,8 @@ def main():
         assert (ROOT / "scripts" / target).is_file()
     # Exercise the actual entry in a synthetic checkout, mocking only the web server.
     with tempfile.TemporaryDirectory(prefix="rag-service-entry-") as directory:
-        project = Path(directory)
+        # Hosted Windows runners may expose TEMP via an 8.3 alias (RUNNER~1).
+        project = Path(directory).resolve()
         (project / ".venv/Lib/site-packages").mkdir(parents=True)
         (project / ".env").write_text("RAG_HOST=127.0.0.1\nRAG_PORT=18987\n", encoding="utf-8")
         code = """
