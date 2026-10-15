@@ -13,7 +13,6 @@ from pathlib import Path
 import numpy as np
 
 from .config import settings
-from . import ceid
 
 
 def technical_terms(text: str) -> list[str]:
@@ -35,8 +34,6 @@ class VectorIndex:
         self._filenames: dict[int, str] = {}
         self._filename_terms: dict[int, set[str]] = {}
         self._table_headers: dict[int, dict[str, dict]] = {}
-        self._ceid_events: dict[int, list[dict]] = {}
-        self._ceid_mentions: dict[int, set[str]] = {}
 
     def reload(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
@@ -44,7 +41,6 @@ class VectorIndex:
             "FROM chunks c JOIN documents d ON d.id = c.document_id "
             "WHERE d.status = 'ready' ORDER BY c.id"
         ).fetchall()
-        ceid_events = ceid.catalog(db, rows)
         chunk_ids: list[int] = []
         doc_ids: list[int] = []
         vecs: list[np.ndarray] = []
@@ -119,8 +115,6 @@ class VectorIndex:
             self._filenames = filenames
             self._filename_terms = filename_terms
             self._table_headers = table_headers
-            self._ceid_events = ceid_events
-            self._ceid_mentions = {int(r["chunk_id"]): ceid.mentioned_ids(r["content"]) for r in rows}
             if previous_keywords is not None:
                 previous_keywords.close()
             if not vecs:
@@ -145,15 +139,6 @@ class VectorIndex:
     def dim(self) -> int:
         with self._lock:
             return int(self._vectors.shape[1]) if self._vectors.size else int(settings.embed_dim)
-
-    def ceid_events_for(self, chunk_id: int) -> list[dict]:
-        with self._lock:
-            return [dict(e) for e in self._ceid_events.get(chunk_id, [])]
-
-    def ceid_ids_for(self, chunk_id: int) -> list[str]:
-        with self._lock:
-            return sorted(self._ceid_mentions.get(chunk_id, set()) |
-                          {e["ceid"] for e in self._ceid_events.get(chunk_id, [])})
 
     def _keyword_exists(self, term: str, document_ids: set[int] | None) -> bool:
         """该技术标识符在当前文档范围内是否存在倒排项（决定它该不该参与 AND）。
@@ -216,8 +201,6 @@ class VectorIndex:
         result_limit = int(k)
         q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
         terms = technical_terms(query_text)
-        if ceid.query_ids(query_text):
-            terms = [term for term in terms if term != "ceid"]
         e84_log_intent = "日志" in query_text and "e84" in terms
         if e84_log_intent:
             terms = ["tp#timer" if term == "tp" else term for term in terms]
@@ -231,14 +214,6 @@ class VectorIndex:
             vecs = self._vectors
             cids = self._chunk_ids
             dids = self._document_ids
-            visible = {int(cid) for cid, did in zip(cids, dids)
-                       if document_ids is None or int(did) in document_ids}
-            catalog = [dict(e, chunk_id=cid) for cid, entries in self._ceid_events.items()
-                       if cid in visible for e in entries]
-            matching = ceid.relevant(query_text, catalog)
-            event_ids = ceid.query_ids(query_text) or {e["ceid"] for e in matching}
-            pinned = list(dict.fromkeys([e["chunk_id"] for e in matching] +
-                          [cid for cid, ids in self._ceid_mentions.items() if cid in visible and ids & event_ids]))
             # 仅有界召回精确技术标识符；普通中文问题保持原语义检索。
             if self._keywords is not None and 0 < len(terms) <= 16:
                 # 先剔除"在当前文档范围内任何切片里都不存在"的术语，再做 AND。
@@ -320,7 +295,6 @@ class VectorIndex:
                         keyword_ids = list(dict.fromkeys(
                             [row[0] for row in rows] + [cid for _, _, cid in fallback]
                         ))[:min(200, int(k))]
-        keyword_ids = list(dict.fromkeys(pinned + keyword_ids))
         if document_ids is not None:
             mask = np.asarray([int(doc_id) in document_ids for doc_id in dids], dtype=bool)
             vecs = vecs[mask]
@@ -372,7 +346,7 @@ class VectorIndex:
         ranked_ids = sorted(fused, key=lambda cid: (-fused[cid], cid not in keyword_set, cid))
         return [{"chunk_id": cid, "document_id": int(all_dids[positions[cid]]),
                  "score": float(all_scores[positions[cid]])}
-                for cid in (pinned + [cid for cid in ranked_ids if cid not in set(pinned)][:max(0, result_limit - len(pinned))])]
+                for cid in ranked_ids[:result_limit]]
 
 
 vector_index = VectorIndex()

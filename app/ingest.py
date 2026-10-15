@@ -234,16 +234,6 @@ def _index_document(db: sqlite3.Connection, doc_id: int, kind: str) -> dict:
         " VALUES (?,?,?,?,?,?,?)",
         rows,
     )
-    chunk_ids = {r["seq"]: r["id"] for r in db.execute(
-        "SELECT id,seq FROM chunks WHERE document_id=?", (doc_id,))}
-    db.executemany(
-        "INSERT INTO ceid_events (document_id,chunk_id,ceid,event_name,scenario,full_definition,description_status,page_end)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        [(doc_id, chunk_ids[i], p.ceid_event["ceid"], p.ceid_event["event_name"],
-          p.ceid_event["scenario"], p.ceid_event["full_definition"],
-          p.ceid_event["description_status"], p.ceid_event["page_end"])
-         for i, p in enumerate(pieces) if p.ceid_event is not None],
-    )
     pages = max((u.page or 0) for u in units) if kind == "pdf" else None
     db.execute(
         "UPDATE documents SET status='ready', error=NULL, num_chunks=?, pages=?, updated_at=? WHERE id=?",

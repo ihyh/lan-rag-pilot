@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     for removed in ("setup_linux.sh", "Dockerfile", "docker-compose.yml", ".dockerignore",
-                    "docs/UBUNTU.md", "docs/IT_handover.md", "docs/OFFLINE_PACKAGE.md"):
+                    "docs/UBUNTU.md", "docs/IT_handover.md", "docs/OFFLINE_PACKAGE.md",
+                    "app/ceid.py", "tests/ceid_check.py", "docs/ceid-events.md"):
         assert not (ROOT / removed).exists(), f"obsolete deployment entry: {removed}"
     listed = subprocess.check_output(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=ROOT

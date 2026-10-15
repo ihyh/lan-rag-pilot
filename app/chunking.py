@@ -55,7 +55,6 @@ class Piece:
     token_count: int
     page: int | None = None
     paragraph: int | None = None
-    ceid_event: dict | None = None
 
 
 class TokenizerAdapter:
@@ -231,19 +230,11 @@ def chunk_units(
         buffer_para = None
         buffer_tokens = 0
 
-    from .ceid import event_units
-
-    for unit in event_units(units):
+    for unit in units:
         t = (unit.text or "").strip()
         if not t:
             continue
         tk = ta.count(t)
-        if unit.ceid_event is not None:
-            flush()
-            remaining()
-            # 事件可超过普通窗口；保留整个原文，禁止用token窗口截成半条。
-            pieces_out.append(Piece(t, tk, unit.page, unit.paragraph, unit.ceid_event))
-            continue
         if buffer_texts and (buffer_page != unit.page or buffer_tokens + tk > max_tokens):
             flush()
         if not buffer_texts:

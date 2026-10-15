@@ -14,7 +14,7 @@ First-time setup downloads dependencies and models, creates `.env` and a random 
 
 The repository contains source, public documentation and synthetic tests, not private documents, databases, passwords or model weights. A fresh clone requires installation and importing your own documents.
 
-Features include keyword/vector hybrid retrieval, citations, document permissions, conversation history and feedback. CEID records are kept as atomic events with a structured catalog. Definitions from different scenarios remain separate; conflicting IDs are disclosed rather than arbitrated, and label-only records are identified as incomplete. Existing documents need an explicit backed-up reprocessing operation to adopt new chunking.
+Features include keyword/vector hybrid retrieval, citations, document permissions, conversation history and feedback. Answers are instructed to preserve source conditions, disclose conflicts and avoid unsupported conclusions. Existing documents need an explicit backed-up reprocessing operation to adopt new parsing or chunking.
 
 Before updating, stop the service and back up the complete `data` directory and `.env`. Then run `git pull --ff-only` and `setup_windows.cmd`. Updating source does not deploy another running copy or rebuild its index.
 
@@ -28,4 +28,4 @@ python tests/run_checks.py
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/smoke_runner.ps1 -Python (Get-Command python).Source
 ```
 
-These use synthetic data and mock models, not a real-model accuracy benchmark. See the [Chinese guide](README.md), [Windows setup](docs/WINDOWS.md), [operations](docs/OPERATIONS.md), and [CEID details](docs/ceid-events.md).
+These use synthetic data and mock models, not a real-model accuracy benchmark. See the [Chinese guide](README.md), [Windows setup](docs/WINDOWS.md), and [operations](docs/OPERATIONS.md).

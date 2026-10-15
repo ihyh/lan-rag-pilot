@@ -16,7 +16,6 @@ from typing import Iterator
 import httpx
 
 from .config import effective_key, settings
-from . import ceid
 
 SYSTEM_PROMPT = """你是一个基于个人文档知识库的问答助手。
 回答规则：
@@ -35,12 +34,7 @@ SYSTEM_PROMPT = """你是一个基于个人文档知识库的问答助手。
 7. 示例、默认值、历史日志不能证明未读取的现场当前值；缺实测或状态条件时，明确无法确认并指出需补什么。
    原文冲突时分别引用并说明冲突，不编造额外前提消解。局部检索未提供，不等于整份文档没有。
 8. 引用只使用当前片段的编号；工作表行号、章节号、告警代码不是来源编号。
-   带方括号的报文或告警代码用反引号包裹，与结论后的引用区分。
-9. CEID事件只依据当前上下文，禁止用模型内置知识补充定义。同一CEID若有不同定义，
-   必须全部逐条列出原文、业务场景和来源编号，说明同ID不同含义及冲突需人工甄别；
-   禁止按相似度、常识或主观“更符合问题”选择标准答案，禁止合并不同场景条目。
-   场景未标注时写“资料未标注业务场景”。若只有标签或残句，明确写
-   “现有资料没有该条目的完整描述”，不得补全因果、条件或动作。所有事实结论均带来源。"""
+   带方括号的报文或告警代码用反引号包裹，与结论后的引用区分。"""
 
 NO_ANSWER = "根据知识库现有内容无法回答该问题。"
 
@@ -959,9 +953,6 @@ def _secs_structure_projection(question: str, sources: list[dict]) -> str | None
 
 
 def _source_projection(question: str, sources: list[dict]) -> str | None:
-    event = ceid.answer(question, sources)
-    if event is not None:
-        return event
     structure = _secs_structure_projection(question, sources)
     if structure is not None:
         return structure

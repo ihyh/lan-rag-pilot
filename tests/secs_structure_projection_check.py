@@ -109,10 +109,7 @@ def load_projections(path):
     chosen = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
     chosen.extend(node for node in tree.body if isinstance(node, ast.FunctionDef)
                   and node.name in needed | {"chat", "stream_chat"})
-    # _source_projection现在同时委托纯CEID目录逻辑；仍不启动应用/模型/数据库。
-    sys.path.insert(0, str(ROOT))
-    from app import ceid
-    namespace = {"re": re, "Path": Path, "ceid": ceid}
+    namespace = {"re": re, "Path": Path}
     exec(compile(ast.fix_missing_locations(ast.Module(body=chosen, type_ignores=[])), str(path), "exec"), namespace)
 
     def forbidden(*args, **kwargs):
