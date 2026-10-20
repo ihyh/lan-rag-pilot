@@ -91,20 +91,43 @@ def build_pdf(pages: list[str | None]) -> bytes:
 
 
 class FakeImage:
-    def __init__(self, angle: int = 0) -> None:
+    def __init__(self, angle: int = 0, frame: int = 0) -> None:
         self.angle = angle % 360
+        self.frame = frame
 
     def rotate(self, angle: int, expand: bool = True):
-        return FakeImage(self.angle + angle)
+        return FakeImage(self.angle + angle, self.frame)
 
 
 class FakeRenderer:
+    page_count = 1
+
     def __init__(self, image: FakeImage | None = None) -> None:
         self.image = image or FakeImage()
         self.closed = False
 
     def render(self, index: int):
         return self.image
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class MultiFrameRenderer:
+    """模拟两帧 TIFF：按帧号返回不同的 FakeImage。"""
+
+    page_count = 2
+
+    def __init__(self) -> None:
+        self.rendered: list[int] = []
+        self.closed = False
+        self.fail_second = False
+
+    def render(self, index: int):
+        self.rendered.append(index)
+        if index == 1 and self.fail_second:
+            raise RuntimeError("simulated frame decode failure")
+        return FakeImage(frame=index)
 
     def close(self) -> None:
         self.closed = True
@@ -255,6 +278,84 @@ def main() -> None:
         ensure(all(line["score"] < 0.6 for line in page["uncertain_lines"]), "uncertain_lines 带真实分数")
         check(True, "低置信度页标记可疑并列出待核对行")
 
+    print("\n== 高均分 + 低分关键行：整页必须标记可疑 ==")
+    with with_tmp() as temp:
+        root = Path(temp)
+        pdf = root / "hidden-low.pdf"
+        pdf.write_bytes(build_pdf([None]))
+        lines = [tool.OcrLine(f"第 {index} 行都是高置信度文本", 0.99) for index in range(1, 10)]
+        lines.append(tool.OcrLine("压力不得超过 0.6 MPa", 0.55))
+        engine = FakeEngine(lambda image: lines)
+        code, _ = run_tool([pdf], root / "out", engine=engine, factory=renderer_factory())
+        result = read_json(root / "out" / "hidden-low.ocr.json")
+        page = result["pages"][0]
+        ensure(code == 0, "低分行不改变退出码（可疑页不算失败）")
+        ensure(page["confidence"]["mean"] > 0.9, "页面均分确实高于阈值")
+        ensure(page["status"] == "suspect", "存在低分行时整页必须 suspect")
+        ensure("low_confidence_line" in page["warnings"], "标记 low_confidence_line")
+        ensure("low_confidence" not in page["warnings"], "均分高时不误报 low_confidence")
+        ensure(len(page["uncertain_lines"]) == 1
+               and page["uncertain_lines"][0]["score"] < 0.6, "保留低分行原文与真实分数")
+        ensure(result["status"] == "partial", "文件整体 partial")
+        check(True, "低分关键行不会被页面均分掩盖")
+
+    print("\n== 多帧 TIFF：逐帧处理且页码映射完整 ==")
+    with with_tmp() as temp:
+        root = Path(temp)
+        tiff = root / "scan.tif"
+        tiff.write_bytes(b"fake-tiff-bytes")  # 假渲染器不读真实图像内容
+
+        def lines_for(image):
+            if image.frame == 1:
+                return [tool.OcrLine("第二帧文字内容足够长可以识别。", 0.92)]
+            return [tool.OcrLine("第一帧文字内容足够长可以识别。", 0.95)]
+
+        renderer = MultiFrameRenderer()
+        code, _ = run_tool(
+            [tiff], root / "out", engine=FakeEngine(lines_for),
+            factory=lambda path, options: renderer,
+        )
+        result = read_json(root / "out" / "scan.ocr.json")
+        ensure(code == 0, "多帧 TIFF 退出码 0")
+        ensure(result["source"]["pages"] == 2, "来源摘要记录 2 帧")
+        ensure([page["page"] for page in result["pages"]] == [1, 2], "页码映射为 1/2")
+        ensure([page["source"] for page in result["pages"]] == ["ocr", "ocr"], "两帧都走 OCR")
+        ensure("第一帧" in result["pages"][0]["text"] and "第二帧" in result["pages"][1]["text"],
+               "两帧文字都被保留，没有静默丢弃第二帧")
+        exported = (root / "out" / "scan.ocr.txt").read_text(encoding="utf-8")
+        ensure(exported.count("\f") == 1, "两帧文本用分页符映射")
+
+        code, _ = run_tool(
+            [tiff], root / "out-pages", engine=FakeEngine(lines_for),
+            factory=lambda path, options: MultiFrameRenderer(),
+            options=tool.OcrOptions(pages={2}),
+        )
+        result = read_json(root / "out-pages" / "scan.ocr.json")
+        ensure(result["pages"][0]["status"] == "skipped", "--pages 2 时第一帧 skipped")
+        ensure(result["pages"][1]["source"] == "ocr", "--pages 2 时第二帧正常 OCR")
+
+        code, _ = run_tool(
+            [tiff], root / "out-limit", engine=FakeEngine(lines_for),
+            factory=lambda path, options: MultiFrameRenderer(),
+            options=tool.OcrOptions(max_pages=1),
+        )
+        result = read_json(root / "out-limit" / "scan.ocr.json")
+        ensure(result["pages"][1]["status"] == "skipped"
+               and "page_limit_reached" in result["pages"][1]["warnings"], "页数上限作用于多帧")
+
+        failing_renderer = MultiFrameRenderer()
+        failing_renderer.fail_second = True
+        code, _ = run_tool(
+            [tiff], root / "out-fail", engine=FakeEngine(lines_for),
+            factory=lambda path, options: failing_renderer,
+        )
+        result = read_json(root / "out-fail" / "scan.ocr.json")
+        ensure(code == 1, "第二帧解码失败时退出码 1")
+        ensure(result["pages"][0]["status"] == "ok"
+               and result["pages"][1]["status"] == "failed"
+               and result["pages"][1]["error"]["code"] == "render_failed", "第二帧失败被明确标记")
+        check(True, "多帧 TIFF 逐帧处理、页选择/上限/失败路径正确")
+
     print("\n== 文字层疑似乱码：回退 OCR 并保留审计 ==")
     with with_tmp() as temp:
         root = Path(temp)
@@ -348,6 +449,48 @@ def main() -> None:
         code, _ = run_tool([pdf], root / "out", engine=FakeEngine(), factory=renderer_factory(), overwrite=True)
         ensure(code == 0, "--overwrite 允许重跑")
         check(True, "拒绝覆盖保护生效且原件从不被修改")
+
+    print("\n== 运行清单覆盖语义：未 --overwrite 时不得改写旧清单 ==")
+    with with_tmp() as temp:
+        root = Path(temp)
+        pdf = root / "keep.pdf"
+        pdf.write_bytes(build_pdf([LONG_TEXT]))
+        out = root / "out"
+        code, _ = run_tool([pdf], out, engine=FakeEngine(), factory=renderer_factory())
+        ensure(code == 0, "首次运行成功")
+        first_hashes = {
+            name: tool.sha256_file(out / name)
+            for name in ("keep.ocr.json", "keep.ocr.txt", "ocr_run.json")
+        }
+        code, _ = run_tool([pdf], out, engine=FakeEngine(), factory=renderer_factory())
+        ensure(code == 1, "同输入无 --overwrite 重跑被拒绝")
+        after_hashes = {
+            name: tool.sha256_file(out / name)
+            for name in ("keep.ocr.json", "keep.ocr.txt", "ocr_run.json")
+        }
+        ensure(first_hashes == after_hashes, "旧输出与旧 ocr_run.json 完全未被改动")
+        manifests = sorted(path.name for path in out.glob("ocr_run*.json") if path.is_file())
+        ensure("ocr_run.json" in manifests and len(manifests) >= 2, "新运行写入了独立清单")
+        new_name = next(name for name in manifests if name != "ocr_run.json")
+        new_manifest = read_json(out / new_name)
+        ensure(new_manifest["exit_code"] == 1
+               and new_manifest["items"][0]["error"]["code"] == "output_exists",
+               "新清单如实记录本次失败，不覆盖旧成功清单")
+        ensure(new_manifest.get("manifest") == new_name, "清单记录自身文件名")
+
+        other = root / "other.pdf"
+        other.write_bytes(build_pdf([LONG_TEXT]))
+        code, _ = run_tool([other], out, engine=FakeEngine(), factory=renderer_factory())
+        ensure(code == 0, "同目录处理新一批输入无需覆盖成功")
+        ensure(tool.sha256_file(out / "ocr_run.json") == first_hashes["ocr_run.json"],
+               "新批次仍不改写旧 ocr_run.json")
+        ensure(len(list(out.glob("ocr_run*.json"))) >= 3, "每批新输入各自保留清单")
+
+        code, _ = run_tool([pdf], out, engine=FakeEngine(), factory=renderer_factory(), overwrite=True)
+        ensure(code == 0, "--overwrite 时允许覆盖")
+        ensure(read_json(out / "ocr_run.json")["exit_code"] == 0,
+               "--overwrite 覆盖固定清单且记录本次成功")
+        check(True, "清单与输出采用一致的覆盖语义，旧证据默认保留")
 
     print("\n== 其它输入边界：损坏 PDF / 图片 / 不支持格式 / 同名输出 ==")
     with with_tmp() as temp:

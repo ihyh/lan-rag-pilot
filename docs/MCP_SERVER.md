@@ -69,6 +69,21 @@ python scripts\mcp_server.py
 `ask_question` 直接复用 `app.llm.chat`（网页问答使用的同一生成调用与提示路径），
 不额外实现第二套提示或拼接逻辑。
 
+## 长驻进程的索引刷新与范围新鲜度（R4）
+
+MCP 进程通常长时间驻留，而网页服务/导入流程会持续改库。只在首次调用加载索引会导致新文档
+搜不到、已删除/非就绪文档仍被检索（Codex 复核 R4）。现在的行为：
+
+- 每次 `search_documents` / `ask_question` 前先读取一个轻量**资料指纹**（documents/chunks
+  的行数、最大 ID、ready/parsing 数量、documents.updated_at）；指纹变化时才调用现有
+  `vector_index.reload` 重载内存索引，**不会每次重载嵌入模型**；
+- 全库范围的 `scope` 始终是**当前**已就绪文档集合（不是 `None`），因此旧索引里已删除/
+  非就绪文档的切片会被过滤，新增文档在索引重载后立即可检索；
+- 同一会话内新增文档、改状态、重新索引都会在下次工具调用生效；`list_documents` 与
+  `get_document_text` 直接读数据库，天然最新；
+- 已知局限：应用本身不会原地改写同一 chunk 行；若用外部脚本原地改同一行内容，指纹不会变化，
+  需重启 MCP 进程。文档/切片增删与重新索引（ID、行数变化）均能识别。
+
 ## 验证
 
 ```powershell
@@ -83,12 +98,15 @@ python tests/mcp_server_check.py
 - `list_documents`、`search_documents`（全库与限定范围）、`get_document_text`（整篇/指定页）；
 - 错误处理：未知 document_ids、未知文档、空查询、非法 top_k、不存在页码均返回可读错误；
 - 全库检索能召回两份相似文档，限定范围后结果不越界；
+- **同一 MCP 会话内资料变化（R4）**：新增文档后限定检索立即可用；文档改为非就绪后不再作为
+  全库来源、限定检索明确报错；同一文档重新索引后检索使用新切片内容；`ask_question` 同样使用
+  刷新后的索引；
 - **与网页问答一致**：同一问题、同一 `document_ids` 下，网页 `/api/query` 返回的来源身份集合与
   MCP `search_documents` 完全一致（复用同一函数）；
 - `ask_question` 区分生成回答与原始证据；工具调用**不写入** conversations/chats 历史；
 - 工具列表不含删除/重建索引/命令执行类工具。
 
-结果：**30/30 通过**（详见 `docs/reviews/2026-10-20-mcp-server.md`）。
+结果：**37/37 通过**（详见 `docs/reviews/2026-10-20-mcp-server.md` 与批量复核修正说明）。
 
 ## 数据流向与安全边界
 
@@ -104,4 +122,5 @@ python tests/mcp_server_check.py
 - 未部署、未加入开机自启、未配置到任何真实客户端（只做协议级验证）。
 - 未实现 Streamable HTTP、鉴权、远程访问。
 - 未把 MCP 查询写入个人问答历史（有意只读；如需要另议）。
-- MCP 进程与网页服务各自加载嵌入模型/索引（沿用现有进程模型，未做共享内存方案）。
+- MCP 进程与网页服务各自加载嵌入模型/索引（沿用现有进程模型，未做共享内存方案）；
+  索引会按资料指纹自动重载以保持新鲜（见 R4 一节）。

@@ -263,7 +263,7 @@ class PdfPageRenderer:
 
 
 class ImageFileRenderer:
-    """图片输入：把文件本身当作单页图像。"""
+    """图片输入：单帧图片或多帧 TIFF；按帧号读取。"""
 
     def __init__(self, path: Path) -> None:
         try:
@@ -274,9 +274,14 @@ class ImageFileRenderer:
             ) from exc
         self._path = path
         self._image_module = image_module
+        # 多帧 TIFF 必须逐帧处理，不能静默只读第一页。
+        with self._image_module.open(self._path) as image:
+            self.page_count = int(getattr(image, "n_frames", 1) or 1)
 
     def render(self, index: int):
         with self._image_module.open(self._path) as image:
+            if index:
+                image.seek(index)
             return image.convert("RGB").copy()
 
     def close(self) -> None:
@@ -405,6 +410,9 @@ def _ocr_page_record(page_no: int, image, engine: Engine, options: OcrOptions,
                     break
     if uncertain:
         record["uncertain_lines"] = uncertain
+        # 页面均分可能很高（例如 9 行 0.99 + 1 行关键数字 0.55），不能只把低分行
+        # 藏在 uncertain_lines 里而让整页显示 ok；有低分行就必须标记可疑。
+        record["warnings"].append("low_confidence_line")
     if not lines or chars == 0:
         record["warnings"].append("no_text_detected")
     elif chars < MIN_OCR_TEXT_CHARS:
@@ -561,37 +569,69 @@ def process_document(
                     record["error"] = {"code": "ocr_failed", "message": str(exc)[:300]}
                     result["pages"].append(record)
         else:
-            # 图片输入：单页
-            result["source"]["pages"] = 1
-            record = _new_page_record(1)
-            if options.pages is not None and 1 not in options.pages:
-                record["status"] = "skipped"
-                record["warnings"].append("not_selected")
-                result["pages"].append(record)
-            elif engine is None:
-                record.update(source="none", status="failed")
-                record["error"] = {
-                    "code": "ocr_engine_unavailable",
-                    "message": "图片输入需要 OCR，但本次以 --engine none 运行或引擎不可用。",
-                }
-                record["warnings"].append("ocr_unavailable")
-                result["pages"].append(record)
+            # 图片输入：单帧图片或多帧 TIFF，必须逐帧处理，不能静默只取第一页。
+            if renderer_factory is not None:
+                try:
+                    renderer = renderer_factory(path, options)
+                except Exception as exc:  # noqa: BLE001
+                    result["status"] = "failed"
+                    result["source"]["pages"] = 1
+                    result["error"] = {"code": "image_open_failed", "message": str(exc)[:300]}
+                    return result
+                total_pages = int(getattr(renderer, "page_count", 1) or 1)
             else:
                 try:
-                    renderer = (renderer_factory(path, options) if renderer_factory is not None
-                                else ImageFileRenderer(path))
-                    image = renderer.render(0)
+                    renderer = ImageFileRenderer(path)
+                except OcrEngineUnavailable as exc:
+                    renderer = None
+                    total_pages = 1
+                    if engine is not None:
+                        result["status"] = "failed"
+                        result["source"]["pages"] = 1
+                        result["error"] = {"code": "image_open_failed", "message": str(exc)[:300]}
+                        return result
+                else:
+                    total_pages = int(getattr(renderer, "page_count", 1) or 1)
+            result["source"]["pages"] = total_pages
+            selected = _page_selection(total_pages, options)
+            limit = min(total_pages, options.max_pages)
+            if total_pages > options.max_pages:
+                result["warnings"].append("max_pages_limit_reached")
+            for page_index in range(total_pages):
+                page_no = page_index + 1
+                record = _new_page_record(page_no)
+                if selected is not None and page_no not in selected:
+                    record["status"] = "skipped"
+                    record["warnings"].append("not_selected")
+                    result["pages"].append(record)
+                    continue
+                if page_no > limit:
+                    record["status"] = "skipped"
+                    record["warnings"].append("page_limit_reached")
+                    result["pages"].append(record)
+                    continue
+                if engine is None:
+                    record.update(source="none", status="failed")
+                    record["error"] = {
+                        "code": "ocr_engine_unavailable",
+                        "message": "图片输入需要 OCR，但本次以 --engine none 运行或引擎不可用。",
+                    }
+                    record["warnings"].append("ocr_unavailable")
+                    result["pages"].append(record)
+                    continue
+                try:
+                    image = renderer.render(page_index)
                 except Exception as exc:  # noqa: BLE001
                     record.update(source="none", status="failed")
                     record["error"] = {"code": "render_failed", "message": str(exc)[:300]}
                     result["pages"].append(record)
-                else:
-                    try:
-                        result["pages"].append(_ocr_page_record(1, image, engine, options, record))
-                    except Exception as exc:  # noqa: BLE001
-                        record.update(source="ocr", status="failed")
-                        record["error"] = {"code": "ocr_failed", "message": str(exc)[:300]}
-                        result["pages"].append(record)
+                    continue
+                try:
+                    result["pages"].append(_ocr_page_record(page_no, image, engine, options, record))
+                except Exception as exc:  # noqa: BLE001
+                    record.update(source="ocr", status="failed")
+                    record["error"] = {"code": "ocr_failed", "message": str(exc)[:300]}
+                    result["pages"].append(record)
     finally:
         if renderer is not None:
             close = getattr(renderer, "close", None)
@@ -639,6 +679,26 @@ def _unique_stem(path: Path, used: set[str], sha256: str) -> str:
         suffix += 1
         candidate = f"{stem}-{sha256[:8]}-{suffix}"
     used.add(candidate)
+    return candidate
+
+
+def _manifest_output_path(out_dir: Path, overwrite: bool, created_at: str) -> Path:
+    """运行清单写入口径：未显式 --overwrite 时绝不覆盖已有清单。
+
+    - 目录里还没有 `ocr_run.json`：沿用固定名；
+    - 已有清单且未 --overwrite：生成唯一的 `ocr_run-<时间戳>[-N].json`，
+      保留先前批次的成功/失败证据，不用新清单覆盖旧清单；
+    - --overwrite：允许覆盖固定名清单（与输出文件语义一致）。
+    """
+    path = out_dir / MANIFEST_NAME
+    if overwrite or not path.exists():
+        return path
+    stamp = re.sub(r"\D", "", created_at)[:14] or "run"
+    candidate = out_dir / f"ocr_run-{stamp}.json"
+    index = 1
+    while candidate.exists():
+        index += 1
+        candidate = out_dir / f"ocr_run-{stamp}-{index}.json"
     return candidate
 
 
@@ -732,7 +792,9 @@ def run(
         "exit_code": exit_code,
     }
     if write_manifest:
-        _write_json(out_dir / MANIFEST_NAME, manifest)
+        manifest_path = _manifest_output_path(out_dir, overwrite, created_at)
+        manifest["manifest"] = manifest_path.name
+        _write_json(manifest_path, manifest)
     return exit_code, manifest
 
 

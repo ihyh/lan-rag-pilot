@@ -207,21 +207,36 @@ def main() -> int:
         mixed_pdf = work_dir / "mixed.pdf"
         mixed_pdf.write_bytes(merge_pdfs([text_only_pdf, chinese_pdf]))
 
+        # 多页 TIFF：两帧不同正文，验证逐帧处理而不是静默只取第一帧。
+        tiff_page1 = Image.new("RGB", (1200, 400), "white")
+        ImageDraw.Draw(tiff_page1).text(
+            (60, 80), "第一帧：设备巡检记录", fill="black",
+            font=ImageFont.truetype(chinese_font, 48),
+        )
+        tiff_page2 = Image.new("RGB", (1200, 400), "white")
+        ImageDraw.Draw(tiff_page2).text(
+            (60, 80), "第二帧：压力不得超过 0.6 MPa", fill="black",
+            font=ImageFont.truetype(chinese_font, 48),
+        )
+        multi_tiff = work_dir / "multi-page.tif"
+        tiff_page1.save(multi_tiff, save_all=True, append_images=[tiff_page2])
+
         originals = {path: tool.sha256_file(path) for path in (
             chinese_png, english_png, table_png, rotated_png,
             chinese_pdf, english_pdf, table_pdf, rotated_pdf, text_only_pdf, mixed_pdf,
+            multi_tiff,
         )}
 
         # ---------------- 运行工具 ----------------
         options = tool.OcrOptions()
         code, manifest = tool.run(
-            [mixed_pdf, english_pdf, table_pdf, rotated_pdf],
+            [mixed_pdf, english_pdf, table_pdf, rotated_pdf, multi_tiff],
             work_dir / "out",
             options,
             engine=engine,
         )
         result_paths = {path.stem: work_dir / "out" / f"{path.stem}.ocr.json" for path in (
-            mixed_pdf, english_pdf, table_pdf, rotated_pdf,
+            mixed_pdf, english_pdf, table_pdf, rotated_pdf, multi_tiff,
         )}
         results_by_name = {
             name: json.loads(path.read_text(encoding="utf-8"))
@@ -265,6 +280,19 @@ def main() -> int:
         check(bool(rotated_page.get("rotation_attempts")), "旋转页记录 OCR 尝试次数")
         check(rotated_recall >= 0.7, f"旋转页字符召回 {rotated_recall:.3f} >= 0.7")
 
+        tiff_result = results_by_name["multi-page"]
+        tiff_pages = tiff_result["pages"]
+        check(tiff_result["source"]["pages"] == 2 and [page["page"] for page in tiff_pages] == [1, 2],
+              "多页 TIFF 帧数与页码映射完整")
+        check([page["source"] for page in tiff_pages] == ["ocr", "ocr"],
+              "多页 TIFF 两帧都走 OCR")
+        tiff_text = "\n".join(page["text"] for page in tiff_pages)
+        check("第一帧" in tiff_text and "第二帧" in tiff_text,
+              "多页 TIFF 两帧文字都保留（没有静默丢弃第二帧）")
+        check("0.6" in tiff_text.replace(" ", ""), "多页 TIFF 第二帧数字/单位被识别")
+        tiff_export = (work_dir / "out" / "multi-page.ocr.txt").read_text(encoding="utf-8")
+        check(tiff_export.count("\f") == 1, "多页 TIFF 文本导出页码映射正确")
+
         checksums = {path: tool.sha256_file(path) for path in originals}
         check(checksums == originals, "所有原件 SHA-256 均未改变")
         for name, result in results_by_name.items():
@@ -282,6 +310,7 @@ def main() -> int:
                 "table": {"text": table_ocr},
                 "rotated": {"text": rotated_ocr, "recall": round(rotated_recall, 4),
                             "rotation_degrees": rotated_page.get("rotation_degrees")},
+                "multi_page_tiff": {"texts": [page["text"] for page in tiff_pages]},
                 "mixed_pages": [page["source"] for page in mixed],
             },
             "results": results,
@@ -294,6 +323,8 @@ def main() -> int:
             target = Path(evidence)
             target.mkdir(parents=True, exist_ok=True)
             for path in work_dir.glob("*.png"):
+                shutil.copy2(path, target / path.name)
+            for path in work_dir.glob("*.tif*"):
                 shutil.copy2(path, target / path.name)
             for path in (work_dir / "out").glob("*"):
                 shutil.copy2(path, target / path.name)

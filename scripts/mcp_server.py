@@ -67,12 +67,37 @@ class KnowledgeBaseUnavailable(RuntimeError):
     """知识库/嵌入模型未就绪时抛出的可读错误。"""
 
 
+def _index_fingerprint(db) -> tuple:
+    """资料/切片版本的轻量指纹，用于发现"另一个进程改了库"。
+
+    长驻 MCP 进程不能只在首次调用时加载索引：网页服务导入/删除/重新处理文档后，
+    内存索引必须刷新。这里用文档与切片的行数、最大 ID、就绪状态分布和 documents
+    的 updated_at 组成指纹；`vector_index.reload` 只在指纹变化时执行，避免每问重载。
+
+    局限：原地改写同一 chunk 行内容（应用本身不会这样做）不会被识别，需重启进程；
+    重新处理文档会重建 chunks（ID/行数变化）从而被识别。
+    """
+    row = db.execute(
+        "SELECT (SELECT COUNT(*) FROM documents) AS documents,"
+        " (SELECT COALESCE(MAX(id),0) FROM documents) AS max_document_id,"
+        " (SELECT COALESCE(SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END),0)"
+        "  FROM documents) AS ready_documents,"
+        " (SELECT COALESCE(SUM(CASE WHEN status='parsing' THEN 1 ELSE 0 END),0)"
+        "  FROM documents) AS parsing_documents,"
+        " (SELECT COUNT(*) FROM chunks) AS chunks,"
+        " (SELECT COALESCE(MAX(id),0) FROM chunks) AS max_chunk_id,"
+        " (SELECT COALESCE(MAX(updated_at),'') FROM documents) AS documents_updated"
+    ).fetchone()
+    return tuple(row)
+
+
 class KnowledgeBase:
     """惰性初始化：只在第一次工具调用时打开数据库/加载索引/等待嵌入模型。"""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._ready = False
+        self._index_fingerprint: tuple | None = None
 
     def ensure_ready(self) -> None:
         with self._lock:
@@ -81,6 +106,7 @@ class KnowledgeBase:
             db_module.init_db()
             with closing(db_module.connect()) as db:
                 vector_index.reload(db)
+                self._index_fingerprint = _index_fingerprint(db)
             embedding_service.start()
             deadline = time.monotonic() + READY_WAIT_SECONDS
             while embedding_service.state in ("idle", "loading") and time.monotonic() < deadline:
@@ -92,6 +118,18 @@ class KnowledgeBase:
                     + "。请确认服务配置（RAG_DATA_DIR / RAG_MODELS_DIR）后重试。"
                 )
             self._ready = True
+
+    def ensure_fresh_index(self) -> None:
+        """检索前同步索引：检测到资料变化时重载索引；不重载嵌入模型。"""
+        self.ensure_ready()
+        with self._lock:
+            with closing(db_module.connect()) as db:
+                fingerprint = _index_fingerprint(db)
+                if fingerprint == self._index_fingerprint:
+                    return
+                vector_index.reload(db)
+                # 重载后再取一次指纹：若读取期间又有提交，下一次调用会再刷新。
+                self._index_fingerprint = _index_fingerprint(db)
 
     def connect(self):
         return db_module.connect()
@@ -132,14 +170,17 @@ def _ready_documents(db) -> list[dict]:
     ]
 
 
-def _resolve_scope(db, document_ids: list[int] | None) -> tuple[set[int] | None, list[int]]:
-    """空/None = 全部就绪文档；显式列表必须是全部就绪文档的子集。
+def _resolve_scope(db, document_ids: list[int] | None) -> tuple[set[int], list[int], str]:
+    """返回 (scope, scope_ids, scope_mode)。
 
-    返回 (scope, scope_ids)：scope 为 None 表示全库；scope_ids 为回显的有效文档列表。
+    - `scope` 始终是**当前**已就绪文档集合（全库模式也不会返回 None）：这样旧内存
+      索引里已删除/非就绪文档的切片会被过滤，不会继续作为来源返回；
+    - `document_ids` 省略或为空表示全库，`scope_ids` 回显为空；
+    - 显式列表必须是当前已就绪文档的子集，越界/不存在会报错。
     """
     ready = {item["document_id"] for item in _ready_documents(db)}
     if document_ids is None:
-        return None, []
+        return ready, [], "all"
     normalized = sorted({int(item) for item in document_ids})
     if any(item <= 0 for item in normalized):
         raise ValueError("document_ids 必须为正整数")
@@ -147,8 +188,8 @@ def _resolve_scope(db, document_ids: list[int] | None) -> tuple[set[int] | None,
     if unknown:
         raise ValueError(f"文档不存在或尚未就绪：{unknown}；请先用 list_documents 核对")
     if not normalized:
-        return None, []
-    return set(normalized), normalized
+        return ready, [], "all"
+    return set(normalized), normalized, "selected"
 
 
 def _source_payload(source: dict, *, include_content: bool) -> dict:
@@ -224,9 +265,10 @@ def search_documents(query: str, document_ids: list[int] | None = None, top_k: i
     try:
         text = _normalize_query(query)
         limit = _normalize_top_k(top_k)
-        kb.ensure_ready()
+        # 长驻进程：检索前按资料指纹同步内存索引（新增/删除/状态变化/重新处理都会触发）。
+        kb.ensure_fresh_index()
         with closing(kb.connect()) as db:
-            scope, scope_ids = _resolve_scope(db, document_ids)
+            scope, scope_ids, scope_mode = _resolve_scope(db, document_ids)
             sources, retrieval_ms, empty_reason = retrieve_sources(db, text, scope, limit)
             results = _with_versions(
                 db, [_source_payload(source, include_content=True) for source in sources]
@@ -235,11 +277,14 @@ def search_documents(query: str, document_ids: list[int] | None = None, top_k: i
         raise ToolError(str(exc)) from exc
     response = {
         "query": text,
-        "scope_mode": "selected" if scope is not None else "all",
+        "scope_mode": scope_mode,
         "document_ids": scope_ids,
         "results": results,
         "retrieval_ms": retrieval_ms,
-        "note": "score 是检索排序分数，不是正确率；content 为原始片段，需按文件名/页码核对。",
+        "note": (
+            "score 是检索排序分数，不是正确率；content 为原始片段，需按文件名/页码核对。"
+            "检索使用调用时的最新就绪文档范围。"
+        ),
     }
     if not results:
         response["empty_reason"] = empty_reason or "no_hits"
@@ -302,9 +347,10 @@ def ask_question(question: str, document_ids: list[int] | None = None, top_k: in
     try:
         text = _normalize_query(question)
         limit = _normalize_top_k(top_k)
-        kb.ensure_ready()
+        # 问答同样复用最新索引与当前就绪范围，避免长驻进程使用旧快照。
+        kb.ensure_fresh_index()
         with closing(kb.connect()) as db:
-            scope, scope_ids = _resolve_scope(db, document_ids)
+            scope, scope_ids, scope_mode = _resolve_scope(db, document_ids)
             sources, retrieval_ms, empty_reason = retrieve_sources(db, text, scope, limit)
             evidence = _with_versions(
                 db, [_source_payload(source, include_content=False) for source in sources]
@@ -315,7 +361,7 @@ def ask_question(question: str, document_ids: list[int] | None = None, top_k: in
         return {
             "status": "no_evidence",
             "question": text,
-            "scope_mode": "selected" if scope is not None else "all",
+            "scope_mode": scope_mode,
             "document_ids": scope_ids,
             "answer": None,
             "sources": [],
@@ -333,7 +379,7 @@ def ask_question(question: str, document_ids: list[int] | None = None, top_k: in
     return {
         "status": "ok",
         "question": text,
-        "scope_mode": "selected" if scope is not None else "all",
+        "scope_mode": scope_mode,
         "document_ids": scope_ids,
         "answer": result.get("answer"),
         "model": result.get("model"),

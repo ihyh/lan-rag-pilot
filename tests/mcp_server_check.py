@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 from contextlib import closing
@@ -155,6 +156,48 @@ def consistency_with_web() -> None:
     return web_sources
 
 
+def apply_r4_mutations(env: dict) -> None:
+    """模拟另一个进程在 MCP 会话存活期间新增文档、改状态、重新索引。"""
+    from app.db import now_iso
+    from app.embeddings import embedding_service
+
+    database = sqlite3.connect(env["RAG_DB_PATH"])
+    try:
+        now = now_iso()
+        content_new = "scope-probe 住宿上限 900 元。新增文档。"
+        vector_new = embedding_service.embed_texts([content_new])[0].tobytes()
+        database.execute(
+            "INSERT INTO documents(id,filename,stored_name,content_type,size_bytes,sha256,"
+            "status,created_at,updated_at) VALUES(?,?,?,?,?,?,'ready',?,?)",
+            (3, "scope-3.txt", "stored-3", "text/plain",
+             len(content_new.encode("utf-8")), "sha-3", now, now),
+        )
+        database.execute(
+            "INSERT INTO chunks(document_id,seq,page,paragraph,token_count,content,vector) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (3, 0, 1, 1, len(content_new), content_new, vector_new),
+        )
+        # 旧文档 2 改为非就绪：全库检索必须不再返回它的片段。
+        database.execute(
+            "UPDATE documents SET status='failed', updated_at=? WHERE id=2", (now,)
+        )
+        # 文档 1 重新索引：chunks 重建（行数/ID 与内容变化）。
+        database.execute("DELETE FROM chunks WHERE document_id=1")
+        content_reindexed = "scope-probe 重新索引后的 900 元。"
+        vector_reindexed = embedding_service.embed_texts([content_reindexed])[0].tobytes()
+        database.execute(
+            "INSERT INTO chunks(document_id,seq,page,paragraph,token_count,content,vector) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (1, 0, 1, 1, len(content_reindexed), content_reindexed, vector_reindexed),
+        )
+        database.execute(
+            "UPDATE documents SET num_chunks=1, updated_at=? WHERE id=1", (now,)
+        )
+        database.commit()
+    finally:
+        database.close()
+
+
 async def protocol_checks(env: dict, seeded: dict) -> dict:
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -255,6 +298,42 @@ async def protocol_checks(env: dict, seeded: dict) -> dict:
             result = await session.call_tool("get_document_text", {"document_id": 999})
             check(_is_error(result) and "文档不存在" in _tool_text(result),
                   "取原文时未知文档明确报错")
+
+            # ---------- R4：同一 MCP 会话内资料变化必须刷新索引/范围 ----------
+            apply_r4_mutations(env)
+            result = await session.call_tool(
+                "search_documents", {"query": "scope-probe", "document_ids": [3]}
+            )
+            new_doc = _tool_payload(result)
+            check(bool(new_doc["results"]) and all(
+                item["document_id"] == 3 for item in new_doc["results"]),
+                "R4: 同一会话新增文档后检索立即可用（索引已刷新）")
+
+            result = await session.call_tool("search_documents", {"query": "scope-probe"})
+            full_after = _tool_payload(result)
+            full_docs = {item["document_id"] for item in full_after["results"]}
+            check(2 not in full_docs, "R4: 非就绪文档不再作为全库检索来源")
+            check(full_docs and full_docs <= {1, 3},
+                  f"R4: 全库检索只返回当前就绪文档（实际 {sorted(full_docs)}）")
+
+            result = await session.call_tool(
+                "search_documents", {"query": "scope-probe", "document_ids": [2]}
+            )
+            check(_is_error(result) and "尚未就绪" in _tool_text(result),
+                  "R4: 已改为非就绪的文档在限定检索时明确报错")
+
+            result = await session.call_tool("list_documents", {})
+            listed = {item["document_id"] for item in _tool_payload(result)["documents"]}
+            check(listed == {1, 3}, f"R4: 文档列表反映最新就绪集合（实际 {sorted(listed)}）")
+
+            result = await session.call_tool(
+                "search_documents", {"query": "scope-probe", "document_ids": [1]}
+            )
+            reindexed = _tool_payload(result)
+            observed["scoped_final"] = reindexed
+            contents = " ".join(item["content"] or "" for item in reindexed["results"])
+            check("重新索引后" in contents,
+                  "R4: 同一文档重新索引后检索使用新切片内容")
     return observed
 
 
@@ -286,6 +365,11 @@ def in_process_ask_check(env: dict) -> None:
           "问答工具明确区分生成回答与原始证据")
     check(all("content" not in source for source in payload["sources"]),
           "问答返回的来源只给身份/摘录，正文用取原文工具")
+    # R4：同一进程内的问答也必须按最新资料刷新索引（新增文档 3 后）。
+    payload_new = mcp_module.ask_question("scope-probe", document_ids=[3])
+    check(payload_new["status"] == "ok" and all(
+        source["document_id"] == 3 for source in payload_new["sources"]),
+        "R4: 问答工具在新增文档后立即使用刷新后的索引")
     with closing(db_module.connect()) as database:
         after = database.execute(
             "SELECT (SELECT COUNT(*) FROM conversations) AS c, (SELECT COUNT(*) FROM chats) AS h"
@@ -323,11 +407,11 @@ def main() -> int:
     seeded = seed_database(work_dir)
     observed = asyncio.run(protocol_checks(env, seeded))
 
-    # 网页问答对照需要同一进程内复用检索路径；单独比较来源身份。
+    # 网页问答对照需要同一进程内复用检索路径；用 R4 变更后的最新范围比较来源身份。
     web_sources = consistency_with_web()
     mcp_sources = {
         (item["chunk_id"], item["document_id"], item.get("page"), item.get("paragraph"))
-        for item in observed["scoped"]["results"]
+        for item in observed["scoped_final"]["results"]
     }
     check(bool(web_sources) and web_sources == mcp_sources,
           f"网页问答与 MCP 检索来源一致（web={len(web_sources)} mcp={len(mcp_sources)}）")
