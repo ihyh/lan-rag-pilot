@@ -610,6 +610,21 @@ class Smoke:
             "至少选择一个文档" in err_text(r) and "全库" in err_text(r),
             "零勾选错误说明不会回退到全库检索",
         )
+        # 前端 100 上限必须与后端 max_length=100 一致：101 项在请求体校验阶段拒绝，
+        # 恰好 100 项通过长度校验（随后按文档是否存在/就绪返回 400/404）。
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "scope_mode": "selected", "document_ids": list(range(1, 102))},
+        )
+        check(r.status_code == 422, "超过 100 个限定文档被拒绝（422）")
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "scope_mode": "selected", "document_ids": list(range(1, 101))},
+        )
+        check(
+            r.status_code in (400, 404),
+            f"恰好 100 个限定文档通过长度校验，随后按文档有效性拒绝（实际 {r.status_code}）",
+        )
 
         # 已绑定文档被删除：新请求和追问都必须明确报错，而不是改用全库。
         r = self.c.post(

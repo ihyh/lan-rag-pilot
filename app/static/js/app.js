@@ -249,7 +249,9 @@ function deviceDocumentIds(documents, device) {
 
   function renderConversation(conversation) {
     if (!conversation) { return; }
-    setDocumentScope(conversation.document_ids || [], true);
+    // 优先使用服务端回显的真实模式：当原限定文档已不可见时，详情会返回
+    // scope_mode="selected" + document_ids=[]，不能按空列表推断成"全库"。
+    setDocumentScope(conversation.document_ids || [], true, conversation.scope_mode);
     hideGreeting();
     clear(els.messages);
     els.messages.classList.remove('hidden');
@@ -269,6 +271,10 @@ function deviceDocumentIds(documents, device) {
   }
 
   /* ---------- 检索范围：全库检索 / 仅选中文档 ---------- */
+
+  // 与后端 QueryBody.document_ids 的 max_length=100 保持一致：前端先校验并说明，
+  // 不静默截取、不自动改用全库。
+  var MAX_SCOPE_DOCUMENTS = 100;
 
   function normalizeIds(ids) {
     return Array.from(new Set((ids || []).map(Number).filter(function (id) {
@@ -311,12 +317,22 @@ function deviceDocumentIds(documents, device) {
   }
 
   // 勾选/取消只改这一个文档：搜索隐藏的其它已选文档必须保持勾选。
+  // 返回是否真的改变了范围；生成中/会话已固定/超过上限时拒绝修改并说明。
   function toggleDocument(id, on) {
+    if (lockedScope() || S.busy) { return false; }
+    if (on && S.newDocumentIds.indexOf(id) === -1
+        && S.newDocumentIds.length >= MAX_SCOPE_DOCUMENTS) {
+      S.scopeNotice = '最多只能选择 ' + MAX_SCOPE_DOCUMENTS
+        + ' 个文档；请先取消部分已选，或缩小搜索范围。';
+      renderScope();
+      return false;
+    }
     var picked = new Set(S.newDocumentIds);
     if (on) { picked.add(id); } else { picked.delete(id); }
     S.newDocumentIds = normalizeIds(Array.from(picked));
     S.scopeNotice = '';
     renderScope();
+    return true;
   }
 
   function resetScopeDraft() {
@@ -327,14 +343,24 @@ function deviceDocumentIds(documents, device) {
     if (els.documentScopeSearch) { els.documentScopeSearch.value = ''; }
   }
 
-  function setDocumentScope(ids, locked) {
+  function setDocumentScope(ids, locked, mode) {
     ids = normalizeIds(ids);
     if (locked) {
+      // 优先信任服务端返回的 scope_mode；仅在旧响应没有该字段时按 ID 推断。
+      // selected + 空列表是合法组合（原限定文档已删除/不可见），不能当成全库。
+      var serverMode = (mode === 'selected' || mode === 'all')
+        ? mode : (ids.length ? 'selected' : 'all');
       S.currentDocumentIds = ids;
-      S.currentScopeMode = ids.length ? 'selected' : 'all';
+      S.currentScopeMode = serverMode;
       S.scopeMode = 'all';
       S.newDocumentIds = [];
     } else {
+      if (ids.length > MAX_SCOPE_DOCUMENTS) {
+        S.scopeNotice = '已选 ' + ids.length + ' 个文档，超过上限 ' + MAX_SCOPE_DOCUMENTS
+          + ' 个；请缩小范围后再选择。不会自动截取，也不会改用全库检索。';
+        renderScope();
+        return;
+      }
       S.currentDocumentIds = [];
       S.currentScopeMode = 'all';
       S.newDocumentIds = ids;
@@ -350,6 +376,10 @@ function deviceDocumentIds(documents, device) {
     if (S.scopeMode !== 'selected') { return ''; }
     if (!S.newDocumentIds.length) {
       return '已选择「仅选中文档」，但没有勾选任何文档。请先勾选文档，或切换为「全库检索」；不会自动改用全库检索。';
+    }
+    if (S.newDocumentIds.length > MAX_SCOPE_DOCUMENTS) {
+      return '已选 ' + S.newDocumentIds.length + ' 个文档，超过上限 ' + MAX_SCOPE_DOCUMENTS
+        + ' 个。请减少选择后再发送；不会自动截取前 ' + MAX_SCOPE_DOCUMENTS + ' 个，也不会改用全库检索。';
     }
     if (!S.documentsLoaded) {
       return '文档列表未成功加载，无法确认所选文档是否仍可用。请先点「刷新」重新加载，或切换为「全库检索」。';
@@ -394,7 +424,9 @@ function deviceDocumentIds(documents, device) {
       els.documentScopeClear.textContent = '清空已选（' + S.newDocumentIds.length + '）';
       els.documentScopeClear.disabled = lockedScope() || S.busy || !S.newDocumentIds.length;
     }
-    if (els.documentScopeReload) { els.documentScopeReload.disabled = S.documentsLoading; }
+    if (els.documentScopeReload) {
+      els.documentScopeReload.disabled = S.documentsLoading || S.busy;
+    }
   }
 
   function renderDocumentOptions() {
@@ -419,12 +451,16 @@ function deviceDocumentIds(documents, device) {
       var label = docLabel(doc);
       var box = h('input', { type: 'checkbox', value: String(doc.id) });
       box.checked = S.newDocumentIds.indexOf(doc.id) !== -1;
+      // 生成中或会话已固定时，勾选本身也不可修改（旧版是禁用的，不能退化）。
+      box.disabled = S.busy;
       var only = h('button', {
         class: 'doc-only', type: 'button', title: '仅选此文档', 'aria-label': '仅选择 ' + label
       }, ['仅选']);
+      only.disabled = S.busy;
       only.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
+        if (lockedScope() || S.busy) { return; }
         S.newDocumentIds = [doc.id];
         S.scopeNotice = '';
         renderScope();
@@ -432,7 +468,10 @@ function deviceDocumentIds(documents, device) {
       });
       box.addEventListener('change', function (ev) {
         var target = (ev && ev.target) || box;
-        toggleDocument(doc.id, !!target.checked);
+        if (!toggleDocument(doc.id, !!target.checked)) {
+          // 被拒绝（生成中/已固定/超上限）时把勾选状态恢复成模型状态。
+          target.checked = S.newDocumentIds.indexOf(doc.id) !== -1;
+        }
       });
       els.documentScopeOptions.appendChild(h('label', { class: 'document-scope-option', title: label }, [
         box,
@@ -450,12 +489,18 @@ function deviceDocumentIds(documents, device) {
     var selected = mode === 'selected';
     var names = scopeNames(ids);
     var missing = scopeMissingIds(ids);
+    // 服务端回显 selected + 空 ID：首问选定的文档已删除或不再可见。
+    var unavailable = locked && selected && ids.length === 0;
 
     if (els.scopeIcon) { els.scopeIcon.innerHTML = icon('layers'); }
     if (els.documentScopeValue) {
-      els.documentScopeValue.textContent = selected
-        ? '仅选中文档 · ' + ids.length + ' 个' + (locked ? '（已固定）' : '')
-        : '全库检索' + (locked ? '（已固定）' : '');
+      if (unavailable) {
+        els.documentScopeValue.textContent = '仅选中文档 · 原文档不可用（已固定）';
+      } else {
+        els.documentScopeValue.textContent = selected
+          ? '仅选中文档 · ' + ids.length + ' 个' + (locked ? '（已固定）' : '')
+          : '全库检索' + (locked ? '（已固定）' : '');
+      }
       els.documentScopeValue.className = 'scope-badge ' + (selected ? 'is-selected' : 'is-all');
     }
     if (els.scopeModeAll && els.scopeModeSelected) {
@@ -471,7 +516,13 @@ function deviceDocumentIds(documents, device) {
       els.scopeModeSelectedLabel.classList.toggle('is-disabled', locked || S.busy);
     }
     if (els.documentScopeHint) {
-      if (locked) {
+      if (S.busy && !locked) {
+        els.documentScopeHint.textContent =
+          '正在生成回答，本次检索范围已固定、暂时不能修改；回答结束后才能继续调整。';
+      } else if (unavailable) {
+        els.documentScopeHint.textContent =
+          '本对话原为「仅选中文档」，但首问选定的文档已删除或不再可见；请新建对话并重新选择。';
+      } else if (locked) {
         els.documentScopeHint.textContent = selected
           ? '本对话固定为「仅选中文档」：只在本对话首问选定的 ' + ids.length + ' 个文档中检索。'
           : '本对话固定为「全库检索」：在你可见的全部已就绪文档中查找。';
@@ -492,15 +543,21 @@ function deviceDocumentIds(documents, device) {
       els.documentScopeLock.classList.toggle('hidden', !locked);
     }
     if (locked && els.documentScopeLockText) {
-      var lockText = selected
-        ? '本对话范围：仅选中文档 · ' + ids.length + ' 个'
-          + (names.length ? '：' + names.join('、') : '')
-        : '本对话范围：全库检索';
+      var lockText;
+      if (unavailable) {
+        lockText = '本对话范围：仅选中文档（首问选定的文档已删除或不再可见，无法显示文件名）。'
+          + '范围仍固定在原文档；如需更换，请新建对话并重新选择。';
+      } else {
+        lockText = selected
+          ? '本对话范围：仅选中文档 · ' + ids.length + ' 个'
+            + (names.length ? '：' + names.join('、') : '')
+          : '本对话范围：全库检索';
+      }
       if (missing.length) {
         lockText += '；其中 ' + missing.length + ' 个文档已删除或不可用（ID：' + missing.join('、') + '）';
       }
       els.documentScopeLockText.textContent = lockText;
-      els.documentScopeLockText.classList.toggle('is-missing', missing.length > 0);
+      els.documentScopeLockText.classList.toggle('is-missing', unavailable || missing.length > 0);
     }
     if (els.documentScopeSelected) {
       if (locked) {
@@ -524,6 +581,7 @@ function deviceDocumentIds(documents, device) {
             class: 'scope-chip-x', type: 'button', title: '取消选择',
             'aria-label': '取消选择 ' + label
           }, ['×']);
+          x.disabled = S.busy;
           x.addEventListener('click', function (ev) {
             ev.preventDefault();
             toggleDocument(id, false);
@@ -939,6 +997,14 @@ function deviceDocumentIds(documents, device) {
         if (!docs.length) { return; }
         var picked = new Set(S.newDocumentIds);
         docs.forEach(function (doc) { picked.add(doc.id); });
+        if (picked.size > MAX_SCOPE_DOCUMENTS) {
+          // 整批拒绝，不做"静默截取前 100 个"：否则实际范围与用户看到的筛选结果不一致。
+          S.scopeNotice = '当前筛选结果加入后共 ' + picked.size + ' 个文档，超过上限 '
+            + MAX_SCOPE_DOCUMENTS + ' 个；请先缩小搜索范围或取消部分已选。不会自动截取，也不会改用全库检索。';
+          renderScope();
+          toast('已选文档超过 ' + MAX_SCOPE_DOCUMENTS + ' 个上限，未加入任何文档', 'warn');
+          return;
+        }
         S.newDocumentIds = normalizeIds(Array.from(picked));
         S.scopeNotice = '';
         renderScope();
@@ -963,6 +1029,14 @@ function deviceDocumentIds(documents, device) {
         var ids = deviceDocumentIds(S.documents, btn.dataset.device);
         if (!ids.length) {
           toast('没有找到该设备的可用文档，请在「检索范围」中手动选择', 'warn');
+          return;
+        }
+        if (ids.length > MAX_SCOPE_DOCUMENTS) {
+          S.scopeMode = 'selected';
+          S.scopeNotice = '该设备匹配 ' + ids.length + ' 个文档，超过上限 ' + MAX_SCOPE_DOCUMENTS
+            + ' 个；请手动缩小范围后再试。不会自动截取或改用全库检索。';
+          renderScope();
+          toast('设备匹配文档超过上限，未替换检索范围', 'warn');
           return;
         }
         setDocumentScope(ids, false);

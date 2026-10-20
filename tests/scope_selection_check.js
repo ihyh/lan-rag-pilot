@@ -322,7 +322,105 @@ async function main() {
   assert.match(elements.documentScopeValue.textContent, /全库检索$/);
   assert.equal(elements.scopeModeAll.disabled, false);
 
-  console.log('Scope selection PASS: 全库/仅选中文档载荷、零勾选拦截、搜索保留勾选、全选作用域、清空不改模式、单文档选择、会话锁定与历史恢复、已删除文档提示、加载失败与重试');
+  // ---- 18. R1：首问生成期间不得改动范围（显示必须与在途请求一致） ----
+  conversationDetail = null;
+  documentsFail = false;
+  await t.loadDocuments();
+  const originalApi = context.api;
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  let pendingSubmitted = null;
+  context.api = async (url, options) => {
+    if (url === '/api/query?stream=true') {
+      pendingSubmitted = JSON.parse(JSON.stringify(options.body));
+      await firstGate;
+    }
+    return originalApi(url, options);
+  };
+  chooseSelectedMode();
+  checkDoc(1);
+  elements.questionInput.value = '生成期间修改范围';
+  const pendingSend = t.sendQuestion();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(t.S.busy, true, '首问处于生成中');
+  const rowBeta = optionRows().find(row => Number(row.children[0].value) === 2);
+  assert.ok(rowBeta, '生成中仍能看到文档列表');
+  assert.equal(rowBeta.children[0].disabled, true, 'R1: 生成中复选框必须禁用');
+  assert.equal(rowBeta.children[2].disabled, true, 'R1: 生成中「仅选」必须禁用');
+  assert.match(elements.documentScopeHint.textContent, /正在生成/, 'R1: 生成中说明本次范围已固定');
+  // 即使旧节点事件或程序调用绕过禁用态，也不能改变范围。
+  rowBeta.children[0].checked = true;
+  rowBeta.children[0].events.change();
+  rowBeta.children[2].events.click({ preventDefault() {}, stopPropagation() {} });
+  elements.documentScopeChips.children.forEach(chip => {
+    chip.children[1].events.click({ preventDefault() {}, stopPropagation() {} });
+  });
+  elements.documentScopeSelectAll.events.click();
+  elements.documentScopeClear.events.click();
+  assert.deepEqual(Array.from(t.S.newDocumentIds), [1], 'R1: 生成中任何操作都不能改变草稿范围');
+  assert.deepEqual(pendingSubmitted.document_ids, [1], 'R1: 在途请求范围未被修改');
+  releaseFirst();
+  await pendingSend;
+  context.api = originalApi;
+  assert.equal(t.S.currentScopeMode, 'selected', 'R1: 完成后采用服务器返回的真实模式');
+  assert.deepEqual(Array.from(t.S.currentDocumentIds), [1], 'R1: 完成后范围与请求一致');
+
+  // ---- 19. R2：历史恢复优先使用服务端 scope_mode ----
+  t.S.currentId = 99;
+  t.renderConversation({ id: 99, scope_mode: 'selected', document_ids: [1], turns: [] });
+  assert.equal(t.S.currentScopeMode, 'selected', 'R2: selected + 非空 ID 正常');
+  assert.match(elements.documentScopeValue.textContent, /仅选中文档 · 1 个/);
+  t.renderConversation({ id: 99, scope_mode: 'selected', document_ids: [], turns: [] });
+  assert.equal(t.S.currentScopeMode, 'selected', 'R2: selected + 空 ID 仍是仅选中文档');
+  assert.doesNotMatch(elements.documentScopeValue.textContent, /全库/,
+    'R2: 不能因可见性过滤后的空列表伪装成全库');
+  assert.match(elements.documentScopeValue.textContent, /原文档不可用/);
+  assert.match(elements.documentScopeLockText.textContent, /已删除或不再可见|不可用/, 'R2: 明说原限定文档不可用');
+  assert.match(elements.documentScopeLockText.textContent, /新建对话/, 'R2: 引导新建对话');
+  t.renderConversation({ id: 99, scope_mode: 'all', document_ids: [], turns: [] });
+  assert.equal(t.S.currentScopeMode, 'all', 'R2: all + 空 ID 是全库');
+  assert.match(elements.documentScopeValue.textContent, /全库检索/);
+  t.renderConversation({ id: 99, document_ids: [], turns: [] });
+  assert.equal(t.S.currentScopeMode, 'all', 'R2: 旧响应无模式时按空列表推断全库');
+  t.renderConversation({ id: 99, document_ids: [2], turns: [] });
+  assert.equal(t.S.currentScopeMode, 'selected', 'R2: 旧响应无模式时按非空列表推断限定');
+
+  // ---- 20. R3：100 文档上限（前端与后端 max_length 一致，不静默截取） ----
+  t.startNewChat();
+  docs.splice(0, docs.length, ...Array.from({ length: 101 }, (_, index) => ({
+    id: index + 1, filename: 'doc-' + (index + 1) + '.pdf'
+  })));
+  await t.loadDocuments();
+  chooseSelectedMode();
+  elements.documentScopeSelectAll.events.click();
+  assert.equal(t.S.newDocumentIds.length, 0, 'R3: 超过上限时整批不加入（不静默截取）');
+  assert.ok(t.scopeBlockReason(), 'R3: 超限时发送前校验必须拦住');
+  assert.match(elements.documentScopeWarn.textContent, /100/, 'R3: 明确说明 100 个上限');
+  // 程序层面即使塞入 101 个，发送前也必须拦住且不发请求。
+  t.S.newDocumentIds = Array.from({ length: 101 }, (_, index) => index + 1);
+  t.renderScope();
+  assert.match(t.scopeBlockReason(), /100/);
+  const beforeLimitSend = requests.length;
+  elements.questionInput.value = '101 个文档不应发出请求';
+  await t.sendQuestion();
+  assert.equal(requests.length, beforeLimitSend, 'R3: 101 个文档不得发出请求');
+  assert.equal(elements.questionInput.value, '101 个文档不应发出请求', 'R3: 被拦住时保留输入');
+  // 100 个恰好可以发送；第 101 个逐一勾选被拒绝并回退显示。
+  t.S.newDocumentIds = [];
+  t.renderScope();
+  for (let id = 1; id <= 100; id += 1) { checkDoc(id); }
+  assert.equal(t.S.newDocumentIds.length, 100, 'R3: 100 个文档可以选中');
+  const box101 = checkboxFor(101);
+  box101.checked = true;
+  box101.events.change();
+  assert.equal(t.S.newDocumentIds.length, 100, 'R3: 逐一勾选第 101 个被拒绝');
+  assert.equal(box101.checked, false, 'R3: 被拒绝的勾选状态回退');
+  elements.questionInput.value = '100 个限定文档';
+  await t.sendQuestion();
+  assert.equal(lastRequest().scope_mode, 'selected');
+  assert.equal(lastRequest().document_ids.length, 100, 'R3: 100 个文档可以发送');
+
+  console.log('Scope selection PASS: 全库/仅选中文档载荷、零勾选拦截、搜索保留勾选、全选作用域、清空不改模式、单文档选择、会话锁定与历史恢复、已删除文档提示、加载失败与重试、生成期间锁定、服务端模式恢复、100 文档上限');
 }
 
 main().catch(error => {
