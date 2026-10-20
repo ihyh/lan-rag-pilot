@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,27 @@ def technical_terms(text: str) -> list[str]:
     terms = re.findall(r"[a-z][a-z0-9]*(?:[_.-][a-z0-9]+)*", text.lower())
     terms.extend((head + tail).lower() for head, tail in aliases)
     return list(dict.fromkeys(terms))
+
+
+def lexical_terms(text: str, *, query: bool = False) -> list[str]:
+    """通用词项独立命名空间：汉字二字片段、单字回退和完整数字表达。"""
+    terms = []
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        terms.extend("z2" + run[i:i + 2].encode("utf-8").hex() for i in range(len(run) - 1))
+        if not query or len(run) == 1:
+            terms.extend("z1" + char.encode("utf-8").hex() for char in run)
+    # 不从小数、科学计数、型号、版本或连字符编码内部截取整数。
+    numbers = re.findall(r"(?<![A-Za-z0-9_.+-])[+-]?[0-9]+(?:[.,][0-9]+)?(?:[eE][+-]?[0-9]+)?"
+                         r"(?![A-Za-z0-9_.+-])", text)
+    terms.extend("n" + value.lower().encode("ascii").hex() for value in numbers)
+    return list(dict.fromkeys(terms))
+
+
+def semantic_queries(question: str, history: list[dict], auxiliary: bool) -> tuple[str, str | None]:
+    """只使用上一轮用户问题；历史答案绝不参与检索。关闭时保留旧对照路径。"""
+    previous = history[-1]["question"] if history else None
+    combined = f"{previous}\n{question}" if previous else question
+    return (question, combined if previous else None) if auxiliary else (combined, None)
 
 
 class VectorIndex:
@@ -46,6 +68,7 @@ class VectorIndex:
         vecs: list[np.ndarray] = []
         dim: int | None = None
         keyword_rows = []
+        general_rows = []
         filenames: dict[int, str] = {}
         filename_terms: dict[int, set[str]] = {}
         table_headers: dict[int, dict[str, dict]] = {}
@@ -101,10 +124,13 @@ class VectorIndex:
                                  for part in term.split("-"))
             terms = " ".join(term.encode("ascii").hex() for term in dict.fromkeys(content_terms))
             keyword_rows.append((int(r["chunk_id"]), int(r["document_id"]), terms))
+            general_rows.append((int(r["chunk_id"]), int(r["document_id"]), " ".join(lexical_terms(r["content"]))))
         keywords = sqlite3.connect(":memory:", check_same_thread=False)
         try:
             keywords.execute("CREATE VIRTUAL TABLE terms USING fts5(document_id UNINDEXED, tokens)")
             keywords.executemany("INSERT INTO terms(rowid,document_id,tokens) VALUES (?,?,?)", keyword_rows)
+            keywords.execute("CREATE VIRTUAL TABLE general_terms USING fts5(document_id UNINDEXED, tokens)")
+            keywords.executemany("INSERT INTO general_terms(rowid,document_id,tokens) VALUES (?,?,?)", general_rows)
             keywords.commit()
         except Exception:
             keywords.close()
@@ -195,10 +221,17 @@ class VectorIndex:
         document_ids: set[int] | None = None,
         min_score: float | None = None,
         query_text: str = "",
+        trace: dict | None = None,
+        general_lexical: bool | None = None,
+        auxiliary_vec: np.ndarray | None = None,
     ) -> list[dict]:
+        started = time.perf_counter()
+        if trace is not None:
+            trace.update(channels={}, fused=[], timings_ms={}, scope=[])
         if k <= 0 or document_ids == set():
             return []
         result_limit = int(k)
+        use_general = settings.general_lexical if general_lexical is None else general_lexical
         q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
         terms = technical_terms(query_text)
         e84_log_intent = "日志" in query_text and "e84" in terms
@@ -207,13 +240,36 @@ class VectorIndex:
             if "log" not in terms:
                 terms.append("log")
         keyword_ids = []
+        general_ids = []
+        general_scores = {}
         with self._lock:
             document_ids = self._filename_scope(query_text, document_ids)
+            if trace is not None:
+                trace["scope"] = sorted(document_ids) if document_ids is not None else None
             if document_ids == set():
                 return []
             vecs = self._vectors
             cids = self._chunk_ids
             dids = self._document_ids
+            general_started = time.perf_counter()
+            if use_general and self._keywords is not None:
+                # ponytail: 查询最多256个去重词项；不建立事件/参数目录，不改变原切片。
+                tokens = lexical_terms(query_text, query=True)[:256]
+                if tokens:
+                    sql = "SELECT rowid, rank FROM general_terms WHERE general_terms MATCH ?"
+                    params = [" OR ".join('"' + token + '"' for token in tokens)]
+                    if document_ids is not None:
+                        sql += " AND document_id IN (" + ",".join("?" for _ in document_ids) + ")"
+                        params.extend(sorted(document_ids))
+                    sql += " ORDER BY rank,rowid LIMIT ?"
+                    params.append(min(200, result_limit))
+                    general_rows = list(self._keywords.execute(sql, params))
+                    general_ids = [row[0] for row in general_rows]
+                    if trace is not None:
+                        general_scores = {int(cid): float(score) for cid, score in general_rows}
+            if trace is not None:
+                trace["timings_ms"]["general_lexical"] = (time.perf_counter() - general_started) * 1000
+            technical_started = time.perf_counter()
             # 仅有界召回精确技术标识符；普通中文问题保持原语义检索。
             if self._keywords is not None and 0 < len(terms) <= 16:
                 # 先剔除"在当前文档范围内任何切片里都不存在"的术语，再做 AND。
@@ -295,6 +351,9 @@ class VectorIndex:
                         keyword_ids = list(dict.fromkeys(
                             [row[0] for row in rows] + [cid for _, _, cid in fallback]
                         ))[:min(200, int(k))]
+            if trace is not None:
+                trace["timings_ms"]["technical"] = (time.perf_counter() - technical_started) * 1000
+        semantic_started = time.perf_counter()
         if document_ids is not None:
             mask = np.asarray([int(doc_id) in document_ids for doc_id in dids], dtype=bool)
             vecs = vecs[mask]
@@ -309,6 +368,7 @@ class VectorIndex:
             )
         scores = vecs @ q
         all_scores = scores
+        all_vectors = vecs
         all_cids, all_dids = cids, dids
         if min_score is not None:
             score_mask = scores >= float(min_score)
@@ -317,7 +377,7 @@ class VectorIndex:
             dids = dids[score_mask]
             scores = scores[score_mask]
             n = scores.shape[0]
-            if n == 0 and not keyword_ids:
+            if n == 0 and not keyword_ids and not general_ids and auxiliary_vec is None:
                 return []
         k = min(int(k), n)
         if k == n:
@@ -334,16 +394,61 @@ class VectorIndex:
             for i in order
         ]
         positions = {int(cid): i for i, cid in enumerate(all_cids)}
+        current_ids = [hit["chunk_id"] for hit in semantic]
+        history_ids = []
+        if auxiliary_vec is not None:
+            auxiliary = np.asarray(auxiliary_vec, dtype=np.float32).reshape(-1)
+            if auxiliary.shape != q.shape:
+                raise ValueError("历史辅助查询向量维度与当前问题不一致")
+            auxiliary_scores = all_vectors @ auxiliary
+            eligible = np.where(auxiliary_scores >= float(min_score))[0] if min_score is not None else np.arange(len(all_cids))
+            order = sorted(eligible, key=lambda i: (-float(auxiliary_scores[i]), int(all_cids[i])))[:result_limit]
+            history_ids = [int(all_cids[i]) for i in order]
+            # 两个语义通道先2:1融合成一个排名，再与词法通道融合一次。
+            semantic_rrf = {}
+            for ranked, weight in ((current_ids, 2), (history_ids, 1)):
+                for rank, cid in enumerate(ranked, 1):
+                    semantic_rrf[cid] = semantic_rrf.get(cid, 0.0) + weight / (60 + rank)
+            current_positions = {cid: rank for rank, cid in enumerate(current_ids)}
+            combined = sorted(semantic_rrf, key=lambda cid: (-semantic_rrf[cid], current_positions.get(cid, float("inf")), cid))[:result_limit]
+            semantic = [{"chunk_id": cid, "document_id": int(all_dids[positions[cid]]),
+                         "score": float(all_scores[positions[cid]])} for cid in combined]
         keyword_ids = [cid for cid in keyword_ids if cid in positions]
-        if not keyword_ids:
+        general_ids = [cid for cid in general_ids if cid in positions]
+        if trace is not None:
+            trace["channels"] = {"technical": list(keyword_ids), "semantic": [hit["chunk_id"] for hit in semantic]}
+            trace["channels"]["general"] = list(general_ids)
+            trace["channels"].update(semantic_current=current_ids, semantic_history=history_ids)
+            trace["semantic_weights"] = [2, 1] if auxiliary_vec is not None else [1, 0]
+            trace["timings_ms"]["semantic"] = (time.perf_counter() - semantic_started) * 1000
+            trace["rankings"] = {name: [{"chunk_id": cid, "rank": rank} for rank, cid in enumerate(ids, 1)]
+                                 for name, ids in trace["channels"].items()}
+            for hit in trace["rankings"]["general"]:
+                hit["bm25"] = general_scores[hit["chunk_id"]]
+            for name in ("semantic_current", "semantic"):
+                for hit in trace["rankings"][name]:
+                    hit["current_cosine"] = float(all_scores[positions[hit["chunk_id"]]])
+            if auxiliary_vec is not None:
+                for hit in trace["rankings"]["semantic_history"]:
+                    hit["auxiliary_cosine"] = float(auxiliary_scores[positions[hit["chunk_id"]]])
+                trace["semantic_rrf"] = [{"chunk_id": cid, "rrf": semantic_rrf[cid]} for cid in combined]
+            trace["timings_ms"]["recall"] = (time.perf_counter() - started) * 1000
+        if not keyword_ids and not general_ids:
+            if trace is not None:
+                trace["fused"] = [hit["chunk_id"] for hit in semantic]
+                trace["timings_ms"]["search_total"] = (time.perf_counter() - started) * 1000
             return semantic
         # 按倒数排名融合，不把 BM25 和余弦直接相加；来源仍记录原始余弦分数。
         fused: dict[int, float] = {}
-        for ranked in ([hit["chunk_id"] for hit in semantic], keyword_ids):
+        for ranked in ([hit["chunk_id"] for hit in semantic], keyword_ids, general_ids):
             for rank, cid in enumerate(ranked, 1):
                 fused[cid] = fused.get(cid, 0.0) + 1 / (60 + rank)
         keyword_set = set(keyword_ids)
         ranked_ids = sorted(fused, key=lambda cid: (-fused[cid], cid not in keyword_set, cid))
+        if trace is not None:
+            trace["fused"] = ranked_ids[:result_limit]
+            trace["fusion_scores"] = [{"chunk_id": cid, "rrf": fused[cid]} for cid in ranked_ids[:result_limit]]
+            trace["timings_ms"]["search_total"] = (time.perf_counter() - started) * 1000
         return [{"chunk_id": cid, "document_id": int(all_dids[positions[cid]]),
                  "score": float(all_scores[positions[cid]])}
                 for cid in ranked_ids[:result_limit]]

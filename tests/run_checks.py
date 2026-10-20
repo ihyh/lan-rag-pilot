@@ -19,6 +19,10 @@ PYTHON_CHECKS = [
     "filename_scope_check.py", "keyword_fallback_priority_check.py",
     "local_evidence_state_check.py", "secs_body_alias_check.py",
     "secs_structure_projection_check.py", "windows_release_check.py",
+    "retrieval_eval_check.py",
+    "general_lexical_check.py",
+    "reranking_check.py",
+    "history_retrieval_check.py",
 ]
 JS_CHECKS = ["form_modal_check.js", "citations_check.js", "device_scope_check.js", "sw_cache_check.js"]
 

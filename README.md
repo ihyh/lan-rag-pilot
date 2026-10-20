@@ -60,4 +60,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/smoke_runner.ps1 -
 
 测试使用合成资料、mock 模型、临时数据目录和非生产端口，不需要私人文档或模型下载。真实模型与真实文档的质量评测另行执行，不能以 mock 测试通过率代替。
 
+通用词法、重排与多轮辅助检索的实验开关默认关闭，配置、分层评测和回滚步骤见 [通用检索实验](docs/GENERIC_RETRIEVAL.md)。
+
 其他说明：[使用入门](docs/GETTING_STARTED.md) · [模型配置](docs/MODELS.md) · [故障排查](docs/TROUBLESHOOTING.md) · [检索验证](docs/RETRIEVAL_VALIDATION.md) · [评测工具](eval/README.md) · [开发进度](ROADMAP.md) · [English](README.en.md)
