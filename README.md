@@ -33,6 +33,11 @@ cd C:\rag
 
 已有文档不会因拉取代码而自动重新解析。需要采用新解析或切块策略的旧文档，应先备份，再明确选择重处理；索引重建和生产部署是独立操作。仓库更新也不会自动修改另一目录中运行的服务。
 
+本地可选工具（独立依赖，不进入默认安装，也不改变普通问答页面行为）：
+
+- OCR 预处理：按页判断扫描/混合 PDF 是否需要 OCR，只读原件、输出页码映射与来源摘要，见 `docs/OCR_PREPROCESS.md`。
+- MCP 小服务：stdio 只读地把知识库供给本机 MCP 客户端查询，复用同一检索与引用路径，见 `docs/MCP_SERVER.md`。
+
 ## 更新与备份
 
 先停止本目录服务并备份整个 `data` 和 `.env`，再执行：
@@ -60,6 +65,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/smoke_runner.ps1 -
 
 测试使用合成资料、mock 模型、临时数据目录和非生产端口，不需要私人文档或模型下载。真实模型与真实文档的质量评测另行执行，不能以 mock 测试通过率代替。
 
+可选工具的独立依赖（不进入默认安装；未安装时对应检查自动 SKIP）：
+
+```powershell
+# OCR 预处理（真实引擎样例检查）
+python -m pip install -r requirements-ocr.txt
+python tests/ocr_preprocess_check.py
+python tests/ocr_preprocess_live_check.py
+
+# MCP 小服务（协议级检查，需要 MCP Python SDK v2）
+python -m pip install -r requirements-mcp.txt
+python tests/mcp_server_check.py
+```
+
 通用词法、重排与多轮辅助检索的实验开关默认关闭，配置、分层评测和回滚步骤见 [通用检索实验](docs/GENERIC_RETRIEVAL.md)。
 
-其他说明：[使用入门](docs/GETTING_STARTED.md) · [模型配置](docs/MODELS.md) · [故障排查](docs/TROUBLESHOOTING.md) · [检索验证](docs/RETRIEVAL_VALIDATION.md) · [评测工具](eval/README.md) · [开发进度](ROADMAP.md) · [English](README.en.md)
+其他说明：[使用入门](docs/GETTING_STARTED.md) · [模型配置](docs/MODELS.md) · [故障排查](docs/TROUBLESHOOTING.md) · [检索验证](docs/RETRIEVAL_VALIDATION.md) · [OCR 预处理](docs/OCR_PREPROCESS.md) · [MCP 小服务](docs/MCP_SERVER.md) · [评测工具](eval/README.md) · [开发进度](ROADMAP.md) · [English](README.en.md)

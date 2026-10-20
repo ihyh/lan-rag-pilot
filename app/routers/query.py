@@ -437,6 +437,85 @@ def _store_chat(
     return chat_id, conversation_id
 
 
+def retrieve_sources(
+    db: sqlite3.Connection,
+    question: str,
+    document_ids: set[int] | None,
+    top_k: int,
+    *,
+    history: list[dict] | None = None,
+) -> tuple[list[dict], int, str | None]:
+    """检索并选出引用来源（Web 问答与 MCP 服务共用这一条路径）。
+
+    `document_ids` 的语义与 `vector_index.search` 一致：`None` 表示不限定，
+    空集合表示"没有任何可见文档"（会返回空结果而不是退化成全库）。
+
+    返回 `(sources, retrieval_ms, empty_reason)`；`empty_reason` 为
+    `"no_hits"`（向量/词法都没有命中）或 `"no_selected"`（命中但被选段阶段全部丢弃），
+    以便调用方沿用各自的无结果文案。`EmbeddingUnavailable` / `RerankUnavailable` /
+    `ValueError` 原样抛给调用方映射成各自协议的 503/500。
+    """
+    retrieval_started = time.monotonic()
+    retrieval_question, auxiliary_question = semantic_queries(
+        question, history, settings.history_auxiliary
+    )
+    qvec = embedding_service.embed_query(retrieval_question)
+    auxiliary_options = (
+        {"auxiliary_vec": embedding_service.embed_query(auxiliary_question)}
+        if auxiliary_question else {}
+    )
+    min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
+    # 旧索引可能包含大量重叠短尾片段；有界扩大候选，去重后仍只发送 Top-K。
+    hits = vector_index.search(
+        qvec,
+        min(200, top_k * 20),
+        document_ids=document_ids,
+        min_score=min_score,
+        query_text=question,
+        **auxiliary_options,
+    )
+    if not hits:
+        return [], int((time.monotonic() - retrieval_started) * 1000), "no_hits"
+    ids = [hit["chunk_id"] for hit in hits]
+    placeholders = ",".join("?" * len(ids))
+    rows = db.execute(
+        f"SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph, c.content, d.filename "
+        f"FROM chunks c JOIN documents d ON d.id = c.document_id "
+        f"WHERE c.id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    by_id = {row["chunk_id"]: row for row in rows}
+    sources: list[dict] = []
+    for hit in hits:
+        row = by_id.get(hit["chunk_id"])
+        if row is None:
+            continue
+        sources.append(
+            {
+                "chunk_id": int(row["chunk_id"]),
+                "document_id": int(row["document_id"]),
+                "seq": int(row["seq"]),
+                "filename": row["filename"],
+                "page": row["page"],
+                "paragraph": row["paragraph"],
+                "score": round(float(hit["score"]), 4),
+                "content": row["content"],
+            }
+        )
+    if settings.rerank_enabled:
+        sources = reranker.rank(question, sources)
+    sources = _select_sources(
+        sources, top_k, question, preserve_ranking=settings.rerank_enabled
+    )
+    for source in sources:
+        if Path(source["filename"]).suffix.lower() == ".xlsx":
+            source["table_headers"] = vector_index.table_headers_for(source["document_id"])
+    retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
+    if not sources:
+        return [], retrieval_ms, "no_selected"
+    return sources, retrieval_ms, None
+
+
 @router.post("/query")
 def query(
     body: QueryBody,
@@ -556,68 +635,20 @@ def query(
         )
 
     try:
-        # 检索段计时：从构造检索问题到选出来源。它只依赖本机嵌入模型与内存索引，
-        # 与模型生成完全无关，因此单独记录才能把"生成慢"和"检索慢"分开。
-        retrieval_started = time.monotonic()
-        retrieval_question, auxiliary_question = semantic_queries(question, history, settings.history_auxiliary)
-        qvec = embedding_service.embed_query(retrieval_question)
-        auxiliary_options = {"auxiliary_vec": embedding_service.embed_query(auxiliary_question)} if auxiliary_question else {}
-        min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
-        # 旧索引可能包含大量重叠短尾片段；有界扩大候选，去重后仍只发送 Top-K。
-        hits = vector_index.search(
-            qvec,
-            min(200, rt_values["top_k"] * 20),
-            document_ids=scope,
-            min_score=min_score,
-            query_text=question,
-            **auxiliary_options,
+        # 检索段计时由 retrieve_sources 内部记录；这里统一映射到 HTTP 语义。
+        sources, retrieval_ms, empty_reason = retrieve_sources(
+            db, question, scope, rt_values["top_k"], history=history
         )
     except EmbeddingUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
+    except RerankUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": "rerank_unavailable", "message": str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if not hits:
-        retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
+    if empty_reason == "no_hits":
         return refuse("未找到与问题相关的可用文档，请换个问法或联系管理员。", "query_no_match")
-
-    ids = [h["chunk_id"] for h in hits]
-    placeholders = ",".join("?" * len(ids))
-    rows = db.execute(
-        f"SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph, c.content, d.filename "
-        f"FROM chunks c JOIN documents d ON d.id = c.document_id "
-        f"WHERE c.id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    by_id = {r["chunk_id"]: r for r in rows}
-    sources: list[dict] = []
-    for h in hits:
-        r = by_id.get(h["chunk_id"])
-        if r is None:
-            continue
-        sources.append(
-            {
-                "chunk_id": int(r["chunk_id"]),
-                "document_id": int(r["document_id"]),
-                "seq": int(r["seq"]),
-                "filename": r["filename"],
-                "page": r["page"],
-                "paragraph": r["paragraph"],
-                "score": round(float(h["score"]), 4),
-                "content": r["content"],
-            }
-        )
-    if settings.rerank_enabled:
-        try:
-            sources = reranker.rank(question, sources)
-        except RerankUnavailable as exc:
-            raise HTTPException(status_code=503, detail={"code": "rerank_unavailable", "message": str(exc)}) from exc
-    sources = _select_sources(sources, rt_values["top_k"], question, preserve_ranking=settings.rerank_enabled)
-    for src in sources:
-        if Path(src["filename"]).suffix.lower() == ".xlsx":
-            src["table_headers"] = vector_index.table_headers_for(src["document_id"])
-    retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
-    if not sources:
+    if empty_reason is not None:
         return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
 
     doc_names = sorted({s["filename"] for s in sources})
