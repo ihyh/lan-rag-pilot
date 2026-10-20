@@ -377,6 +377,110 @@ def in_process_ask_check(env: dict) -> None:
     check(tuple(before) == tuple(after), "MCP 工具调用不写入个人问答历史")
 
 
+def _insert_ready_document(database_path: str, document_id: int, content: str) -> None:
+    """模拟另一个进程提交一条新 ready 文档 + 切片（带 mock 向量）。"""
+    from app.db import now_iso
+    from app.embeddings import embedding_service
+
+    now = now_iso()
+    vector = embedding_service.embed_texts([content])[0].tobytes()
+    database = sqlite3.connect(database_path)
+    try:
+        database.execute(
+            "INSERT INTO documents(id,filename,stored_name,content_type,size_bytes,sha256,"
+            "status,created_at,updated_at) VALUES(?,?,?,?,?,?,'ready',?,?)",
+            (document_id, f"race-{document_id}.txt", f"stored-race-{document_id}",
+             "text/plain", len(content.encode("utf-8")), f"sha-race-{document_id}", now, now),
+        )
+        database.execute(
+            "INSERT INTO chunks(document_id,seq,page,paragraph,token_count,content,vector) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (document_id, 0, 1, 1, len(content), content, vector),
+        )
+        database.commit()
+    finally:
+        database.close()
+
+
+def refresh_race_check(env: dict) -> None:
+    """R4 并发边界：reload 与指纹之间发生外部提交，不得把新指纹绑定到旧索引。
+
+    用确定性注入模拟：在原 reload 返回后、指纹读取前，另一连接提交新 ready 文档。
+    WAL 模式下该提交可成功；修复后 reload 与指纹处于同一读快照，因此必须检测到
+    期间变化并再次刷新。覆盖首次加载、后续刷新、search 与 ask 两个入口，并要求
+    写入结束后连续检索能自行恢复（不会永久空）。
+    """
+    import mcp_server as mcp_module
+    from app import db as db_module
+
+    mcp_module.kb.ensure_fresh_index()
+    mcp_module.llm_chat = lambda question, sources, history=None: {
+        "answer": "按来源回答：竞争提交的文档见 [1]。",
+        "model": "mcp-check-mock",
+        "latency_ms": 1,
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+    }
+    original_reload = mcp_module.vector_index.reload
+
+    def race_reload(document_id: int, content: str):
+        state = {"done": False}
+
+        def patched(db):
+            original_reload(db)
+            if not state["done"]:
+                state["done"] = True
+                _insert_ready_document(env["RAG_DB_PATH"], document_id, content)
+
+        return patched
+
+    # A. 首次加载边界
+    mcp_module.vector_index.reload = race_reload(4, "scope-probe 竞态新增 400 元")
+    try:
+        first = mcp_module.KnowledgeBase()
+        first.ensure_ready()
+    finally:
+        mcp_module.vector_index.reload = original_reload
+    with closing(db_module.connect()) as database:
+        current = mcp_module._index_fingerprint(database)
+        sources, _, _ = mcp_module.retrieve_sources(database, "scope-probe", {4}, 5)
+    check(current == first._index_fingerprint,
+          "R4 并发：首次加载的索引与指纹来自同一快照")
+    check(bool(sources) and all(source["document_id"] == 4 for source in sources),
+          "R4 并发：首次加载期间提交的文档在后续查询可见")
+
+    # B. 后续刷新边界：search_documents 触发 reload 时注入提交
+    mcp_module.vector_index.reload = race_reload(5, "scope-probe 竞态新增 500 元")
+    try:
+        scoped_runs = [
+            mcp_module.search_documents("scope-probe", document_ids=[5]) for _ in range(3)
+        ]
+    finally:
+        mcp_module.vector_index.reload = original_reload
+    check(all(run["results"] and all(item["document_id"] == 5 for item in run["results"])
+              for run in scoped_runs),
+          "R4 并发：刷新期间提交后连续检索均能看到新文档（不会永久空）")
+
+    # C. ask_question 入口：先做一次普通变更让刷新发生，再在刷新期间注入提交
+    _insert_ready_document(env["RAG_DB_PATH"], 6, "scope-probe 正常新增 600 元")
+    mcp_module.vector_index.reload = race_reload(7, "scope-probe 问答刷新竞态新增 700 元")
+    try:
+        answer = mcp_module.ask_question("scope-probe", document_ids=[7])
+        follow_up = mcp_module.search_documents("scope-probe", document_ids=[7])
+    finally:
+        mcp_module.vector_index.reload = original_reload
+    check(answer["status"] == "ok" and answer.get("sources")
+          and all(source["document_id"] == 7 for source in answer["sources"]),
+          "R4 并发：ask_question 刷新期间提交的文档立即可用")
+    check(bool(follow_up["results"])
+          and all(item["document_id"] == 7 for item in follow_up["results"]),
+          "R4 并发：写入结束后后续检索自行恢复")
+    with closing(db_module.connect()) as database:
+        current = mcp_module._index_fingerprint(database)
+    check(current == mcp_module.kb._index_fingerprint,
+          "R4 并发：刷新完成后长期指纹与数据库一致")
+
+
 def main() -> int:
     try:
         import mcp  # noqa: F401
@@ -417,6 +521,7 @@ def main() -> int:
           f"网页问答与 MCP 检索来源一致（web={len(web_sources)} mcp={len(mcp_sources)}）")
 
     in_process_ask_check(env)
+    refresh_race_check(env)
     print(f"\n结果: {len(PASS)} 通过, {len(FAIL)} 失败")
     if FAIL:
         print("失败项：")

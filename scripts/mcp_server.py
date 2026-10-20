@@ -99,14 +99,39 @@ class KnowledgeBase:
         self._ready = False
         self._index_fingerprint: tuple | None = None
 
+    def _reload_index_consistent(self) -> None:
+        """在同一个 SQLite 读快照中加载索引并记录指纹。
+
+        为什么不能"reload 后再单独查指纹"：若另一个进程恰好在两者之间提交
+        （新增文档/切片、改状态、重新索引），单独查到的**新指纹会被绑定到旧索引**，
+        之后指纹恒等，刷新会被永久跳过。这里让 reload 与指纹处在同一个显式读事务
+        里（WAL 下读快照一致），事务结束后再与数据库当前指纹对比；不一致就重试，
+        仍不一致时保存"与当前索引一致的 loaded 指纹"，让下一次调用继续重试——
+        绝不把尚未加载的更新标记为已加载。
+        """
+        loaded: tuple | None = None
+        for _ in range(3):
+            with closing(db_module.connect()) as db:
+                db.execute("BEGIN")  # 显式读事务，固定快照
+                try:
+                    vector_index.reload(db)
+                    loaded = _index_fingerprint(db)
+                finally:
+                    db.execute("ROLLBACK")
+            with closing(db_module.connect()) as db:
+                current = _index_fingerprint(db)
+            if current == loaded:
+                self._index_fingerprint = loaded
+                return
+        # 连续遇到并发提交：索引与 loaded 快照一致，保留 loaded 让下次调用继续刷新。
+        self._index_fingerprint = loaded
+
     def ensure_ready(self) -> None:
         with self._lock:
             if self._ready:
                 return
             db_module.init_db()
-            with closing(db_module.connect()) as db:
-                vector_index.reload(db)
-                self._index_fingerprint = _index_fingerprint(db)
+            self._reload_index_consistent()
             embedding_service.start()
             deadline = time.monotonic() + READY_WAIT_SECONDS
             while embedding_service.state in ("idle", "loading") and time.monotonic() < deadline:
@@ -124,12 +149,10 @@ class KnowledgeBase:
         self.ensure_ready()
         with self._lock:
             with closing(db_module.connect()) as db:
-                fingerprint = _index_fingerprint(db)
-                if fingerprint == self._index_fingerprint:
-                    return
-                vector_index.reload(db)
-                # 重载后再取一次指纹：若读取期间又有提交，下一次调用会再刷新。
-                self._index_fingerprint = _index_fingerprint(db)
+                current = _index_fingerprint(db)
+            if current == self._index_fingerprint:
+                return
+            self._reload_index_consistent()
 
     def connect(self):
         return db_module.connect()
