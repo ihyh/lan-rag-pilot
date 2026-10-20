@@ -111,7 +111,7 @@ async function main() {
   t.S.busy = true; buttons[0].events.click(); t.S.busy = false;
   assert.deepEqual(Array.from(t.S.newDocumentIds), [2, 3, 13, 14]);
   await t.sendQuestion();
-  assert.deepEqual(requests[0], { question: '保留用户正在输入的问题', document_ids: [2, 3, 13, 14] });
+  assert.deepEqual(requests[0], { question: '保留用户正在输入的问题', scope_mode: 'selected', document_ids: [2, 3, 13, 14] });
   assert.equal(progressive[0], '分段', 'browser displays text before request completes');
   assert.ok(buttons.every(btn => btn.disabled), 'persisted scope locked');
   buttons[0].events.click();

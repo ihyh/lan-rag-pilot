@@ -1,0 +1,8 @@
+# 仅用于 OCR 预处理工具（scripts/ocr_preprocess.py），不进入默认安装。
+# Windows / CPU 可运行：rapidocr 自带 PP-OCRv6 小模型，随包分发，无需另外下载。
+rapidocr>=3.10,<4.0
+onnxruntime>=1.18,<2.0
+opencv-python-headless>=4.10,<6.0
+pypdfium2>=4.30,<6.0
+Pillow>=10.0,<14.0
+pypdf>=4.2,<6.0

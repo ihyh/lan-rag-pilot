@@ -53,6 +53,11 @@ def _stored_document_ids(raw: str | None) -> list[int]:
     return sorted(set(values))
 
 
+def _scope_mode_of(document_ids: list[int] | None) -> str:
+    """把文档范围列表映射成对外可见的显式模式：空 = 全库，非空 = 仅选中文档。"""
+    return "selected" if document_ids else "all"
+
+
 def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int], user) -> None:
     if not document_ids:
         return
@@ -67,7 +72,10 @@ def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int], us
         document_ids,
     ).fetchall()
     if {int(row["id"]) for row in rows} != set(document_ids):
-        raise HTTPException(status_code=400, detail="限定文档不存在或尚未处理完成，请重新选择")
+        raise HTTPException(
+            status_code=400,
+            detail="所选文档已删除或尚未处理完成，请刷新文档列表后重新选择；不会回退到全库检索",
+        )
 
 
 def _is_continuation(current: dict, following: dict) -> bool:
@@ -429,6 +437,85 @@ def _store_chat(
     return chat_id, conversation_id
 
 
+def retrieve_sources(
+    db: sqlite3.Connection,
+    question: str,
+    document_ids: set[int] | None,
+    top_k: int,
+    *,
+    history: list[dict] | None = None,
+) -> tuple[list[dict], int, str | None]:
+    """检索并选出引用来源（Web 问答与 MCP 服务共用这一条路径）。
+
+    `document_ids` 的语义与 `vector_index.search` 一致：`None` 表示不限定，
+    空集合表示"没有任何可见文档"（会返回空结果而不是退化成全库）。
+
+    返回 `(sources, retrieval_ms, empty_reason)`；`empty_reason` 为
+    `"no_hits"`（向量/词法都没有命中）或 `"no_selected"`（命中但被选段阶段全部丢弃），
+    以便调用方沿用各自的无结果文案。`EmbeddingUnavailable` / `RerankUnavailable` /
+    `ValueError` 原样抛给调用方映射成各自协议的 503/500。
+    """
+    retrieval_started = time.monotonic()
+    retrieval_question, auxiliary_question = semantic_queries(
+        question, history, settings.history_auxiliary
+    )
+    qvec = embedding_service.embed_query(retrieval_question)
+    auxiliary_options = (
+        {"auxiliary_vec": embedding_service.embed_query(auxiliary_question)}
+        if auxiliary_question else {}
+    )
+    min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
+    # 旧索引可能包含大量重叠短尾片段；有界扩大候选，去重后仍只发送 Top-K。
+    hits = vector_index.search(
+        qvec,
+        min(200, top_k * 20),
+        document_ids=document_ids,
+        min_score=min_score,
+        query_text=question,
+        **auxiliary_options,
+    )
+    if not hits:
+        return [], int((time.monotonic() - retrieval_started) * 1000), "no_hits"
+    ids = [hit["chunk_id"] for hit in hits]
+    placeholders = ",".join("?" * len(ids))
+    rows = db.execute(
+        f"SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph, c.content, d.filename "
+        f"FROM chunks c JOIN documents d ON d.id = c.document_id "
+        f"WHERE c.id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    by_id = {row["chunk_id"]: row for row in rows}
+    sources: list[dict] = []
+    for hit in hits:
+        row = by_id.get(hit["chunk_id"])
+        if row is None:
+            continue
+        sources.append(
+            {
+                "chunk_id": int(row["chunk_id"]),
+                "document_id": int(row["document_id"]),
+                "seq": int(row["seq"]),
+                "filename": row["filename"],
+                "page": row["page"],
+                "paragraph": row["paragraph"],
+                "score": round(float(hit["score"]), 4),
+                "content": row["content"],
+            }
+        )
+    if settings.rerank_enabled:
+        sources = reranker.rank(question, sources)
+    sources = _select_sources(
+        sources, top_k, question, preserve_ranking=settings.rerank_enabled
+    )
+    for source in sources:
+        if Path(source["filename"]).suffix.lower() == ".xlsx":
+            source["table_headers"] = vector_index.table_headers_for(source["document_id"])
+    retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
+    if not sources:
+        return [], retrieval_ms, "no_selected"
+    return sources, retrieval_ms, None
+
+
 @router.post("/query")
 def query(
     body: QueryBody,
@@ -440,6 +527,7 @@ def query(
     question = body.question.strip()
     ip = _ip(request)
     conversation_id = body.conversation_id
+    requested_scope_mode = body.scope_mode
     document_ids = body.document_ids or []
     history: list[dict] = []
     if conversation_id is not None:
@@ -450,11 +538,33 @@ def query(
         if owned is None:
             raise HTTPException(status_code=404, detail="对话不存在")
         try:
-            document_ids = _stored_document_ids(owned["document_ids"])
+            stored_ids = _stored_document_ids(owned["document_ids"])
         except ValueError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        if body.document_ids is not None and body.document_ids != document_ids:
+        stored_mode = _scope_mode_of(stored_ids)
+        # 范围在首问时固化。旧客户端省略 scope_mode 仍可追问（兼容），
+        # 但一旦显式传了模式或文档列表，就必须与固化范围完全一致。
+        if body.document_ids is not None and body.document_ids != stored_ids:
             raise HTTPException(status_code=409, detail="已有对话不能改变限定文档范围，请新建对话")
+        if requested_scope_mode is not None and requested_scope_mode != stored_mode:
+            raise HTTPException(
+                status_code=409,
+                detail="已有对话的检索范围已固定（全库检索 / 仅选中文档），不能改变，请新建对话",
+            )
+        document_ids = stored_ids
+    elif requested_scope_mode == "all":
+        # 显式全库：非空 document_ids 已在 QueryBody 层被拒绝，这里不再保留列表。
+        document_ids = []
+    elif requested_scope_mode == "selected":
+        # QueryBody 已保证非空；再拦一次，避免将来放宽校验时悄悄回退到全库。
+        if not document_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="仅选中文档模式必须至少选择一个文档，不能回退到全库检索",
+            )
+    else:
+        # 兼容旧客户端：不传 scope_mode 时，空列表表示全库，非空表示限定。
+        document_ids = body.document_ids or []
     _require_ready_documents(db, document_ids, user)
     # 检索范围 = 用户请求的范围 ∩ 他实际可见的范围。
     # 注意 set() 与 None 语义不同：None 表示不限定，空集合表示"没有任何可见文档"，
@@ -510,6 +620,8 @@ def query(
             "sources": [],
             "status": "ok",
             "retrieval_ms": retrieval_ms,
+            "scope_mode": _scope_mode_of(document_ids),
+            "document_ids": list(document_ids),
         }
 
     if vector_index.size() == 0:
@@ -523,68 +635,20 @@ def query(
         )
 
     try:
-        # 检索段计时：从构造检索问题到选出来源。它只依赖本机嵌入模型与内存索引，
-        # 与模型生成完全无关，因此单独记录才能把"生成慢"和"检索慢"分开。
-        retrieval_started = time.monotonic()
-        retrieval_question, auxiliary_question = semantic_queries(question, history, settings.history_auxiliary)
-        qvec = embedding_service.embed_query(retrieval_question)
-        auxiliary_options = {"auxiliary_vec": embedding_service.embed_query(auxiliary_question)} if auxiliary_question else {}
-        min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
-        # 旧索引可能包含大量重叠短尾片段；有界扩大候选，去重后仍只发送 Top-K。
-        hits = vector_index.search(
-            qvec,
-            min(200, rt_values["top_k"] * 20),
-            document_ids=scope,
-            min_score=min_score,
-            query_text=question,
-            **auxiliary_options,
+        # 检索段计时由 retrieve_sources 内部记录；这里统一映射到 HTTP 语义。
+        sources, retrieval_ms, empty_reason = retrieve_sources(
+            db, question, scope, rt_values["top_k"], history=history
         )
     except EmbeddingUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
+    except RerankUnavailable as exc:
+        raise HTTPException(status_code=503, detail={"code": "rerank_unavailable", "message": str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if not hits:
-        retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
+    if empty_reason == "no_hits":
         return refuse("未找到与问题相关的可用文档，请换个问法或联系管理员。", "query_no_match")
-
-    ids = [h["chunk_id"] for h in hits]
-    placeholders = ",".join("?" * len(ids))
-    rows = db.execute(
-        f"SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph, c.content, d.filename "
-        f"FROM chunks c JOIN documents d ON d.id = c.document_id "
-        f"WHERE c.id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    by_id = {r["chunk_id"]: r for r in rows}
-    sources: list[dict] = []
-    for h in hits:
-        r = by_id.get(h["chunk_id"])
-        if r is None:
-            continue
-        sources.append(
-            {
-                "chunk_id": int(r["chunk_id"]),
-                "document_id": int(r["document_id"]),
-                "seq": int(r["seq"]),
-                "filename": r["filename"],
-                "page": r["page"],
-                "paragraph": r["paragraph"],
-                "score": round(float(h["score"]), 4),
-                "content": r["content"],
-            }
-        )
-    if settings.rerank_enabled:
-        try:
-            sources = reranker.rank(question, sources)
-        except RerankUnavailable as exc:
-            raise HTTPException(status_code=503, detail={"code": "rerank_unavailable", "message": str(exc)}) from exc
-    sources = _select_sources(sources, rt_values["top_k"], question, preserve_ranking=settings.rerank_enabled)
-    for src in sources:
-        if Path(src["filename"]).suffix.lower() == ".xlsx":
-            src["table_headers"] = vector_index.table_headers_for(src["document_id"])
-    retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
-    if not sources:
+    if empty_reason is not None:
         return refuse("知识库没有可用的检索结果，请稍后重试或联系管理员。", "query_no_match")
 
     doc_names = sorted({s["filename"] for s in sources})
@@ -643,7 +707,9 @@ def query(
                                        "completion_tokens": usage["completion_tokens"]}, ensure_ascii=False), ip=ip,
                 )
             yield line({"type": "done", "chat_id": chat_id, "conversation_id": stored_conversation_id,
-                        "latency_ms": usage["latency_ms"], "retrieval_ms": retrieval_ms})
+                        "latency_ms": usage["latency_ms"], "retrieval_ms": retrieval_ms,
+                        "scope_mode": _scope_mode_of(document_ids),
+                        "document_ids": list(document_ids)})
 
         return StreamingResponse(events(), media_type="application/x-ndjson",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
@@ -739,6 +805,9 @@ def query(
         # 分阶段耗时：便于前端/巡检直接看到瓶颈在哪一段，而不必去数据库里翻。
         "latency_ms": result["latency_ms"],
         "retrieval_ms": retrieval_ms,
+        # 回显实际生效的范围：前端据此显示"全库检索 / 仅选中文档"，而不是自行猜测。
+        "scope_mode": _scope_mode_of(document_ids),
+        "document_ids": list(document_ids),
     }
 
 
@@ -787,6 +856,9 @@ def get_conversation(
         item["document_ids"] = _stored_document_ids(item.get("document_ids"))
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # 先按存储的真实范围判定模式，再做可见性过滤：即便部分文档已不可见，
+    # 也不能把"仅选中文档"的对话显示成"全库检索"。
+    item["scope_mode"] = _scope_mode_of(item["document_ids"])
     allowed = acl.visible_document_ids(db, user)
     if allowed is not None:
         # 不把已不可见的文档 id 回显给用户，避免暴露"存在一份你看不到的资料"。

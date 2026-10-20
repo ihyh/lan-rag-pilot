@@ -1,0 +1,4 @@
+# 仅用于知识库 MCP 小服务（scripts/mcp_server.py）的 MCP SDK 依赖。
+# 服务本身复用项目既有依赖（fastapi/pydantic/numpy 等），这里只额外引入官方 MCP SDK。
+# 注意：mcp>=2 的接口是 MCPServer（v1 的 FastMCP 已改名）；本服务按 v2 编写。
+mcp>=2.3,<3.0
