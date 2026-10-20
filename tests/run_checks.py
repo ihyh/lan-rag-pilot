@@ -24,6 +24,7 @@ PYTHON_CHECKS = [
     "reranking_check.py",
     "history_retrieval_check.py",
     "context_continuation_check.py",
+    "evidence_completion_check.py",
     "ocr_preprocess_check.py",
     "ocr_preprocess_live_check.py",
     "mcp_server_check.py",

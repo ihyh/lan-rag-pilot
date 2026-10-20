@@ -187,7 +187,7 @@ def main():
     index.search.return_value = candidates
     with patch.object(route, "vector_index", index), \
          patch.object(route, "embedding_service", SimpleNamespace(state="ready", embed_query=lambda q: [1])), \
-         patch.object(route, "settings", SimpleNamespace(min_relevance_score=0.25, embed_backend="st", rerank_enabled=False, history_auxiliary=False, context_continuation=False)), \
+         patch.object(route, "settings", SimpleNamespace(min_relevance_score=0.25, embed_backend="st", rerank_enabled=False, history_auxiliary=False, context_continuation=False, evidence_completion=False)), \
          patch.object(route.rt, "get_all", return_value={"queries_per_minute": 10, "top_k": 5}), \
          patch.object(route.query_limiter, "allow", return_value=(True, 0)), \
          patch.object(route, "llm_gate", MagicMock()), \

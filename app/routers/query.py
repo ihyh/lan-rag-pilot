@@ -17,6 +17,7 @@ from ..context_assembly import attach_continuations
 from ..db import connect, get_db, now_iso
 from ..deps import require_kb_admin, require_user
 from ..embeddings import EmbeddingUnavailable, embedding_service
+from ..evidence_completion import attach_literal_evidence
 from ..gate import llm_gate
 from ..index import technical_terms, semantic_queries, vector_index
 from ..llm import LLMError, _normalize_answer, chat as llm_chat, stream_chat as llm_stream_chat
@@ -511,6 +512,10 @@ def retrieve_sources(
     for source in sources:
         if Path(source["filename"]).suffix.lower() == ".xlsx":
             source["table_headers"] = vector_index.table_headers_for(source["document_id"])
+    if settings.evidence_completion:
+        # 问题点名的字面标识符（2,1 / bit4 / Input Monitor Time 等）跨文档补入原文，
+        # 保留不同定义；不改召回排序与引用编号语义。
+        sources = attach_literal_evidence(db, sources, question, document_ids=document_ids)
     if settings.context_continuation:
         # 只补同文档下一段，且以原文结构为条件；来源编号/页码保持真实。
         sources = attach_continuations(db, sources)
