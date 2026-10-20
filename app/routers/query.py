@@ -53,6 +53,11 @@ def _stored_document_ids(raw: str | None) -> list[int]:
     return sorted(set(values))
 
 
+def _scope_mode_of(document_ids: list[int] | None) -> str:
+    """把文档范围列表映射成对外可见的显式模式：空 = 全库，非空 = 仅选中文档。"""
+    return "selected" if document_ids else "all"
+
+
 def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int], user) -> None:
     if not document_ids:
         return
@@ -67,7 +72,10 @@ def _require_ready_documents(db: sqlite3.Connection, document_ids: list[int], us
         document_ids,
     ).fetchall()
     if {int(row["id"]) for row in rows} != set(document_ids):
-        raise HTTPException(status_code=400, detail="限定文档不存在或尚未处理完成，请重新选择")
+        raise HTTPException(
+            status_code=400,
+            detail="所选文档已删除或尚未处理完成，请刷新文档列表后重新选择；不会回退到全库检索",
+        )
 
 
 def _is_continuation(current: dict, following: dict) -> bool:
@@ -440,6 +448,7 @@ def query(
     question = body.question.strip()
     ip = _ip(request)
     conversation_id = body.conversation_id
+    requested_scope_mode = body.scope_mode
     document_ids = body.document_ids or []
     history: list[dict] = []
     if conversation_id is not None:
@@ -450,11 +459,33 @@ def query(
         if owned is None:
             raise HTTPException(status_code=404, detail="对话不存在")
         try:
-            document_ids = _stored_document_ids(owned["document_ids"])
+            stored_ids = _stored_document_ids(owned["document_ids"])
         except ValueError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        if body.document_ids is not None and body.document_ids != document_ids:
+        stored_mode = _scope_mode_of(stored_ids)
+        # 范围在首问时固化。旧客户端省略 scope_mode 仍可追问（兼容），
+        # 但一旦显式传了模式或文档列表，就必须与固化范围完全一致。
+        if body.document_ids is not None and body.document_ids != stored_ids:
             raise HTTPException(status_code=409, detail="已有对话不能改变限定文档范围，请新建对话")
+        if requested_scope_mode is not None and requested_scope_mode != stored_mode:
+            raise HTTPException(
+                status_code=409,
+                detail="已有对话的检索范围已固定（全库检索 / 仅选中文档），不能改变，请新建对话",
+            )
+        document_ids = stored_ids
+    elif requested_scope_mode == "all":
+        # 显式全库：非空 document_ids 已在 QueryBody 层被拒绝，这里不再保留列表。
+        document_ids = []
+    elif requested_scope_mode == "selected":
+        # QueryBody 已保证非空；再拦一次，避免将来放宽校验时悄悄回退到全库。
+        if not document_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="仅选中文档模式必须至少选择一个文档，不能回退到全库检索",
+            )
+    else:
+        # 兼容旧客户端：不传 scope_mode 时，空列表表示全库，非空表示限定。
+        document_ids = body.document_ids or []
     _require_ready_documents(db, document_ids, user)
     # 检索范围 = 用户请求的范围 ∩ 他实际可见的范围。
     # 注意 set() 与 None 语义不同：None 表示不限定，空集合表示"没有任何可见文档"，
@@ -510,6 +541,8 @@ def query(
             "sources": [],
             "status": "ok",
             "retrieval_ms": retrieval_ms,
+            "scope_mode": _scope_mode_of(document_ids),
+            "document_ids": list(document_ids),
         }
 
     if vector_index.size() == 0:
@@ -643,7 +676,9 @@ def query(
                                        "completion_tokens": usage["completion_tokens"]}, ensure_ascii=False), ip=ip,
                 )
             yield line({"type": "done", "chat_id": chat_id, "conversation_id": stored_conversation_id,
-                        "latency_ms": usage["latency_ms"], "retrieval_ms": retrieval_ms})
+                        "latency_ms": usage["latency_ms"], "retrieval_ms": retrieval_ms,
+                        "scope_mode": _scope_mode_of(document_ids),
+                        "document_ids": list(document_ids)})
 
         return StreamingResponse(events(), media_type="application/x-ndjson",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
@@ -739,6 +774,9 @@ def query(
         # 分阶段耗时：便于前端/巡检直接看到瓶颈在哪一段，而不必去数据库里翻。
         "latency_ms": result["latency_ms"],
         "retrieval_ms": retrieval_ms,
+        # 回显实际生效的范围：前端据此显示"全库检索 / 仅选中文档"，而不是自行猜测。
+        "scope_mode": _scope_mode_of(document_ids),
+        "document_ids": list(document_ids),
     }
 
 
@@ -787,6 +825,9 @@ def get_conversation(
         item["document_ids"] = _stored_document_ids(item.get("document_ids"))
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # 先按存储的真实范围判定模式，再做可见性过滤：即便部分文档已不可见，
+    # 也不能把"仅选中文档"的对话显示成"全库检索"。
+    item["scope_mode"] = _scope_mode_of(item["document_ids"])
     allowed = acl.visible_document_ids(db, user)
     if allowed is not None:
         # 不把已不可见的文档 id 回显给用户，避免暴露"存在一份你看不到的资料"。

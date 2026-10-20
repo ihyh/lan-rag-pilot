@@ -69,7 +69,7 @@
         <h2>开始提问</h2>
         <p>输入您的问题，助手将检索知识库文档并结合大模型作答</p>
         <p class="small">回答下方会展示引用来源，便于核对原文</p>
-        <p class="small">选择提问设备，自动限定对应文档</p>
+        <p class="small">设备按钮会替换下方「检索范围」中的手选文档；范围在输入框上方可见</p>
         <div class="suggestions" role="group" aria-label="选择提问设备">
           <button class="suggestion" type="button" data-device="PLM" aria-pressed="false" disabled>PLM</button>
           <button class="suggestion" type="button" data-device="PLUSPRO" aria-pressed="false" disabled>PLUSPRO</button>
@@ -82,14 +82,42 @@
     </div>
 
     <div class="composer card">
-      <details class="document-scope" id="documentScope">
-        <summary id="documentScopeSummaryRow">
-          <span>限定文档</span>
-          <span class="document-scope-value" id="documentScopeValue">全部文档</span>
-        </summary>
-        <div class="document-scope-options" id="documentScopeOptions" role="group" aria-label="限定检索文档"></div>
-        <p class="document-scope-tip">不勾选时检索全部文档；发送第一条问题后，本对话范围将固定。</p>
-      </details>
+      <div class="scope-card" id="documentScope">
+        <div class="scope-head">
+          <span class="scope-title"><span id="scopeIcon"></span>检索范围</span>
+          <span class="scope-badge is-all" id="documentScopeValue" role="status">全库检索</span>
+        </div>
+        <div class="scope-modes" role="radiogroup" aria-label="检索范围模式">
+          <label class="scope-mode is-active" id="scopeModeAllLabel">
+            <input type="radio" name="scopeMode" id="scopeModeAll" value="all" checked>
+            <span>全库检索</span>
+          </label>
+          <label class="scope-mode" id="scopeModeSelectedLabel">
+            <input type="radio" name="scopeMode" id="scopeModeSelected" value="selected">
+            <span>仅选中文档</span>
+          </label>
+        </div>
+        <p class="scope-hint" id="documentScopeHint">全库检索：在你可见的全部已就绪文档中查找。</p>
+        <p class="scope-warn hidden" id="documentScopeWarn" role="alert"></p>
+        <div class="scope-body" id="documentScopeBody">
+          <div class="scope-toolbar">
+            <input class="scope-search" type="search" id="documentScopeSearch"
+                   placeholder="按文件名搜索" autocomplete="off" aria-label="按文件名搜索文档">
+            <button class="scope-btn" type="button" id="documentScopeSelectAll">全选筛选结果</button>
+            <button class="scope-btn" type="button" id="documentScopeClear">清空已选</button>
+            <button class="scope-btn" type="button" id="documentScopeReload" title="重新加载文档列表" aria-label="重新加载文档列表">刷新</button>
+          </div>
+          <p class="scope-selected" id="documentScopeSelected" role="status">尚未选择文档</p>
+          <div class="scope-chips" id="documentScopeChips"></div>
+          <div class="document-scope-options" id="documentScopeOptions" role="group" aria-label="限定检索文档"></div>
+          <p class="scope-error hidden" id="documentScopeError" role="alert"></p>
+          <p class="scope-tip">搜索只影响下方列表显示，不会取消已勾选的文档；「全选筛选结果」只添加当前搜索结果；「清空已选」会清掉全部已选。不勾选任何文档时不会发送问题，也不会自动改回全库检索。</p>
+        </div>
+        <div class="scope-lock hidden" id="documentScopeLock">
+          <span class="lock-text" id="documentScopeLockText">本对话的检索范围已固定，不能在中途修改。</span>
+          <button class="btn btn-outline btn-sm" type="button" id="documentScopeNewChat">新建对话以更换范围</button>
+        </div>
+      </div>
       <textarea id="questionInput" rows="2" maxlength="2000"
                 placeholder="请输入问题（Enter 发送，Ctrl+Enter 换行）"></textarea>
       <div class="composer-bar">
@@ -102,6 +130,6 @@
 </main>
 
 <script src="/static/js/common.js"></script>
-<script src="/static/js/app.js?v=lp-device-2"></script>
+<script src="/static/js/app.js?v=scope-mode-1"></script>
 </body>
 </html>

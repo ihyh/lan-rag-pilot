@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 MAX_SQLITE_ID = 2**63 - 1
 
@@ -21,10 +21,22 @@ class PasswordBody(BaseModel):
 
 
 class QueryBody(BaseModel):
+    """一次问答请求。
+
+    `scope_mode` 把「全库检索」和「仅选中文档」写成显式语义，避免客户端漏传/清空
+    勾选时被后端当成全库而悄悄扩大范围：
+
+    - `all`：全库检索，不接受任何限定文档；
+    - `selected`：仅选中文档，必须至少提供一个限定文档；
+    - 省略（None）：兼容旧客户端，沿用"不传/空数组表示全库"的历史语义。
+      新前端始终显式传值。
+    """
+
     model_config = ConfigDict(str_strip_whitespace=True)
     question: str = Field(min_length=1, max_length=2000)
     conversation_id: StrictInt | None = Field(default=None, gt=0, le=MAX_SQLITE_ID)
     document_ids: list[StrictInt] | None = Field(default=None, max_length=100)
+    scope_mode: Literal["all", "selected"] | None = None
 
     @field_validator("document_ids")
     @classmethod
@@ -34,6 +46,23 @@ class QueryBody(BaseModel):
         if any(not 0 < document_id <= MAX_SQLITE_ID for document_id in value):
             raise ValueError("文档 ID 必须在 SQLite 整数范围内")
         return sorted(set(value))
+
+    @model_validator(mode="after")
+    def _check_scope_semantics(self) -> "QueryBody":
+        if self.scope_mode == "all" and self.document_ids:
+            raise ValueError("全库检索（scope_mode=all）不能同时指定限定文档")
+        # 追问的限定文档已固化在对话上，不需要也不应该重新传列表；
+        # 只有新对话才要求「仅选中文档」同时给出至少一个文档。
+        if (
+            self.scope_mode == "selected"
+            and self.conversation_id is None
+            and not self.document_ids
+        ):
+            raise ValueError(
+                "仅选中文档（scope_mode=selected）必须至少选择一个文档，"
+                "不能回退到全库检索"
+            )
+        return self
 
 
 class FeedbackBody(BaseModel):

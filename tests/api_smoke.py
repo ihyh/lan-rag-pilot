@@ -152,6 +152,17 @@ class Smoke:
         return ("\n\n".join(paras)).encode("utf-8")
 
     @staticmethod
+    def _similar_scope_bytes() -> bytes:
+        """与主测试文档内容高度相似、但数值不同的范围外文档。"""
+        paras = []
+        for i in range(24):
+            paras.append(
+                f"第 {i + 1} 节 补充规定：员工出差住宿每日上限为 600 元，"
+                "出差前需提交申请，市内交通凭票据据实报销；考勤打卡要求同前。"
+            )
+        return ("\n\n".join(paras)).encode("utf-8")
+
+    @staticmethod
     def _docx_bytes() -> bytes:
         from docx import Document
 
@@ -486,6 +497,148 @@ class Smoke:
         r = self.c.post(f"/api/chats/{self.root_chat_id}/feedback", json={"rating": "unhelpful"})
         check(r.status_code == 404, "user 不能评价他人问答")
 
+    # ---------- 4b. 检索范围模式（全库检索 / 仅选中文档） ----------
+    def test_scope_modes(self) -> None:
+        """验证显式范围语义：载荷、范围外相似文档、零勾选、已删除文档、历史绑定。
+
+        查询统一用独立账号，避免占用 root 的每分钟限额（后续用例还要用 root）。
+        """
+        print("\n== 检索范围模式 ==")
+        # 复用已创建的文档管理员（kb_admin）：它能上传/删除文档，也有独立于 root 的
+        # 登录与问答限额，避免把 root 的每分钟窗口用满而影响后续用例。
+        r = self.login("keeper", "keeper123")
+        check(r.status_code == 200, "范围模式测试使用文档管理员账号")
+        # 内容与主文档高度相似（住宿上限 600 元 vs 400 元），用于验证范围外文档不会越界。
+        r = self.c.post(
+            "/api/admin/documents",
+            files={"file": ("出差住宿补充规定.txt", self._similar_scope_bytes(), "text/plain")},
+        )
+        check(r.status_code == 201 and r.json().get("status") == "ready", "上传相似内容的范围外文档")
+        similar = r.json()
+        r = self.c.post(
+            "/api/admin/documents",
+            files={
+                "file": (
+                    "待删除范围文档.txt",
+                    "scope-delete-probe: 独立关键词 unique probe".encode("utf-8"),
+                    "text/plain",
+                )
+            },
+        )
+        check(r.status_code == 201, "创建用于删除验证的文档")
+        doomed = r.json()
+
+        question = "出差住宿每日上限是多少？"
+
+        # 先证明不限定范围时确实会召回多份相似文档（范围外文档观察得到）。
+        r = self.c.post("/api/query", json={"question": question, "scope_mode": "all"})
+        check(r.status_code == 200, "显式全库检索问答成功")
+        all_body = r.json()
+        check(all_body.get("scope_mode") == "all" and all_body.get("document_ids") == [],
+              "全库检索回显 scope_mode=all 且不限定文档")
+        all_docs = {source["document_id"] for source in all_body.get("sources", [])}
+        check(len(all_docs) >= 2, f"全库检索召回多份相似文档（实际 {sorted(all_docs)}）")
+        check(self.txt_doc["id"] in all_docs or similar["id"] in all_docs,
+              "全库检索召回了本次验证的目标文档")
+
+        # 仅限其中一份：检索和引用都不能越界，回显必须与实际生效范围一致。
+        selected = [sorted(all_docs)[0]]
+        excluded = all_docs - set(selected)
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "scope_mode": "selected", "document_ids": selected},
+        )
+        check(r.status_code == 200, "仅选中文档问答成功")
+        body = r.json()
+        conv_id = body.get("conversation_id")
+        check(body.get("scope_mode") == "selected" and body.get("document_ids") == selected,
+              "回显实际生效的限定文档范围")
+        restricted_docs = {source["document_id"] for source in body.get("sources", [])}
+        check(bool(restricted_docs) and restricted_docs <= set(selected),
+              f"检索结果不超出所选范围（实际 {sorted(restricted_docs)}）")
+        check(bool(excluded) and not (restricted_docs & excluded),
+              "全库召回过的相似范围外文档被排除")
+
+        # 对话详情显示真实范围；首问后不能把「仅选中文档」改成全库。
+        detail = self.c.get(f"/api/conversations/{conv_id}").json()
+        check(detail.get("document_ids") == selected and detail.get("scope_mode") == "selected",
+              "对话详情保留固定范围与模式")
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "conversation_id": conv_id, "scope_mode": "all"},
+        )
+        check(r.status_code == 409, "已有对话不能把仅选中文档改成全库")
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "conversation_id": conv_id, "scope_mode": "selected"},
+        )
+        check(r.status_code == 200, "追问可显式复核相同模式")
+        check(
+            all(source["document_id"] in selected for source in r.json().get("sources", [])),
+            "追问仍不越出首问范围",
+        )
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "conversation_id": conv_id, "document_ids": [similar["id"]]},
+        )
+        check(r.status_code == 409, "已有对话不能改变限定文档列表")
+
+        # 全库对话同样锁定：不能中途改成仅选中文档。
+        r = self.c.post("/api/query", json={"question": question, "scope_mode": "all"})
+        all_conv = r.json().get("conversation_id")
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "conversation_id": all_conv, "scope_mode": "selected",
+                  "document_ids": [self.txt_doc["id"]]},
+        )
+        check(r.status_code == 409, "全库对话不能改成仅选中文档")
+
+        # 语义校验：零勾选、全库带文档、未知模式一律拒绝，且不回退全库。
+        for payload, why in (
+            ({"question": question, "scope_mode": "selected"}, "仅选中文档缺 document_ids"),
+            ({"question": question, "scope_mode": "selected", "document_ids": []}, "仅选中文档零勾选"),
+            ({"question": question, "scope_mode": "all", "document_ids": selected}, "全库模式带限定文档"),
+            ({"question": question, "scope_mode": "bogus"}, "未知 scope_mode"),
+        ):
+            r = self.c.post("/api/query", json=payload)
+            check(r.status_code == 422, f"{why} 返回 422")
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "scope_mode": "selected", "document_ids": []},
+        )
+        check(
+            "至少选择一个文档" in err_text(r) and "全库" in err_text(r),
+            "零勾选错误说明不会回退到全库检索",
+        )
+
+        # 已绑定文档被删除：新请求和追问都必须明确报错，而不是改用全库。
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "scope_mode": "selected", "document_ids": [doomed["id"]]},
+        )
+        check(r.status_code == 200, "先建立绑定待删除文档的对话")
+        doomed_conv = r.json().get("conversation_id")
+        r = self.c.delete(f"/api/admin/documents/{doomed['id']}")
+        check(r.status_code == 204, "删除所选文档")
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "scope_mode": "selected", "document_ids": [doomed["id"]]},
+        )
+        check(
+            r.status_code == 400
+            and "已删除或尚未处理完成" in err_text(r)
+            and "不会回退到全库检索" in err_text(r),
+            "所选文档删除后新的限定请求被拒绝且不回退全库",
+        )
+        r = self.c.post(
+            "/api/query",
+            json={"question": question, "conversation_id": doomed_conv},
+        )
+        check(r.status_code == 400, "已绑定对话在文档删除后追问明确报错，而不是改用全库")
+        r = self.c.post("/api/query", json={"question": question, "scope_mode": "all"})
+        check(r.status_code == 200 and r.json().get("scope_mode") == "all",
+              "显式全库模式在限定失败后仍正常工作")
+
     def test_streaming(self) -> None:
         print("\n== 流式问答 ==")
         self.login("root", ROOT_PW)
@@ -501,6 +654,36 @@ class Smoke:
             saved = self.c.get(f"/api/conversations/{completed['conversation_id']}").json()["turns"][-1]
             check(saved["answer"] == "".join(deltas) and saved["sources"] and saved["status"] == "ok",
                   "流式完整答案与引用只保存一次")
+
+        # 流式请求同样携带显式范围，完成事件回显实际生效范围，引用不越界。
+        with self.c.stream(
+            "POST",
+            "/api/query?stream=true",
+            json={"question": "流式范围测试", "scope_mode": "selected",
+                  "document_ids": [self.txt_doc["id"]]},
+        ) as response:
+            scope_status = response.status_code
+            scope_events = [json.loads(line) for line in response.iter_lines() if line]
+        scope_done = next((event for event in scope_events if event["type"] == "done"), None)
+        check(
+            scope_status == 200 and scope_done is not None
+            and scope_done.get("scope_mode") == "selected"
+            and scope_done.get("document_ids") == [self.txt_doc["id"]],
+            "流式完成事件回显限定范围",
+        )
+        if scope_done:
+            scope_conversation = self.c.get(
+                f"/api/conversations/{scope_done['conversation_id']}"
+            ).json()
+            check(
+                scope_conversation.get("scope_mode") == "selected"
+                and all(
+                    source["document_id"] == self.txt_doc["id"]
+                    for turn in scope_conversation.get("turns", [])
+                    for source in turn.get("sources", [])
+                ),
+                "流式限定范围写入对话，引用不越界",
+            )
 
         with self.c.stream("POST", "/api/query?stream=true", json={"question": "[[mock:stream-cut]] 出差住宿上限是多少？"}) as response:
             interrupted = [json.loads(line) for line in response.iter_lines() if line]
@@ -886,6 +1069,7 @@ def main() -> None:
     s.test_documents()
     s.test_kb_admin_permissions()
     s.test_query()
+    s.test_scope_modes()
     s.test_streaming()
     s.test_history()
     s.test_admin_views()

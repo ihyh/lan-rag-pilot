@@ -24,7 +24,7 @@ PYTHON_CHECKS = [
     "reranking_check.py",
     "history_retrieval_check.py",
 ]
-JS_CHECKS = ["form_modal_check.js", "citations_check.js", "device_scope_check.js", "sw_cache_check.js"]
+JS_CHECKS = ["form_modal_check.js", "citations_check.js", "device_scope_check.js", "scope_selection_check.js", "sw_cache_check.js"]
 
 
 def main() -> int:
