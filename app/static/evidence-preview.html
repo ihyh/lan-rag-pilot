@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>隔离资料预览</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;background:#f2f5fa;color:#17253a;margin:0}
+main{max-width:980px;margin:auto;padding:24px}h1{margin:0}section{background:white;border:1px solid #ced8e6;border-radius:12px;padding:20px;margin:16px 0}
+label{display:block;margin:8px 0}input[type=password],textarea,select{box-sizing:border-box;width:100%;font:inherit;padding:8px;border:1px solid #98a8bc;border-radius:6px}
+button{font:inherit;padding:8px 16px;border:0;border-radius:6px;background:#2457be;color:white;cursor:pointer;margin:8px 8px 0 0}button:disabled{opacity:.45;cursor:default}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;background:#f6f8fc;padding:12px;border-radius:6px}fieldset{border:1px solid #ced8e6;border-radius:6px;margin:12px 0}.muted{color:#52627b;font-size:14px}.candidate{border-top:1px solid #dce3ed;padding:10px 0}[hidden]{display:none!important}
+</style>
+<main>
+<h1>隔离资料预览</h1>
+<p>只展示检索资料原文 · 不调用生成模型 · 不改变手机知识库</p>
+<p class="muted">排序不是正确性认证；原文可能不完整或相互矛盾，请人工核对。资料记录不能单独证明当前设备状态或维修适用性。</p>
+<section id="login-panel">
+<form id="login-form"><label for="token">独立预览访问码（不是生产密码）</label><input id="token" type="password" autocomplete="off" required><button>进入预览</button></form>
+</section>
+<section id="workspace" hidden>
+<button id="logout" type="button">退出预览</button>
+<form id="search-form">
+<label for="question">查询内容</label><textarea id="question" rows="3" maxlength="2000" required></textarea>
+<label for="document">文档范围</label><select id="document"><option value="">所有已授权文档</option></select>
+<fieldset><legend>明确选择用途（可多选）</legend>
+<label><input type="checkbox" name="purpose" value="source_excerpt" checked>查询资料原文</label>
+<label><input type="checkbox" name="purpose" value="current_value">确认当前状态</label>
+<label><input type="checkbox" name="purpose" value="onsite_remedy">确认现场维修方法</label>
+</fieldset><button id="search">1. 检索资料</button>
+</form>
+<div id="candidates"></div>
+<label><input id="stream" type="checkbox" checked>使用缓冲 NDJSON（校验完毕后发送，不是逐字生成）</label>
+<button id="render" type="button" disabled>2. 查看所选原文与证据缺口</button>
+<section id="result" hidden><h2>资料原文 / 证据缺口</h2><p id="result-status" class="muted"></p><pre id="answer"></pre><h3>引用来源（原始编号）</h3><ul id="sources"></ul><p class="muted">语义未自动核验；现场适用性未核验。</p></section>
+</section>
+<p id="notice" role="status" aria-live="polite"></p>
+</main>
+<script src="/preview.js" defer></script>
+</html>

@@ -164,6 +164,11 @@ class Settings:
         self.chunk_overlap_tokens = _int("RAG_CHUNK_OVERLAP_TOKENS", 60)
         # 混合检索最终返回的片段条数。
         self.top_k = _int("RAG_TOP_K", 3)
+        # 实验策略默认关闭；仅在隔离评测中分别启用。
+        self.general_lexical = _bool("RAG_GENERAL_LEXICAL", False)
+        self.rerank_enabled = _bool("RAG_RERANK_ENABLED", False)
+        self.rerank_model = os.environ.get("RAG_RERANK_MODEL") or str(self.models_dir / "bge-reranker-v2-m3")
+        self.history_auxiliary = _bool("RAG_HISTORY_AUXILIARY", False)
         # 真实嵌入的低相似度拒答阈值；mock 后端测试时由查询层跳过。
         raw_min_score = _float("RAG_MIN_RELEVANCE_SCORE", 0.25)
         self.min_relevance_score = (

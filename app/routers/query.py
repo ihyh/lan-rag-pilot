@@ -17,9 +17,10 @@ from ..db import connect, get_db, now_iso
 from ..deps import require_kb_admin, require_user
 from ..embeddings import EmbeddingUnavailable, embedding_service
 from ..gate import llm_gate
-from ..index import technical_terms, vector_index
+from ..index import technical_terms, semantic_queries, vector_index
 from ..llm import LLMError, _normalize_answer, chat as llm_chat, stream_chat as llm_stream_chat
 from ..ratelimit import SlidingWindowLimiter
+from ..reranking import RerankUnavailable, reranker
 from ..schemas import MAX_SQLITE_ID, FeedbackBody, QueryBody
 
 router = APIRouter()
@@ -88,10 +89,47 @@ def _is_continuation(current: dict, following: dict) -> bool:
     return len(overlap) >= 24 and right.startswith(overlap) and len(right) > len(overlap)
 
 
-def _select_sources(sources: list[dict], k: int, question: str = "") -> list[dict]:
+def _ranked_sources(sources: list[dict], k: int, trace: dict | None = None) -> list[dict]:
+    """重排后的相关性顺序不再被旧启发式覆盖；只去同来源完全重复文本。"""
+    candidates, seen, reasons = [], set(), {}
+    for source in sources:
+        if not source["content"].strip():
+            reasons[source["chunk_id"]] = "empty_content"
+            continue
+        key = (source["document_id"], source.get("page"), source.get("paragraph"), source["content"])
+        if key in seen:
+            reasons[source["chunk_id"]] = "exact_same_source_text"
+        else:
+            seen.add(key)
+            candidates.append(source)
+    following = {(s["document_id"], s.get("seq")): s for s in candidates if isinstance(s.get("seq"), int)}
+    selected, ids = [], set()
+    for source in candidates:
+        if len(selected) >= k:
+            break
+        if source["chunk_id"] in ids:
+            continue
+        selected.append(source)
+        ids.add(source["chunk_id"])
+        reasons[source["chunk_id"]] = "rerank_top_k"
+        next_source = following.get((source["document_id"], source.get("seq", -2) + 1))
+        if len(selected) < k and next_source and next_source["chunk_id"] not in ids and _is_continuation(source, next_source):
+            selected.append(next_source)
+            ids.add(next_source["chunk_id"])
+            reasons[next_source["chunk_id"]] = "verified_continuation"
+    if trace is not None:
+        trace["selection"] = [{"chunk_id": s["chunk_id"], "selected": s["chunk_id"] in ids,
+                               "reason": reasons.get(s["chunk_id"], "rank_budget")} for s in sources]
+    return selected
+
+
+def _select_sources(sources: list[dict], k: int, question: str = "", *, preserve_ranking: bool = False,
+                    trace: dict | None = None) -> list[dict]:
     """同文档的包含型重复只保留完整片段，保留不同数值/版本的原始引用。"""
     if k <= 0:
         return []
+    if preserve_ranking:
+        return _ranked_sources(sources, k, trace)
     kept: list[tuple[dict, str]] = []
     for src in sorted(sources, key=lambda s: len(s["content"]), reverse=True):
         text = " ".join(src["content"].split())
@@ -488,8 +526,9 @@ def query(
         # 检索段计时：从构造检索问题到选出来源。它只依赖本机嵌入模型与内存索引，
         # 与模型生成完全无关，因此单独记录才能把"生成慢"和"检索慢"分开。
         retrieval_started = time.monotonic()
-        retrieval_question = f"{history[-1]['question']}\n{question}" if history else question
+        retrieval_question, auxiliary_question = semantic_queries(question, history, settings.history_auxiliary)
         qvec = embedding_service.embed_query(retrieval_question)
+        auxiliary_options = {"auxiliary_vec": embedding_service.embed_query(auxiliary_question)} if auxiliary_question else {}
         min_score = settings.min_relevance_score if settings.embed_backend != "mock" else None
         # 旧索引可能包含大量重叠短尾片段；有界扩大候选，去重后仍只发送 Top-K。
         hits = vector_index.search(
@@ -498,6 +537,7 @@ def query(
             document_ids=scope,
             min_score=min_score,
             query_text=question,
+            **auxiliary_options,
         )
     except EmbeddingUnavailable as exc:
         raise HTTPException(status_code=503, detail={"code": "embed_not_ready", "message": str(exc)}) from exc
@@ -534,7 +574,12 @@ def query(
                 "content": r["content"],
             }
         )
-    sources = _select_sources(sources, rt_values["top_k"], question)
+    if settings.rerank_enabled:
+        try:
+            sources = reranker.rank(question, sources)
+        except RerankUnavailable as exc:
+            raise HTTPException(status_code=503, detail={"code": "rerank_unavailable", "message": str(exc)}) from exc
+    sources = _select_sources(sources, rt_values["top_k"], question, preserve_ranking=settings.rerank_enabled)
     for src in sources:
         if Path(src["filename"]).suffix.lower() == ".xlsx":
             src["table_headers"] = vector_index.table_headers_for(src["document_id"])

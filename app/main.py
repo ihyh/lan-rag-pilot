@@ -21,6 +21,7 @@ from .routers import admin as admin_router
 from .routers import auth as auth_router
 from .routers import query as query_router
 from .security import hash_password
+from .reranking import reranker
 
 logger = logging.getLogger("rag")
 
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
     async def lifespan(_app: FastAPI):
         _bootstrap()
         embedding_service.start()  # 后台线程加载/下载嵌入模型，不阻塞启动
+        reranker.start()
         print(
             "\n"
             "──────────────────────────────────────────────────────\n"
@@ -169,6 +171,12 @@ def create_app() -> FastAPI:
         if not embed_ok:
             payload["reason"] = "embed_not_ready"
             return JSONResponse(status_code=503, content=payload)
+
+        if settings.rerank_enabled:
+            payload["checks"]["rerank"] = {"ok": reranker.state == "ready", "message": reranker.message}
+            if reranker.state != "ready":
+                payload["reason"] = "rerank_not_ready"
+                return JSONResponse(status_code=503, content=payload)
 
         llm = llm_probe.probe()
         payload["checks"]["llm"] = llm.as_dict()
