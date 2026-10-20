@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from .. import acl, audit, runtime as rt
 from ..config import settings
+from ..context_assembly import attach_continuations
 from ..db import connect, get_db, now_iso
 from ..deps import require_kb_admin, require_user
 from ..embeddings import EmbeddingUnavailable, embedding_service
@@ -510,6 +511,9 @@ def retrieve_sources(
     for source in sources:
         if Path(source["filename"]).suffix.lower() == ".xlsx":
             source["table_headers"] = vector_index.table_headers_for(source["document_id"])
+    if settings.context_continuation:
+        # 只补同文档下一段，且以原文结构为条件；来源编号/页码保持真实。
+        sources = attach_continuations(db, sources)
     retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
     if not sources:
         return [], retrieval_ms, "no_selected"

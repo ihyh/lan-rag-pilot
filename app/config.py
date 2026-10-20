@@ -169,6 +169,9 @@ class Settings:
         self.rerank_enabled = _bool("RAG_RERANK_ENABLED", False)
         self.rerank_model = os.environ.get("RAG_RERANK_MODEL") or str(self.models_dir / "bge-reranker-v2-m3")
         self.history_auxiliary = _bool("RAG_HISTORY_AUXILIARY", False)
+        # 选段后按原文结构补齐被页/块边界拆开的续段（参数表、步骤、定义）。
+        # 默认关闭，需显式开启并做真实问题前后对照。
+        self.context_continuation = _bool("RAG_CONTEXT_CONTINUATION", False)
         # 真实嵌入的低相似度拒答阈值；mock 后端测试时由查询层跳过。
         raw_min_score = _float("RAG_MIN_RELEVANCE_SCORE", 0.25)
         self.min_relevance_score = (
