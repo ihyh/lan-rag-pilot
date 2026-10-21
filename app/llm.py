@@ -16,6 +16,8 @@ from typing import Iterator
 import httpx
 
 from .config import effective_key, settings
+from .parameter_answers import build_parameter_answer
+from .table_answers import build_table_answer
 
 SYSTEM_PROMPT = """你是一个基于个人文档知识库的问答助手。
 回答规则：
@@ -1026,6 +1028,16 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
             "prompt_tokens": 0,
             "completion_tokens": 0,
         }
+    if getattr(settings, "table_answers", False):
+        table = build_table_answer(question, sources)
+        if table is not None:
+            # 单元格/表头关系由服务端拼装，不经过模型，避免行号/列义被读错。
+            return table
+    if getattr(settings, "parameter_answers", False):
+        parameter = build_parameter_answer(question, sources)
+        if parameter is not None:
+            # Byte 参数块按原文逐项拼装，不经过模型，避免单位/默认值被概括错。
+            return parameter
     payload = _payload(question, sources, history, False)
     url = model_service_url("chat/completions")
     headers = model_service_headers(content_type=True)
@@ -1067,7 +1079,9 @@ def chat(question: str, sources: list[dict], history: list[dict] | None = None) 
 
 def stream_chat(question: str, sources: list[dict], history: list[dict] | None = None) -> Iterator[dict]:
     """完整接收并验证引用后返回正文，最后返回耗时与 token 用量。"""
-    if _source_projection(question, sources) is not None:
+    if (_source_projection(question, sources) is not None
+            or (getattr(settings, "table_answers", False) and build_table_answer(question, sources) is not None)
+            or (getattr(settings, "parameter_answers", False) and build_parameter_answer(question, sources) is not None)):
         result = chat(question, sources, history)
         yield {"type": "delta", "text": result["answer"]}
         yield {

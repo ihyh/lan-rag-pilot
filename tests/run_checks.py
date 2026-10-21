@@ -26,6 +26,8 @@ PYTHON_CHECKS = [
     "context_continuation_check.py",
     "evidence_completion_check.py",
     "context_evidence_persistence_check.py",
+    "table_answers_check.py",
+    "parameter_answers_check.py",
     "ocr_preprocess_check.py",
     "ocr_preprocess_live_check.py",
     "mcp_server_check.py",

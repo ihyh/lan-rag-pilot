@@ -175,6 +175,12 @@ class Settings:
         # 选段后按问题点名的字面标识符补入原文片段（跨文档保留同号不同定义）。
         # 默认关闭，需显式开启并做真实问题前后对照。
         self.evidence_completion = _bool("RAG_EVIDENCE_COMPLETION", False)
+        # 表格参数题由服务端按单元格/表头直接回答，避免模型混淆行号与索引、Unit 与 Mark。
+        # 默认关闭，需显式开启并做真实问题前后对照。
+        self.table_answers = _bool("RAG_TABLE_ANSWERS", False)
+        # 命令参数列表（Byte N）由服务端按原文块直接回答，避免单位/默认值被概括错。
+        # 默认关闭，需显式开启并做真实问题前后对照。
+        self.parameter_answers = _bool("RAG_PARAMETER_ANSWERS", False)
         # 真实嵌入的低相似度拒答阈值；mock 后端测试时由查询层跳过。
         raw_min_score = _float("RAG_MIN_RELEVANCE_SCORE", 0.25)
         self.min_relevance_score = (
