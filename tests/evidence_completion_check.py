@@ -151,6 +151,52 @@ def main() -> int:
     check({700} <= {item["chunk_id"] for item in result}, "后导入文档的具体片段被补入")
     check(len(result) <= MAX_EXTRA_SOURCES, "补证总数仍受上限约束")
 
+    print("\n== 精确过滤之前的伪匹配不能挤掉真匹配 ==")
+    db = make_db()
+    add_document(db, 1, "fields.txt")
+    for index in range(4):
+        add_chunk(db, 900 + index, 1, index, f"bit40 = 伪字段 {index}")
+    add_chunk(db, 904, 1, 4, "bit4 = 真正目标字段")
+    result = attach_literal_evidence(db, [], "bit4 是什么", document_ids={1})
+    check([item["chunk_id"] for item in result] == [904],
+          "前四条伪匹配被过滤后，仍继续读到真正的 bit4")
+    db = make_db()
+    add_document(db, 1, "alarm.txt")
+    for index in range(4):
+        add_chunk(db, 910 + index, 1, index, f"12,10 = 伪代码 {index}")
+    add_chunk(db, 914, 1, 4, "2,1 = 真正代码")
+    result = attach_literal_evidence(db, [], "代码2,1是什么", document_ids={1})
+    check([item["chunk_id"] for item in result] == [914],
+          "代码对的伪匹配同样不占用真匹配名额")
+
+    print("\n== 同表标题行不被当成表头 ==")
+    db = make_db()
+    add_document(db, 26, "PLM_parameters.xlsx")
+    add_chunk(db, 820, 26, 0, "工作表《Parameter》第 1 行：A1=参数表")
+    add_chunk(db, 821, 26, 1,
+              "工作表《Parameter》第 2 行：A2=Index；B2=Name；C2=Unit；D2=Description")
+    add_chunk(db, 822, 26, 2,
+              "工作表《Parameter》第 3 行：A3=20；B3=Input Monitor Time；C3=/；"
+              "D3=监控输入的时间间隔")
+    result = attach_literal_evidence(
+        db, [], "Input Monitor Time 的单位和索引是什么？", document_ids={26},
+    )
+    chunk_ids = {item["chunk_id"] for item in result}
+    check(822 in chunk_ids, "目标参数行被补入")
+    check(821 in chunk_ids, "第 2 行的真实列名被识别为表头")
+    check(820 not in chunk_ids, "同表第 1 行标题不被标记为表头")
+    header = next(item for item in result if item["chunk_id"] == 821)
+    check(header["relation"] == "table_header", "真实列名行标记 table_header")
+    db2 = make_db()
+    add_document(db2, 27, "titleonly.xlsx")
+    add_chunk(db2, 823, 27, 0, "工作表《SheetX》第 1 行：A1=标题")
+    add_chunk(db2, 824, 27, 1, "工作表《SheetX》第 4 行：A4=20；B4=Input Monitor Time")
+    result = attach_literal_evidence(
+        db2, [], "Input Monitor Time 的索引是什么？", document_ids={27},
+    )
+    check(all(item["relation"] != "table_header" for item in result),
+          "只有标题行时不得标记 table_header")
+
     print("\n== 多工作表：按目标工作表绑定表头 ==")
     db = make_db()
     add_document(db, 26, "PLM_parameters.xlsx")

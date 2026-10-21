@@ -23,10 +23,18 @@ from __future__ import annotations
 import re
 import sqlite3
 
+from .table_answers import parse_rows
+
 MAX_EXTRA_SOURCES = 4
 MAX_PER_LITERAL = 3
 MAX_DOCUMENTS_PER_LITERAL = 24
-MAX_ROWS_PER_DOCUMENT = 4
+MAX_ROWS_PER_DOCUMENT = 2
+MAX_SCAN_PER_DOCUMENT = 200
+SCAN_BATCH = 32
+HEADER_LABELS = {
+    "index", "name", "unit", "description", "mark",
+    "序号", "名称", "单位", "说明", "描述", "参数", "标记",
+}
 
 HEX = re.compile(r"(?<![0-9A-Za-z])0x[0-9A-Fa-f]{2,4}(?![0-9A-Za-z])")
 CODE_PAIR = re.compile(r"(?<!\d)(\d{1,3})\s*,\s*(\d{1,3})(?!\d)")
@@ -119,7 +127,11 @@ def _candidate_rows(
     document_ids: set[int] | None,
     matcher: re.Pattern[str],
 ) -> list[sqlite3.Row]:
-    """按文档分批召回，避免早期大文档的前 N 条把后导入文档挤出候选。"""
+    """按文档分批召回，并按精确匹配后的有效候选计名额。
+
+    不能在精确匹配前固定截断：前面的伪匹配（如 bit40 之于 bit4）会占满窗口，
+    把后面的真匹配挤掉；这里按 id 续读，直到每份文档找到足够精确匹配或达到扫描上限。
+    """
     like = "%" + _like_escape(token) + "%"
     scope_sql, scope_params = _scope_clause(document_ids)
     doc_rows = list(db.execute(
@@ -130,15 +142,29 @@ def _candidate_rows(
     ))
     rows: list[sqlite3.Row] = []
     for doc_row in doc_rows:
-        chunk_rows = list(db.execute(
-            "SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph,"
-            " c.content, d.filename "
-            "FROM chunks c JOIN documents d ON d.id = c.document_id "
-            "WHERE c.document_id = ? AND lower(c.content) LIKE lower(?) ESCAPE '\\' "
-            "ORDER BY c.id LIMIT ?",
-            (int(doc_row["document_id"]), like, MAX_ROWS_PER_DOCUMENT),
-        ))
-        rows.extend(row for row in chunk_rows if matcher.search(row["content"] or ""))
+        matched: list[sqlite3.Row] = []
+        last_id = 0
+        scanned = 0
+        while len(matched) < MAX_ROWS_PER_DOCUMENT and scanned < MAX_SCAN_PER_DOCUMENT:
+            batch = list(db.execute(
+                "SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph,"
+                " c.content, d.filename "
+                "FROM chunks c JOIN documents d ON d.id = c.document_id "
+                "WHERE c.document_id = ? AND c.id > ? "
+                "AND lower(c.content) LIKE lower(?) ESCAPE '\\' "
+                "ORDER BY c.id LIMIT ?",
+                (int(doc_row["document_id"]), last_id, like, SCAN_BATCH),
+            ))
+            if not batch:
+                break
+            scanned += len(batch)
+            last_id = int(batch[-1]["chunk_id"])
+            for row in batch:
+                if matcher.search(row["content"] or ""):
+                    matched.append(row)
+                    if len(matched) >= MAX_ROWS_PER_DOCUMENT:
+                        break
+        rows.extend(matched)
     return rows
 
 
@@ -167,26 +193,41 @@ def _sheet_names(content: str) -> list[str]:
     return names
 
 
+def _valid_header(values: dict[str, str]) -> bool:
+    labels = [value.strip().lower() for value in values.values() if value.strip()]
+    recognized = sum(1 for label in labels if label in HEADER_LABELS)
+    has_name = any(label in {"name", "名称"} for label in labels)
+    return recognized >= 2 and (has_name or recognized >= 3)
+
+
 def _header_chunks(db: sqlite3.Connection, document_id: int, content: str) -> list[sqlite3.Row]:
-    """按目标行所属工作表查找真正表头；找不到时不回退到文件首段。"""
+    """按目标行所属工作表查找真正表头；找不到列名行时不回退到标题/文件首段。"""
     headers: list[sqlite3.Row] = []
     seen: set[int] = set()
     for sheet in _sheet_names(content):
-        pattern = "%工作表《" + _like_escape(sheet) + "》第 1 行%"
-        rows = list(db.execute(
+        pattern = "%工作表《" + _like_escape(sheet) + "》第%"
+        best: tuple[int, sqlite3.Row] | None = None
+        for chunk in db.execute(
             "SELECT c.id AS chunk_id, c.document_id, c.seq, c.page, c.paragraph,"
             " c.content, d.filename "
             "FROM chunks c JOIN documents d ON d.id = c.document_id "
             "WHERE c.document_id = ? AND lower(c.content) LIKE lower(?) ESCAPE '\\' "
-            "ORDER BY c.id LIMIT 1",
+            "ORDER BY c.id LIMIT 50",
             (document_id, pattern),
-        ))
-        for row in rows:
-            check = re.search(rf"工作表《{re.escape(sheet)}》第\s*1\s*行", row["content"] or "")
-            chunk_id = int(row["chunk_id"])
-            if check and chunk_id not in seen:
+        ):
+            for parsed in parse_rows(chunk["content"] or ""):
+                if parsed["sheet"] != sheet or parsed["row"] > 5:
+                    continue
+                if not _valid_header(parsed["values"]):
+                    continue
+                if best is None or parsed["row"] < best[0]:
+                    best = (parsed["row"], chunk)
+        if best is not None:
+            chunk = best[1]
+            chunk_id = int(chunk["chunk_id"])
+            if chunk_id not in seen:
                 seen.add(chunk_id)
-                headers.append(row)
+                headers.append(chunk)
     return headers
 
 

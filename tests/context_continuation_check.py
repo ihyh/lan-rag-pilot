@@ -177,6 +177,23 @@ def main() -> int:
     check("Reset command" not in result[1]["content"], "新章节正文不进入续段内容")
     check(result[1]["page"] == 7, "截断后仍保留真实页码")
 
+    print("\n== 数值/单位不是章节：不能裁掉必要值 ==")
+    db = make_db()
+    add_document(db, 1, "param.pdf")
+    anchor = "Byte 1: Configure the reader."
+    following = ("Byte 2: Wait time.\n"
+                 "The value below is the maximum.\n"
+                 "0.5 seconds.\n"
+                 "Byte 3: Retry count is 2.")
+    add_chunk(db, 95, 1, 0, 1, anchor)
+    add_chunk(db, 96, 1, 1, 2, following)
+    result = attach_continuations(db, [source(95, 1, 0, 1, "param.pdf", anchor)])
+    check(len(result) == 2, "Byte 续文仍被附加")
+    if len(result) == 2:
+        check("0.5 seconds." in result[1]["content"], "小数参数值不被当章节裁掉")
+        check("Byte 3" in result[1]["content"], "小数后的 Byte3 定义保留")
+        check(not result[1].get("trimmed_at_section"), "数值不会标记为章节截断")
+
     print("\n== 数量上限与去重 ==")
     db = make_db()
     add_document(db, 1, "many.pdf")

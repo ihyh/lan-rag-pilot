@@ -37,14 +37,41 @@ CONTINUATION_START = re.compile(
     re.IGNORECASE,
 )
 # 新章节/新标题：顶层与多级数字标题、中文章节、Markdown 标题。
-NEW_SECTION = re.compile(
+# 注意：仅“数字+点/小数值”不算章节；由 _looks_like_new_section 结合后续文字/单位判断。
+NEW_SECTION_HEADING = re.compile(
     r"^\s*(?:"
-    r"[0-9]+(?:\.[0-9]+)*[.、]\s*\S|"
     r"第\s*[0-9一二三四五六七八九十]+\s*[章节部分]|"
     r"[一二三四五六七八九十]+、|"
     r"#{1,6}\s+\S"
     r")"
 )
+NUMBER_HEADING = re.compile(r"^\s*([0-9]{1,3}(?:\.[0-9]{1,3})*)[.、]\s*(.*)$")
+DOTTED_HEADING = re.compile(r"^\s*([0-9]{1,3}(?:\.[0-9]{1,3})+)\s+(.*)$")
+UNIT_WORDS = {
+    "second", "seconds", "sec", "ms", "millisecond", "milliseconds", "mm",
+    "min", "minutes", "minute", "%", "秒", "毫秒", "分钟", "毫米", "次", "个",
+}
+
+
+def _looks_like_new_section(line: str) -> bool:
+    text = (line or "").strip()
+    if not text:
+        return False
+    if NEW_SECTION_HEADING.match(text):
+        return True
+    for pattern in (NUMBER_HEADING, DOTTED_HEADING):
+        match = pattern.match(text)
+        if not match:
+            continue
+        rest = (match.group(match.lastindex) or "").strip()
+        if not rest or not re.match(r"^[A-Za-z\u4e00-\u9fff]", rest):
+            # 数字后仍是数字（如 0.5 / 1.2.5 被首个模式提前切开）时继续尝试下一模式。
+            continue
+        first_word = re.split(r"[\s.,;:，。；：)]", rest, maxsplit=1)[0].lower()
+        if first_word in UNIT_WORDS:
+            return False
+        return True
+    return False
 NOISE_LINE = re.compile(r"(?:fortrend|confidential|no\s*copy)", re.IGNORECASE)
 TERMINALS = tuple("。！？.!?:：;；）)]】》")
 
@@ -90,7 +117,7 @@ def _trim_before_new_section(text: str) -> tuple[str, bool]:
     """把“续文后才出现的新章节”截掉；返回 (保留内容, 是否遇到新章节)。"""
     lines = (text or "").replace("\x00", "").replace("\ufeff", "").splitlines()
     for index, line in enumerate(lines):
-        if NEW_SECTION.match(line.strip()):
+        if _looks_like_new_section(line):
             return "\n".join(lines[:index]), True
     return text, False
 
