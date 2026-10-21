@@ -32,16 +32,94 @@ def _page_list(values: list[int]) -> str:
     return ",".join(str(value) for value in sorted(set(values))) or "-"
 
 
-def load_inputs(ocr_json: Path, source: Path) -> tuple[dict, dict]:
+def _physical_pdf_pages(data: bytes) -> int:
+    import io  # noqa: PLC0415
+
+    from pypdf import PdfReader  # noqa: PLC0415
+
+    try:
+        count = len(PdfReader(io.BytesIO(data)).pages)
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(f"无法读取原始 PDF 页数，拒绝导入：{exc}") from exc
+    if count <= 0:
+        raise SystemExit("原始 PDF 没有物理页，拒绝导入")
+    return count
+
+
+def validate_ocr_pages(result: dict, physical_pages: int) -> dict:
+    """页码必须为正整数、唯一、覆盖全部物理页；状态只允许 ok/suspect/failed。"""
+    records = result.get("pages")
+    if not isinstance(records, list) or not records:
+        raise SystemExit("OCR 结果没有 pages，拒绝导入")
+    allowed = {"ok", "suspect", "failed"}
+    pages: dict[int, dict] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            raise SystemExit("OCR pages 记录格式错误，拒绝导入")
+        page_no = record.get("page")
+        if type(page_no) is not int or page_no <= 0:
+            raise SystemExit(f"OCR 页码必须是正整数，实际 {page_no!r}")
+        if page_no in pages:
+            raise SystemExit(f"OCR 页码重复：{page_no}，拒绝合并/覆盖")
+        status = record.get("status") or "ok"
+        if status not in allowed:
+            raise SystemExit(f"OCR 页 {page_no} 状态 {status!r} 不在允许集合 {sorted(allowed)}")
+        if page_no > physical_pages:
+            raise SystemExit(f"OCR 页码 {page_no} 超出原 PDF 物理页数 {physical_pages}")
+        pages[page_no] = record
+    missing = set(range(1, physical_pages + 1)) - set(pages)
+    if missing:
+        raise SystemExit(f"OCR 结果缺少物理页 {sorted(missing)}，拒绝把不完整结果当完整导入")
+    return pages
+
+
+def load_inputs(ocr_json: Path, source: Path) -> tuple[dict, dict, dict]:
     result = json.loads(ocr_json.read_text(encoding="utf-8"))
     data = source.read_bytes()
     actual_sha = hashlib.sha256(data).hexdigest()
     meta = result.get("source") or {}
-    if meta.get("sha256") and meta["sha256"] != actual_sha:
+    expected_sha = meta.get("sha256")
+    if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha):
+        raise SystemExit("OCR 结果必须提供有效的 source.sha256（64 位十六进制），拒绝建立来源")
+    if expected_sha.lower() != actual_sha:
         raise SystemExit("OCR 结果的 source.sha256 与原始文件不一致，拒绝导入")
-    if not result.get("pages"):
-        raise SystemExit("OCR 结果没有 pages，拒绝导入")
-    return result, {"sha256": actual_sha, "size_bytes": len(data)}
+    pages = validate_ocr_pages(result, _physical_pdf_pages(data))
+    return result, {"sha256": actual_sha, "size_bytes": len(data)}, pages
+
+
+def _resolve(path: Path) -> Path:
+    return path.resolve()
+
+
+def preflight_paths(args) -> None:
+    """任何写入前检查路径别名：报告必须是新文件，不能覆盖原件/OCR/DB/旧报告。"""
+    source = _resolve(args.source)
+    ocr_json = _resolve(args.ocr_json)
+    db = _resolve(args.db)
+    report = _resolve(args.report)
+    upload = _resolve(args.upload_dir)
+    if not source.is_file():
+        raise SystemExit(f"原始文件不存在：{args.source}")
+    if not ocr_json.is_file():
+        raise SystemExit(f"OCR JSON 不存在：{args.ocr_json}")
+    if not _is_under(db, ISOLATED_ROOT) or not _is_under(upload, ISOLATED_ROOT):
+        raise SystemExit(f"只允许在隔离目录 {ISOLATED_ROOT} 下写入测试 DB/上传目录")
+    if report.exists() or report.is_symlink():
+        raise SystemExit(f"--report 必须是新文件，拒绝覆盖：{args.report}")
+    if report.is_dir():
+        raise SystemExit(f"--report 不能是目录：{args.report}")
+    blocked = {
+        "原件": source, "OCR JSON": ocr_json, "DB": db, "上传目录": upload,
+    }
+    for name, target in blocked.items():
+        if report == target:
+            raise SystemExit(f"--report 不能与{name}相同：{args.report}")
+    if db in {source, ocr_json}:
+        raise SystemExit("--db 不能与原件/OCR JSON 相同")
+    if upload == source or upload == ocr_json or upload == db:
+        raise SystemExit("--upload-dir 不能与原件/OCR JSON/DB 相同")
+    if not source.suffix.lower() == ".pdf":
+        raise SystemExit("当前集成验证只接受 PDF 原件；图片/TIFF 未纳入本轮")
 
 
 def main() -> int:
@@ -61,13 +139,20 @@ def main() -> int:
     parser.add_argument("--embedding-backend", choices=("st", "mock"), default="st")
     parser.add_argument("--embedding-model", default="")
     args = parser.parse_args()
-    if not _is_under(args.db, ISOLATED_ROOT) or not _is_under(args.upload_dir, ISOLATED_ROOT):
-        raise SystemExit(f"只允许在隔离目录 {ISOLATED_ROOT} 下写入测试 DB/上传目录")
     if len(args.expect_page) not in (0, len(args.question)) or len(args.expect_token) not in (0, len(args.question)):
         raise SystemExit("--expect-page/--expect-token 必须与 --question 数量一致或省略")
-    result, source_meta = load_inputs(args.ocr_json, args.source)
+    preflight_paths(args)
+    result, source_meta, pages = load_inputs(args.ocr_json, args.source)
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    report_handle = args.report.open("x", encoding="utf-8")
+    try:
+        return _run_import(args, result, source_meta, pages, report_handle)
+    except BaseException:
+        report_handle.close()
+        raise
 
-    args.db.parent.mkdir(parents=True, exist_ok=True)
+
+def _run_import(args, result: dict, source_meta: dict, pages: dict[int, dict], report_handle) -> int:
     args.upload_dir.mkdir(parents=True, exist_ok=True)
     os.environ["RAG_DATA_DIR"] = str(args.db.parent / "rag-data")
     os.environ["RAG_DB_PATH"] = str(args.db)
@@ -86,7 +171,7 @@ def main() -> int:
     from app.parsing import Unit  # noqa: PLC0415
 
     dbmod.init_db()
-    page_records = [page for page in result["pages"] if isinstance(page.get("page"), int)]
+    page_records = [pages[page_no] for page_no in sorted(pages)]
     statuses = {int(page["page"]): str(page.get("status") or "ok") for page in page_records}
     warnings = {int(page["page"]): list(page.get("warnings") or []) for page in page_records}
     units: list[Unit] = []
@@ -129,11 +214,14 @@ def main() -> int:
     source_copy = args.upload_dir / stored_name
     source_copy.write_bytes(args.source.read_bytes())
     stored_sha = hashlib.sha256(source_copy.read_bytes()).hexdigest()
+    if stored_sha != source_meta["sha256"]:
+        source_copy.unlink(missing_ok=True)
+        raise SystemExit("复制原始 PDF 后 SHA-256 不一致（原件在导入期间被改动），拒绝入库")
     tags = ["ocr"]
     for status_name in ("ok", "suspect", "failed"):
-        pages = [page_no for page_no, status in statuses.items() if status == status_name]
-        if pages:
-            tags.append(f"ocr_{status_name}_pages={_page_list(pages)}")
+        status_pages = [page_no for page_no, status in statuses.items() if status == status_name]
+        if status_pages:
+            tags.append(f"ocr_{status_name}_pages={_page_list(status_pages)}")
 
     conn = dbmod.connect()
     try:
@@ -175,29 +263,41 @@ def main() -> int:
         checks = []
         for index, question in enumerate(args.question):
             sources, retrieval_ms, empty_reason = retrieve_sources(
-                conn, question, None, args.top_k
+                conn, question, {doc_id}, args.top_k
             )
             expected_page = args.expect_page[index] if args.expect_page else None
             expected_token = args.expect_token[index] if args.expect_token else None
             source_checks = []
             for source in sources:
                 row = conn.execute(
-                    "SELECT c.content, c.page, d.filename FROM chunks c"
+                    "SELECT c.content, c.page, c.document_id, d.filename FROM chunks c"
                     " JOIN documents d ON d.id=c.document_id WHERE c.id=?",
                     (source["chunk_id"],),
                 ).fetchone()
+                source_doc = source.get("document_id")
+                db_doc = int(row["document_id"]) if row else None
+                page_ok = expected_page is None or source.get("page") == expected_page
+                token_ok = expected_token is None or expected_token in (source.get("content") or "")
+                document_ok = source_doc == doc_id and db_doc == doc_id
                 source_checks.append({
                     "chunk_id": source["chunk_id"],
+                    "document_id": source_doc,
                     "page": source.get("page"),
                     "filename": source.get("filename"),
                     "content_in_db": bool(row and row["content"] == source.get("content")),
                     "page_in_db": bool(row and row["page"] == source.get("page")),
                     "filename_in_db": bool(row and row["filename"] == source.get("filename")),
+                    "document_in_db": document_ok,
+                    "page_ok": page_ok,
+                    "token_ok": token_ok,
+                    "same_source_match": document_ok and page_ok and token_ok,
                     "failed_page": statuses.get(int(source.get("page") or 0)) == "failed",
                 })
-            page_hit = expected_page is None or any(item["page"] == expected_page for item in source_checks)
-            token_hit = expected_token is None or any(
-                expected_token in (source.get("content") or "") for source in sources
+            page_hit = any(item["page_ok"] for item in source_checks) if expected_page is not None else True
+            token_hit = any(item["token_ok"] for item in source_checks) if expected_token is not None else True
+            expectation_hit = (
+                any(item["same_source_match"] for item in source_checks)
+                if expected_page is not None or expected_token is not None else True
             )
             checks.append({
                 "question": question,
@@ -207,6 +307,7 @@ def main() -> int:
                 "expected_token": expected_token,
                 "page_hit": page_hit,
                 "token_hit": token_hit,
+                "expectation_hit": expectation_hit,
                 "sources": source_checks,
             })
         report = {
@@ -215,6 +316,7 @@ def main() -> int:
                 "original_filename": args.source.name,
                 "sha256": source_meta["sha256"],
                 "sha256_matches_ocr": True,
+                "pdf_pages": len(pages),
                 "document_id": doc_id,
                 "stored_name": stored_name,
                 "stored_path": str(source_copy.resolve()),
@@ -247,19 +349,21 @@ def main() -> int:
         report["source_ok"] = (
             stored_sha == source_meta["sha256"]
             and Path(report["source"]["stored_path"]).is_file()
+            and hashlib.sha256(args.source.read_bytes()).hexdigest() == source_meta["sha256"]
         )
         report["mapping_ok"] = all(
-            item["content_in_db"] and item["page_in_db"] and item["filename_in_db"]
+            item["content_in_db"] and item["page_in_db"]
+            and item["filename_in_db"] and item["document_in_db"]
             for check in checks for item in check["sources"]
         )
         report["expectations_ok"] = all(
-            check["page_hit"] and check["token_hit"] for check in checks
+            check["expectation_hit"] for check in checks
         )
     finally:
         conn.close()
 
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    report_handle.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    report_handle.close()
     print(json.dumps({
         "document_id": doc_id,
         "pages": report["pages"],
