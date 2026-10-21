@@ -75,8 +75,10 @@ real I4 报告 `i4-old-report.json` / `i4-new-report.json`。
   两者状态均显示“就绪”，并分别显示可疑/失败页提示与“OCR 待核对”；
 - 两行“重建索引”按钮均**禁用**，tooltip 说明“OCR 导入文档不支持普通重建索引；请重新运行
   OCR 预处理后导入新结果”；
-- 回归：`tests/admin_ocr_hint_check.js` 校验 tags 解析（JSON 字符串/数组/坏值/缺值/重复标签）
-  与管理页接线/CSS；`run_checks.py` 当前 **48/48**。
+- 全部页均为 `ok` 的 OCR 文档同样禁用重建按钮（有 `ocr_ok_pages` tags 即视为 OCR 导入）；
+  隔离验证截图：`.verify/ocr-e2e-20261021/ui-admin-all-ok.png` / `.json`；
+- 回归：`tests/admin_ocr_hint_check.js` 校验 tags 解析（JSON 字符串/数组/坏值/缺值/重复标签/
+  全 ok）与管理页接线/CSS；`tests/ocr_reindex_guard_check.py`；`run_checks.py` 当前 **48/48**。
 
 ## 重建索引一致性
 

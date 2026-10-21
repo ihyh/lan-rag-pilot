@@ -35,7 +35,24 @@ OCR 三页状态均为 `ok`、无失败页；这是“干净”端到端正路�
 检索耗时约 0–15 ms（本地真实嵌入，隔离库）。证据：
 `.verify/ocr-e2e-20261021/import-report.json`。
 
-## 回答支持性（本地真实模型）
+## 实际 RAG 接口（隔离服务）
+
+在同一隔离 DB 上启动临时 uvicorn（真实本地嵌入 + 本地 `qwen3:4b-instruct`，无生产数据），
+通过真实登录和 `POST /api/query` 调用（`scope_mode=all`），验证 HTTP 链路而不是直接调用
+helper：
+
+| 问题 | API 回答（摘要） | 来源页命中 | 含事实 | 引用 |
+| --- | --- | --- | --- | --- |
+| Input Monitor Time 的索引和单位？ | 索引 20，单位 ms [1] | 页 1 | 是 | 是 |
+| 告警代码 2,1 含义和 Byte3 默认值？ | Unknown Command；默认值 2 [1] | 页 2 | 是 | 是 |
+| 出差住宿每日上限？ | 400 元 [1] | 页 3 | 是 | 是 |
+
+- 三次请求 HTTP 200、`status=ok`；来源 `filename=scanned-e2e.pdf` 且页码为 1/2/3 对应；
+  `all_supported=true`；
+- 检索约 0–16 ms；模型耗时约 0.5–6.5 s（含一次较长解释）；
+- 证据：`.verify/ocr-e2e-20261021/rag-api-report.json`（完整回答/chat_id/来源/耗时）。
+
+## 回答支持性（固定证据直连模型，首轮）
 
 用同一批检索来源构造固定证据提示，调用本地 `qwen3:4b-instruct`（temperature=0），
 只检查“回答是否包含来源事实且引用编号存在”，不把 3 题当准确率：
@@ -49,22 +66,27 @@ OCR 三页状态均为 `ok`、无失败页；这是“干净”端到端正路�
 检索来源均能在同一页找到对应事实；三题回答与来源一致。证据：
 `.verify/ocr-e2e-20261021/answer-report.json`（含完整回答、来源、检索毫秒）。
 
-## 管理页提示
+## 管理页提示与全 ok 文档按钮
 
-本 E2E 样本三页均 `ok`，管理页不会出现 OCR 可疑/失败提示；提示路径已在此前的
-隔离样本单独验证（`.verify/ocr-import-20261021-round2/ui-admin-ocr-hint.png`）：
-可疑页/失败页提示、`OCR 待核对`、普通重建禁用。本 E2E 未重复做浏览器提示截图。
+本 E2E 样本三页均 `ok`，管理页不出现可疑/失败提示；单独截图确认全部页 ok 的 OCR 文档
+**“重建索引”按钮也禁用**（普通重建会重新解析原 PDF、使 OCR tags 失真），tooltip 说明需
+重新运行 OCR 工具。证据：`.verify/ocr-e2e-20261021/ui-admin-all-ok.png` / `.json`。
+可疑/失败页提示的独立截图仍为：
+`.verify/ocr-import-20261021-round2/ui-admin-ocr-hint.png`。
 
 ## 证据与可复现
 
 - `.verify/ocr-e2e-20261021/scanned-e2e.pdf`（扫描式样本）
 - `.verify/ocr-e2e-20261021/ocr2/scanned-e2e.ocr.json`（真实 RapidOCR 输出）
 - `.verify/ocr-e2e-20261021/import-report.json`（隔离导入/引用/页码）
-- `.verify/ocr-e2e-20261021/answer-report.json`（本地模型回答支持性）
+- `.verify/ocr-e2e-20261021/rag-api-report.json`（实际 `/api/query` 登录/回答/引用）
+- `.verify/ocr-e2e-20261021/ui-admin-all-ok.png` / `.json`（全 ok 文档按钮禁用）
+- `.verify/ocr-e2e-20261021/answer-report.json`（固定证据直连模型首轮）
 
 ## 不能声称的结论
 
 - 样本是**合成扫描式页面**，不是用户真实私有扫描件；真实扫描件仍需按同一流程验收；
 - 只覆盖 3 页、3 个问题、1 个本地模型；不是整体回答正确率、误拒答率或引用支持率；
 - 未验证 180°、复杂表格、低质量/手写扫描；OCR 仍有小错（页 1 的 `/`→`1`）；
-- 未改生产 schema/索引/服务，未启用 CPU rerank，生成侧仍是小样本证据。
+- 未改生产 schema/索引/服务，未启用 CPU rerank；生成侧仍只有 3 题小样本证据，
+  不能代表整体准确率；实际 Web 前端问答界面未做浏览器验收，仅验证了 HTTP `/api/query`。

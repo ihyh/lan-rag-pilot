@@ -40,6 +40,11 @@ assert.deepEqual(
   '重复状态标签合并，坏值不清掉已有有效页码'
 );
 assert.deepEqual(
+  JSON.parse(JSON.stringify(parseOcrPages(['ocr_ok_pages=1,2,3']))),
+  { ok: [1, 2, 3], suspect: [], failed: [] },
+  '全部页 ok 也保留 OCR 导入身份'
+);
+assert.deepEqual(
   JSON.parse(JSON.stringify(parseOcrPages(['ocr_suspect_pages=2', 'ocr_suspect_pages=2']))),
   { ok: [], suspect: [2], failed: [] },
   '重复页码去重'
@@ -63,6 +68,8 @@ assert.match(admin, /OCR 可疑页：第 /, '管理页显示可疑页原文页�
 assert.match(admin, /OCR 失败页（未入库）：第 /, '管理页显示失败页原文页码');
 assert.match(admin, /doc-ocr-hint/, '提示有独立 DOM class');
 assert.match(admin, /doc-ocr-warn/, '状态列有 OCR 待核对提示');
+assert.match(admin, /isOcrImported/, '全部 ok 的 OCR 文档也按导入身份处理');
+assert.match(admin, /ocrPages\.ok\.length/, 'ok-only 文档也禁用普通重建');
 assert.match(admin, /reindexBtn\.disabled = true/, 'OCR 文档普通重建按钮被禁用');
 assert.match(admin, /不支持普通重建索引/, '禁用按钮告知需重新走 OCR 工具');
 assert.match(css, /\.doc-ocr-hint\s*\{/, 'CSS 提供 OCR 提示样式');

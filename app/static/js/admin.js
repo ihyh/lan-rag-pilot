@@ -144,8 +144,10 @@
         }
         var actions = h('td', { class: 'cell-actions' });
         var reindexBtn = actionButton('重建索引', 'btn-outline', function (btn) { reindexDoc(d.id, d.filename, btn); });
-        if (ocrNotes.length) {
-          // 普通重建会重新解析原 PDF、把 failed 页加回索引，并使旧 OCR tags 失真。
+        var isOcrImported = ocrPages.ok.length > 0 || ocrPages.suspect.length > 0 || ocrPages.failed.length > 0;
+        if (isOcrImported) {
+          // 普通重建会重新解析原 PDF、把 failed 页加回索引，并使旧 OCR tags 失真；
+          // 即使所有页都 ok，也必须走 OCR 工具重新导入，不能普通重建。
           reindexBtn.disabled = true;
           reindexBtn.setAttribute('aria-disabled', 'true');
           reindexBtn.classList.add('is-disabled');
