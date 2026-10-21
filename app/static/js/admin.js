@@ -142,6 +142,7 @@
           actions.appendChild(actionButton('设置访问', 'btn-outline', function (btn) { setDocumentAccess(d, btn); }));
         }
         var state = d.status === 'ready' ? badge('就绪', 'b-ok') : d.status === 'failed' ? badge('失败', 'b-err') : badge('处理中', 'b-warn');
+        var stateCell = h('td', {}, [state]);
         var restricted = d.visibility === 'restricted';
         var grantSummary = (d.granted_user_count || 0) + ' 个账号 / ' +
           (d.granted_group_count || 0) + ' 个组';
@@ -151,7 +152,19 @@
         ]);
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
         if (d.error) { name.appendChild(h('div', { class: 'doc-err', title: d.error }, [d.error])); }
-        return h('tr', {}, [name, cell(d.version || '1.0'), cell(fmtBytes(d.size_bytes)), h('td', {}, [state]), scope, cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
+        var ocrPages = parseOcrPages(d.tags);
+        var ocrNotes = [];
+        if (ocrPages.suspect.length) {
+          ocrNotes.push('OCR 可疑页：第 ' + ocrPages.suspect.join('、') + ' 页');
+        }
+        if (ocrPages.failed.length) {
+          ocrNotes.push('OCR 失败页（未入库）：第 ' + ocrPages.failed.join('、') + ' 页');
+        }
+        if (ocrNotes.length) {
+          name.appendChild(h('div', { class: 'doc-ocr-hint', title: ocrNotes.join('；') }, [ocrNotes.join('；')]));
+          stateCell.appendChild(h('div', { class: 'doc-ocr-warn' }, ['OCR 待核对']));
+        }
+        return h('tr', {}, [name, cell(d.version || '1.0'), cell(fmtBytes(d.size_bytes)), stateCell, scope, cell(d.uploaded_by_name), cell(fmtTime(d.created_at)), actions]);
       });
       body.appendChild(table(['文件', '版本', '大小', '状态', '可见范围', '上传者', '上传日期', '操作'], rows));
     } catch (e) { body.appendChild(loadError(e.message || '文档加载失败', loadDocs)); }

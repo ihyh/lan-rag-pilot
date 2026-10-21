@@ -338,6 +338,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .doc-err { color: var(--red); font-size: 12px; margin-top: 2px; max-width: 340px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* OCR 导入状态：文档仍是 ready，但可疑/失败页必须在管理页可见。 */
+.doc-ocr-hint { color: var(--amber); font-size: 12px; margin-top: 2px; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-ocr-warn { color: var(--amber); font-size: 11px; margin-top: 4px; }
+
 /* ---------- 问答页 ---------- */
 
 .app-body { display: flex; flex-direction: column; height: 100%; overflow: hidden; }

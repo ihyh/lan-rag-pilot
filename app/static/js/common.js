@@ -671,6 +671,30 @@ function openChangePasswordModal() {
   });
 }
 
+/* ---------------- OCR 导入状态 ---------------- */
+
+/* 从文档 tags 解析 OCR 页状态；tags 可能是 JSON 字符串或数组。
+   仅返回正整数页码，坏数据不影响页面渲染。 */
+function parseOcrPages(tags) {
+  var list = tags;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch (e) { list = []; }
+  }
+  var result = { ok: [], suspect: [], failed: [] };
+  if (!Array.isArray(list)) { return result; }
+  list.forEach(function (tag) {
+    if (typeof tag !== 'string') { return; }
+    var match = /^ocr_(ok|suspect|failed)_pages=(.*)$/.exec(tag.trim());
+    if (!match) { return; }
+    result[match[1]] = (match[2] || '').split(',').map(function (value) {
+      return parseInt(value, 10);
+    }).filter(function (page) {
+      return Number.isInteger(page) && page > 0;
+    });
+  });
+  return result;
+}
+
 /* ---------------- 角色 ---------------- */
 
 /* 角色 slug -> 中文名。唯一来源：此前在权限弹层、用户表等处各写一份，容易出现
@@ -689,5 +713,5 @@ window.KB = {
   h: h, clear: clear, qs: qs, qsa: qsa, openModal: openModal, formModal: formModal,
   registerSW: registerSW, initSession: initSession, detailText: detailText,
   openChangePasswordModal: openChangePasswordModal, wireGlobalErrors: wireGlobalErrors,
-  roleLabel: roleLabel, ROLE_LABELS: ROLE_LABELS
+  roleLabel: roleLabel, ROLE_LABELS: ROLE_LABELS, parseOcrPages: parseOcrPages
 };

@@ -35,7 +35,7 @@ PYTHON_CHECKS = [
     "ocr_import_check.py",
     "mcp_server_check.py",
 ]
-JS_CHECKS = ["form_modal_check.js", "citations_check.js", "device_scope_check.js", "scope_selection_check.js", "sw_cache_check.js"]
+JS_CHECKS = ["form_modal_check.js", "citations_check.js", "device_scope_check.js", "scope_selection_check.js", "sw_cache_check.js", "admin_ocr_hint_check.js"]
 
 
 def main() -> int:

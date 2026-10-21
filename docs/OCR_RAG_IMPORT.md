@@ -58,12 +58,27 @@ OCR 工具与 RAG 服务仍保持独立。
 证据：`.verify/ocr-import-20261021-round2/controls/summary.json`、`i1.log`–`i5b.log`；
 real I4 报告 `i4-old-report.json` / `i4-new-report.json`。
 
-## 状态可见性（重要更正）
+## 管理页可见性（本轮已补）
 
-suspect/failed 页状态写入**文档 tags 与导入报告**，可通过文档 API/报告读取；
-**当前管理页面 `app/static/js/admin.js` 的文档列表不渲染 tags**，页面仍显示文档
-`ready/就绪`。因此不能声称用户已能在管理 UI 直接看到 suspect/failed 页。
-UI 可见性是后续产品化小提交，需单独验收。
+`app/static/js/common.js` 新增 `parseOcrPages(tags)`，`admin.js` 文档列表对带 OCR 标签的
+文档显示：
+
+- 文件名下方：`OCR 可疑页：第 N 页` / `OCR 失败页（未入库）：第 N 页`（原文页码来自 tags）；
+- 状态列：`就绪` 之外增加 `OCR 待核对` 提醒；
+- 文档状态仍是 `ready`，提示不改变检索权限或索引；failed 页本来就不在 chunk 中。
+
+隔离 UI 实际渲染（非生产、隔离 DB、演示账号）：
+
+- 截图：`.verify/ocr-import-20261021-round2/ui-admin-ocr-hint.png`
+- 文本/断言：`.verify/ocr-import-20261021-round2/ui-admin-ocr-hint.json`
+- 演示库：两行文档 `mixed.pdf`（可疑页 2）、`mixed-failed.pdf`（失败页 2，未入库）；
+  两者状态均显示“就绪”，并分别显示可疑/失败页提示与“OCR 待核对”。
+- 回归：`tests/admin_ocr_hint_check.js` 校验 tags 解析（JSON 字符串/数组/坏值/缺值）、
+  管理页接线与 CSS class；`run_checks.py` 当前 **47/47**。
+
+限制：这是**测试版管理页提示**；普通上传接口仍不会产生 OCR tags，只有通过本集成工具
+导入的文档才有提示。管理页提示尚未做生产登录/浏览器验收，当前演示使用隔离 DB + mock
+嵌入，不代表生产 UI 已上线。
 
 ## 验证命令
 
@@ -79,11 +94,13 @@ python scripts/import_ocr_to_rag.py `
 
 离线回归：`python tests/ocr_import_check.py` —— **29 项断言**（mock 嵌入；物理页数、
 重复/越界/缺页、SHA 变体、报告别名、failed/suspect 可见性、来源归属、同源页码+关键字、
-原文件 SHA、旧文档隔离）。`run_checks.py` 当前 **46/46**。
+原文件 SHA、旧文档隔离）。`run_checks.py` 当前 **47/47**；管理页提示另有
+`tests/admin_ocr_hint_check.js`。
 
 ## 未做 / 边界
 
-- 未接入真实上传 API/后台管理；不修改生产 schema/检索/生成逻辑；
-- tags 只在 API/报告中可见，管理页面尚未渲染；suspect 页仍会入库，是否阻断/降权需产品决定；
+- 未接入真实上传 API/后台管理；普通上传不会产生 OCR tags，管理页提示只对集成工具导入的
+  文档生效；不修改生产 schema/检索/生成逻辑；
+- suspect 页仍会入库，是否阻断/降权需产品决定；failed 页不进入 chunk；
 - 不重处理旧文档、不重建生产索引；180°/复杂版式等 OCR 限制仍在；
 - 未运行生成侧答案对照；`fact_correct`/`citation_supported` 仍无结论。
