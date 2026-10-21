@@ -121,6 +121,10 @@ def main():
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--history-mode", choices=("legacy", "current", "auxiliary"), default="legacy")
+    parser.add_argument("--evidence-completion", action="store_true",
+                        help="选段后按问题字面标识符补原文（与生产开关同函数）")
+    parser.add_argument("--context-continuation", action="store_true",
+                        help="选段后补同文档下一段（与生产开关同函数）")
     args = parser.parse_args()
     if args.out.suffix.lower() != ".json":
         parser.error("--out must be a new .json report; the .jsonl sibling preserves partial progress")
@@ -148,6 +152,8 @@ def main():
     from app.embeddings import embedding_service
     from app.index import VectorIndex
     from app.routers.query import _select_sources
+    from app.context_assembly import attach_continuations
+    from app.evidence_completion import attach_literal_evidence
     configuration = {name: getattr(settings, name, None) for name in (
         "embed_model", "embed_backend", "embed_device", "min_relevance_score",
         "general_lexical", "rerank_enabled", "rerank_model")}
@@ -192,6 +198,13 @@ def main():
             else:
                 selection_started = time.perf_counter()
                 selected = _select_sources(sources, args.top_k, case["question"])
+            if args.evidence_completion:
+                selected = attach_literal_evidence(
+                    db, selected, case["question"],
+                    document_ids=set(case["scope"]) if case.get("scope") is not None else None,
+                )
+            if args.context_continuation:
+                selected = attach_continuations(db, selected)
             for source in selected:
                 if Path(source["filename"]).suffix.lower() == ".xlsx":
                     source["table_headers"] = index.table_headers_for(source["document_id"])
@@ -220,6 +233,8 @@ def main():
     report["history_mode"] = args.history_mode
     report["strategies"] = {name: getattr(settings, name, False) for name in ("general_lexical", "rerank_enabled", "history_auxiliary")}
     report["strategies"]["history_auxiliary"] = args.history_mode == "auxiliary"
+    report["strategies"]["evidence_completion"] = args.evidence_completion
+    report["strategies"]["context_continuation"] = args.context_continuation
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2)

@@ -76,14 +76,16 @@ H03/H05 的候选缺失、H07/H08 的步骤类证据、H12 的“字段说明 vs
 3. 非交互式异步预处理（不能当作在线问答延迟）。
 
 当前更划算的方向是先评审/启用毫秒级的字面补证与续段，并对表格/参数类事实用确定性拼接；
-重排留到有 GPU/可行延迟方案后再做同条件对照。
+重排留到有 GPU/可行延迟方案后再做同条件对照。补证/续段已用同一评测器复测，
+见 [选段丢失恢复](SELECTION_RECOVERY.md)。
 
 ## 证据与限制
 
 - 私有基线/重排报告：`data/eval/accuracy_20261020/results/selection-baseline-20261021.json`、
   `selection-rerank-20261021.json`；逐题 `.jsonl` 保留首次运行现场，不覆盖。
 - 字面补证/续段对照：`results/cheap-switches-20261021.json`。
-- 本轮**未运行生成**：`fact_correct` / `citation_supported` 为 `null`，没有答案对错、
-  误拒答、引用支持的统计；这些必须在生成步骤另做首轮答案对照，不能用检索指标冒充。
+- 本轮重排评估**未运行生成**：`fact_correct` / `citation_supported` 为 `null`；
+  选段恢复阶段另做的 3 题小样本回答对照见 [SELECTION_RECOVERY.md](SELECTION_RECOVERY.md)，
+  仍不是整体准确率、误拒答率或引用支持率。
 - 候选召回与证据召回均按人工 anchors 计算，不是业务问答正确率；样本只有 12 题。
 - 未改生产索引/数据库/服务；重排模型只下载到 `D:\rag-test-models\` 供评估，开关仍为 0。
