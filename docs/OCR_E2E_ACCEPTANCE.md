@@ -37,25 +37,30 @@ OCR 三页状态均为 `ok`、无失败页；这是“干净”端到端正路�
 
 ## 实际 RAG 接口（隔离服务）
 
-在同一隔离 DB 上启动临时 uvicorn（真实本地嵌入 + 本地 `qwen3:4b-instruct`，无生产数据），
-通过真实登录和 `POST /api/query` 调用（`scope_mode=all`），验证 HTTP 链路而不是直接调用
-helper：
+在导入库的**隔离副本**（`.tmp-tests/ui-e2e-api/data/rag.db`，原导入库未改写）上启动
+临时 uvicorn：真实本地 `bge-small-zh-v1.5` 嵌入、本地 `qwen3:4b-instruct`、CPU、无生产
+数据；通过真实登录和 `POST /api/query` 调用（`scope_mode=all`），验证 HTTP 链路而不是
+直接调用 helper：
 
-| 问题 | API 回答（摘要） | 来源页命中 | 含事实 | 引用 |
-| --- | --- | --- | --- | --- |
-| Input Monitor Time 的索引和单位？ | 索引 20，单位 ms [1] | 页 1 | 是 | 是 |
-| 告警代码 2,1 含义和 Byte3 默认值？ | Unknown Command；默认值 2 [1] | 页 2 | 是 | 是 |
-| 出差住宿每日上限？ | 400 元 [1] | 页 3 | 是 | 是 |
+| 问题 | API 回答（摘要） | 来源页命中 | 核心事实 token | 引用编号 | 整答支持（人工） |
+| --- | --- | --- | --- | --- | --- |
+| Input Monitor Time 的索引和单位？ | 索引 20，单位 ms [1] | 页 1 | 是 | 是 | 通过 |
+| 告警代码 2,1 含义和 Byte3 默认值？ | Unknown Command；默认值 2 [1] | 页 2 | 是 | 是 | **未通过**：随后又称“无法确认是否为重试次数”，与来源/前句矛盾 |
+| 出差住宿每日上限？ | 400 元 [1] | 页 3 | 是 | 是 | 通过 |
 
 - 三次请求 HTTP 200、`status=ok`；来源 `filename=scanned-e2e.pdf` 且页码为 1/2/3 对应；
-  `all_supported=true`；
+  **HTTP 执行成功、核心 token 和引用编号存在，不等于整段答案受支持**；
+- 第 2 答为“部分事实正确、整答未通过（无依据不确定性/自相矛盾）”，已保留原答案；
 - 检索约 0–16 ms；模型耗时约 0.5–6.5 s（含一次较长解释）；
-- 证据：`.verify/ocr-e2e-20261021/rag-api-report.json`（完整回答/chat_id/来源/耗时）。
+- 证据：`.verify/ocr-e2e-20261021/rag-api-report.json`（原始回答/来源/耗时）；
+  严格验收判据：[`ANSWER_ACCEPTANCE.md`](ANSWER_ACCEPTANCE.md)；保存标注：
+  `.verify/ocr-e2e-20261021/answer-quality-review.json`（保留原答，分列核心事实/引用/
+  无依据扩写/自相矛盾/整答支持）。
 
 ## 回答支持性（固定证据直连模型，首轮）
 
 用同一批检索来源构造固定证据提示，调用本地 `qwen3:4b-instruct`（temperature=0），
-只检查“回答是否包含来源事实且引用编号存在”，不把 3 题当准确率：
+该段落只检查“回答是否包含来源事实且引用编号存在”，**不是整答正确性验收**：
 
 | 问题 | 回答（摘要） | 含事实 token | 有引用 |
 | --- | --- | --- | --- |
@@ -63,8 +68,9 @@ helper：
 | 告警代码 2,1 含义和 Byte3 默认值？ | Unknown Command；默认值 2 [1] | 是 | 是 |
 | 出差住宿每日上限？ | 400 元 [1] | 是 | 是 |
 
-检索来源均能在同一页找到对应事实；三题回答与来源一致。证据：
-`.verify/ocr-e2e-20261021/answer-report.json`（含完整回答、来源、检索毫秒）。
+这些字段只是自动信号；已保留原答案，并在
+[`ANSWER_ACCEPTANCE.md`](ANSWER_ACCEPTANCE.md) 的判据下把整答支持与无依据扩写分开记录，
+不再声称“三题回答均受支持”。
 
 ## 管理页提示与全 ok 文档按钮
 

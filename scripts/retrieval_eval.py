@@ -46,6 +46,33 @@ def journal(path, event):
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def selection_switches_allowed(hits, scope) -> bool:
+    """与生产 retrieve_sources 一致：无候选或空文档范围时绝不进入补证阶段。
+
+    `scope is not None` 且为空表示“没有任何可见文档”，不是“不限定文档”；空集合会被
+    字面补证 helper 当成不限定范围，因此这里必须显式短路。
+    """
+    if not hits:
+        return False
+    return not (scope is not None and len(scope) == 0)
+
+
+def apply_selection_switches(selected, *, question, scope, hits, evidence_completion,
+                             context_continuation, db, attach_literal=None,
+                             attach_continuation=None):
+    """复用生产补证/续段函数；边界与生产一致，供 CLI 和边界测试共同调用。"""
+    if not selection_switches_allowed(hits, scope):
+        return list(selected)
+    if evidence_completion:
+        selected = attach_literal(
+            db, selected, question,
+            document_ids=set(scope) if scope is not None else None,
+        )
+    if context_continuation:
+        selected = attach_continuation(db, selected)
+    return selected
+
+
 def load_cases(path):
     cases = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(cases, list) and cases, "non-empty case array required"
@@ -198,13 +225,13 @@ def main():
             else:
                 selection_started = time.perf_counter()
                 selected = _select_sources(sources, args.top_k, case["question"])
-            if args.evidence_completion:
-                selected = attach_literal_evidence(
-                    db, selected, case["question"],
-                    document_ids=set(case["scope"]) if case.get("scope") is not None else None,
-                )
-            if args.context_continuation:
-                selected = attach_continuations(db, selected)
+            selected = apply_selection_switches(
+                selected, question=case["question"], scope=case.get("scope"), hits=hits,
+                evidence_completion=args.evidence_completion,
+                context_continuation=args.context_continuation, db=db,
+                attach_literal=attach_literal_evidence,
+                attach_continuation=attach_continuations,
+            )
             for source in selected:
                 if Path(source["filename"]).suffix.lower() == ".xlsx":
                     source["table_headers"] = index.table_headers_for(source["document_id"])
