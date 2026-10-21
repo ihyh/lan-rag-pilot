@@ -409,7 +409,7 @@ def main() -> None:
         ensure("旋转 270 度后识别" in page["text"], "采用旋转后的最佳文本")
         check(True, "旋转页兜底选择最佳结果并记录尝试")
 
-    print("\n== 旋转页行序：几何信息用于排序与旋转判定 ==")
+    print("\n== 旋转页：行序以引擎转正顺序为准，不按精确 y 重排 ==")
     with with_tmp() as temp:
         root = Path(temp)
         pdf = root / "order.pdf"
@@ -421,43 +421,117 @@ def main() -> None:
             tool.OcrLine("第一行", 0.95, 250, 500, 40, 400),
         ]
         ensure(tool._mostly_vertical(vertical), "高大于宽的文字框标记为竖直")
-        ensure(tool._sort_reading_order([]) == [], "空行列表安全")
         horizontal = [
             tool.OcrLine("第三行", 0.95, 100, 500, 400, 40),
             tool.OcrLine("第一行", 0.95, 100, 100, 400, 40),
             tool.OcrLine("第二行", 0.95, 100, 300, 400, 40),
         ]
         ensure(not tool._mostly_vertical(horizontal), "横排文字框不标记为竖直")
-        ordered = tool._sort_reading_order(horizontal)
-        ensure([line.text for line in ordered] == ["第一行", "第二行", "第三行"],
-               "转正后按行中心 y/x 排序恢复阅读顺序")
-        no_geometry = [tool.OcrLine("后", None), tool.OcrLine("前", None)]
-        ensure([line.text for line in tool._sort_reading_order(no_geometry)] == ["后", "前"],
-               "无几何信息时保持引擎顺序，不伪造行序")
 
-        class GeometryEngine(FakeEngine):
+        class TableOrderEngine(FakeEngine):
             def recognize(self, image):
                 self.calls += 1
                 if getattr(image, "angle", 0) == 270:
+                    # 转正后引擎顺序正确；同一行 y 中心有 0.5~1 像素偏差，
+                    # 如果按精确 y 重排会把列顺序打乱（复核 O1 反例）。
                     return [
-                        tool.OcrLine("第三行", 0.95, 100, 300, 400, 40),
-                        tool.OcrLine("第一行", 0.95, 100, 100, 400, 40),
-                        tool.OcrLine("第二行", 0.95, 100, 200, 400, 40),
+                        tool.OcrLine("项目", 0.99, 100, 139, 80, 40),
+                        tool.OcrLine("周期", 0.99, 220, 138, 80, 40),
+                        tool.OcrLine("上限", 0.99, 340, 138.5, 80, 40),
+                        tool.OcrLine("巡检", 0.99, 100, 239, 80, 40),
+                        tool.OcrLine("每季度", 0.99, 220, 238, 80, 40),
+                        tool.OcrLine("400元", 0.99, 340, 238.5, 80, 40),
                     ]
                 return [
-                    tool.OcrLine("第三行", 0.95, 50, 500, 40, 400),
-                    tool.OcrLine("第二行", 0.95, 150, 500, 40, 400),
-                    tool.OcrLine("第一行", 0.95, 250, 500, 40, 400),
+                    tool.OcrLine("项目", 0.95, 50, 500, 40, 300),
+                    tool.OcrLine("周期", 0.95, 120, 500, 40, 300),
+                    tool.OcrLine("上限", 0.95, 190, 500, 40, 300),
                 ]
 
-        engine = GeometryEngine()
+        engine = TableOrderEngine()
         code, _ = run_tool([pdf], root / "out", engine=engine, factory=renderer_factory(FakeImage(0)))
         page = read_json(root / "out" / "order.ocr.json")["pages"][0]
-        ensure(code == 0, "旋转页行序校正退出码 0")
-        ensure(page["rotation_degrees"] == 270, f"竖直文字触发旋转尝试，实际 {page['rotation_degrees']}")
-        ensure([line for line in page["text"].splitlines()] == ["第一行", "第二行", "第三行"],
-               "旋转后按几何顺序输出，行序不再反转")
-        check(True, "旋转页几何行序校正生效")
+        ensure(code == 0, "旋转表格退出码 0")
+        ensure(page["rotation_degrees"] == 270, f"竖直文字触发旋转，实际 {page['rotation_degrees']}")
+        ensure(page["text"].splitlines() == ["项目", "周期", "上限", "巡检", "每季度", "400元"],
+               "旋转表格保持引擎转正后的行列顺序（不按精确 y 打乱列）")
+        check(True, "旋转页/表格行序以引擎转正顺序为准")
+
+    print("\n== 旋转候选为空/低分：保留首轮高置信文字 ==")
+    with with_tmp() as temp:
+        root = Path(temp)
+        pdf = root / "reject.pdf"
+        pdf.write_bytes(build_pdf([None]))
+
+        class EmptyRotationEngine(FakeEngine):
+            def recognize(self, image):
+                self.calls += 1
+                if getattr(image, "angle", 0) == 0:
+                    return [tool.OcrLine("压力不得超过 0.6 MPa。", 0.98, 80, 300, 40, 260)]
+                return []
+
+        engine = EmptyRotationEngine()
+        run_tool([pdf], root / "out-empty", engine=engine, factory=renderer_factory(FakeImage(0)))
+        page = read_json(root / "out-empty" / "reject.ocr.json")["pages"][0]
+        ensure(page["rotation_degrees"] == 0, "旋转结果为空不得替换首轮")
+        ensure("0.6 MPa" in page["text"] and "压力不得超过" in page["text"], "首轮数字/否定/单位保留")
+        ensure("rotation_candidate_rejected" in page["warnings"]
+               and "page_orientation_unverified" in page["warnings"], "标记方向/顺序待核对")
+
+        class LowScoreRotationEngine(FakeEngine):
+            def recognize(self, image):
+                self.calls += 1
+                if getattr(image, "angle", 0) == 0:
+                    return [tool.OcrLine("压力不得超过 0.6 MPa。", 0.98, 80, 300, 40, 260)]
+                return [tool.OcrLine("无关低分内容", 0.10, 100, 100, 300, 40)]
+
+        engine = LowScoreRotationEngine()
+        code, _ = run_tool([pdf], root / "out-low", engine=engine, factory=renderer_factory(FakeImage(0)))
+        page = read_json(root / "out-low" / "reject.ocr.json")["pages"][0]
+        ensure("0.6 MPa" in page["text"] and "无关低分内容" not in page["text"],
+               "低分旋转候选不得覆盖首轮高置信文字")
+        ensure(page["status"] == "suspect", "方向未确认时页面标记可疑而非完整成功")
+        check(True, "空/低分旋转候选回归控制通过")
+
+    print("\n== 同页文字页眉 + 扫描正文：强制 OCR 合并 ==")
+    with with_tmp() as temp:
+        root = Path(temp)
+        pdf = root / "mixed-page.pdf"
+        pdf.write_bytes(build_pdf([LONG_TEXT]))
+
+        class MixedRenderer:
+            page_count = 1
+
+            def render(self, index):
+                return FakeImage()
+
+            def image_coverage(self, index):
+                return 0.5
+
+            def close(self):
+                return None
+
+        def mixed_factory(path, options):
+            return MixedRenderer()
+
+        engine = FakeEngine(lambda image: [
+            tool.OcrLine("扫描正文：每日上限 400 元。", 0.95, 80, 200, 400, 40),
+        ])
+        run_tool([pdf], root / "out", engine=engine, factory=mixed_factory)
+        page = read_json(root / "out" / "mixed-page.ocr.json")["pages"][0]
+        ensure(page["source"] == "ocr" and engine.calls == 1, "大块图像正文触发 OCR")
+        ensure("扫描正文" in page["text"], "OCR 正文被保留")
+        ensure("mixed_page_image_detected" in page["warnings"]
+               and "mixed_page_ocr_merged" in page["warnings"], "混合页 warning 可追溯")
+        ensure(page["status"] == "suspect", "混合页不能显示为完整成功")
+        ensure("text_layer_text" in page, "保留原生文字层供审计")
+        run_tool([pdf], root / "out-none", engine=None, factory=mixed_factory)
+        page_none = read_json(root / "out-none" / "mixed-page.ocr.json")["pages"][0]
+        ensure(page_none["source"] == "text_layer"
+               and "mixed_page_ocr_unavailable" in page_none["warnings"]
+               and page_none["status"] == "suspect",
+               "无引擎时保留文字层并提示图像正文未核对")
+        check(True, "页内混合页处理回归控制通过")
 
     print("\n== 页码选择与页数上限 ==")
     with with_tmp() as temp:

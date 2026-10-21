@@ -48,6 +48,8 @@ DEFAULT_ROTATE_SCORE = 0.75
 DEFAULT_MAX_PAGES = 500
 MIN_OCR_TEXT_CHARS = 10
 GARBLE_RATIO_LIMIT = 0.02
+# 文字层可用但页面图像对象覆盖超过该比例：视为“文字页眉+扫描正文”混合页，强制 OCR 合并。
+MIXED_IMAGE_COVERAGE = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +268,31 @@ class PdfPageRenderer:
         self._document = pdfium.PdfDocument(str(path))
         self._scale = dpi / 72.0
 
+    def image_coverage(self, index: int) -> float:
+        """页面中图像对象覆盖面积占比；用于发现“文字页眉 + 扫描正文”的混合页。"""
+        page = self._document[index]
+        try:
+            width, height = page.get_size()
+            page_area = float(width) * float(height)
+            if page_area <= 0:
+                return 0.0
+            covered = 0.0
+            for obj in page.get_objects():
+                try:
+                    if getattr(obj, "type", None) != 3:  # FPDF_PAGEOBJ_IMAGE
+                        continue
+                    left, bottom, right, top = obj.get_bounds()
+                    covered += max(0.0, float(right) - float(left)) * max(
+                        0.0, float(top) - float(bottom)
+                    )
+                except Exception:  # noqa: BLE001 - 单个对象异常不影响其它页
+                    continue
+            return min(1.0, covered / page_area)
+        except Exception:  # noqa: BLE001 - 无法检查时按无图像处理，不阻断 OCR
+            return 0.0
+        finally:
+            page.close()
+
     def render(self, index: int):
         page = self._document[index]
         try:
@@ -389,31 +416,47 @@ def _mostly_vertical(lines: Sequence[OcrLine]) -> bool:
     return vertical * 2 > len(lines)
 
 
-def _sort_reading_order(lines: Sequence[OcrLine]) -> list[OcrLine]:
-    """按行中心 y/x 排序；只在已把图像转正后调用。"""
-    if not _has_geometry(lines):
-        return list(lines)
-    return sorted(lines, key=lambda line: (line.y_center, line.x_center))
+def _candidate_reliable(
+    lines: Sequence[OcrLine],
+    first_chars: int,
+    first_mean: float,
+) -> bool:
+    """旋转候选必须非空、字符数不明显变少、置信度不明显变差，才允许替换首轮文字。"""
+    if not lines:
+        return False
+    chars = count_chars(_lines_text(lines))
+    if chars == 0:
+        return False
+    scores = _line_scores(lines)
+    mean = sum(scores) / len(scores) if scores else None
+    if mean is not None and first_mean > 0 and mean < first_mean * 0.8:
+        return False
+    if first_chars > 0 and chars < max(MIN_OCR_TEXT_CHARS, int(first_chars * 0.6)):
+        return False
+    return True
 
 
 def recognize_with_rotation(image, engine: Engine, options: OcrOptions) -> dict:
-    """对一页做 OCR；首轮结果不可靠或文字框竖直时尝试 90/270/180 度旋转。
+    """对一页做 OCR；首轮文字框竖直（90/270 度页面）时尝试旋转，优先选水平候选。
 
-    旋转候选优先选择“文字框水平”的一轮（说明页面已被转正），再比较置信度/字符数；
-    选中旋转轮次后按文字框几何顺序排序，修复旋转页行序反转。
+    复核修正：转正后的引擎原始行序通常已经正确，不再按精确 y 排序（同一表格行的
+    y 中心可能只差 0.5，会把列顺序打乱）。空候选或明显低分的旋转结果不得覆盖
+    首轮高置信文字；无法确认时保留首轮并标记方向/顺序待核对。
     """
     attempts: list[dict] = []
     first = engine.recognize(image)
     first_vertical = _mostly_vertical(first)
+    first_chars = count_chars(_lines_text(first))
+    first_scores = _line_scores(first)
+    first_mean = sum(first_scores) / len(first_scores) if first_scores else 0.0
     attempts.append({
         "rotation": 0,
         "lines": len(first),
-        "chars": count_chars(_lines_text(first)),
+        "chars": first_chars,
         "mean_score": _mean_score(first),
     })
-    weak = count_chars(_lines_text(first)) < MIN_OCR_TEXT_CHARS or first_vertical
-    scores = _line_scores(first)
-    if scores is not None and sum(scores) / len(scores) < options.rotate_score:
+    weak = first_chars < MIN_OCR_TEXT_CHARS or first_vertical
+    if first_scores is not None and first_mean < options.rotate_score:
         weak = True
     candidates: list[tuple[int, list[OcrLine], tuple[float, int]]] = []
     if options.auto_rotate and weak:
@@ -426,13 +469,23 @@ def recognize_with_rotation(image, engine: Engine, options: OcrOptions) -> dict:
                 "chars": count_chars(_lines_text(lines)),
                 "mean_score": _mean_score(lines),
             })
+            if not _candidate_reliable(lines, first_chars, first_mean):
+                continue
+            if _mostly_vertical(lines):
+                continue
             candidates.append((angle, lines, _attempt_rank(lines)))
-    horizontal = [item for item in candidates if not _mostly_vertical(item[1])]
-    if horizontal:
-        angle, lines, rank = max(horizontal, key=lambda item: item[2])
+    if first_vertical and not candidates:
+        return {
+            "rotation": 0,
+            "lines": first,
+            "attempts": attempts,
+            "warnings": ["rotation_candidate_rejected", "page_orientation_unverified"],
+        }
+    if candidates:
+        angle, lines, rank = max(candidates, key=lambda item: item[2])
         if first_vertical or rank > _attempt_rank(first):
-            return {"rotation": angle, "lines": _sort_reading_order(lines), "attempts": attempts}
-    return {"rotation": 0, "lines": first, "attempts": attempts}
+            return {"rotation": angle, "lines": lines, "attempts": attempts, "warnings": []}
+    return {"rotation": 0, "lines": first, "attempts": attempts, "warnings": []}
 
 
 def _page_confidence(lines: Sequence[OcrLine]) -> dict | None:
@@ -460,6 +513,8 @@ def _ocr_page_record(page_no: int, image, engine: Engine, options: OcrOptions,
         rotation_degrees=outcome["rotation"],
         rotation_attempts=outcome["attempts"],
     )
+    for warning in outcome.get("warnings") or []:
+        record["warnings"].append(warning)
     if outcome["rotation"] != 0:
         record["warnings"].append("rotated_to_read")
     confidence = _page_confidence(lines)
@@ -528,6 +583,55 @@ def _page_selection(total: int, options: OcrOptions) -> set[int] | None:
     if options.pages is None:
         return None
     return {page for page in options.pages if 1 <= page <= total}
+
+
+def _merge_layer_ocr_text(layer_text: str, ocr_text: str) -> str:
+    """文字页眉 + 扫描正文：保留原生文字，并与 OCR 正文合并；相同内容不重复。"""
+    layer = (layer_text or "").strip()
+    ocr = (ocr_text or "").strip()
+    if not layer:
+        return ocr
+    if not ocr:
+        return layer
+    compact = lambda value: re.sub(r"\s+", "", value)  # noqa: E731
+    layer_lines = [compact(line) for line in layer.splitlines() if line.strip()]
+    if layer_lines and all(line in compact(ocr) for line in layer_lines):
+        return ocr
+    return layer + "\n" + ocr
+
+
+def _mixed_page_record(
+    page_no: int,
+    layer_text: str,
+    engine: Engine,
+    options: OcrOptions,
+    base: dict,
+    renderer,
+    page_index: int,
+) -> dict:
+    """同一页有可用文字层又有大块图像时的处理：保留原生文字并 OCR 图像正文。"""
+    record = dict(base)
+    try:
+        image = renderer.render(page_index)
+    except Exception as exc:  # noqa: BLE001
+        record.update(source="text_layer", text=layer_text,
+                      chars=count_chars(layer_text), status="suspect")
+        record["warnings"].append("mixed_page_render_failed")
+        record["error"] = {"code": "mixed_page_render_failed", "message": str(exc)[:300]}
+        return record
+    ocr_record = _ocr_page_record(page_no, image, engine, options, record)
+    ocr_text = ocr_record.get("text") or ""
+    if count_chars(ocr_text) == 0:
+        record.update(source="text_layer", text=layer_text,
+                      chars=count_chars(layer_text), status="suspect")
+        record["warnings"].append("mixed_page_ocr_empty")
+        return record
+    merged = _merge_layer_ocr_text(layer_text, ocr_text)
+    ocr_record.update(source="ocr", text=merged, chars=count_chars(merged))
+    ocr_record["warnings"].append("mixed_page_ocr_merged")
+    # 混合页的版式/顺序仍需人工核对，不能显示为完整成功。
+    ocr_record["status"] = "suspect"
+    return ocr_record
 
 
 def process_document(
@@ -606,6 +710,32 @@ def process_document(
                     record["warnings"].append("text_layer_error")
                 quality = classify_text_layer(layer_text, options.min_text_chars)
                 if quality == "usable":
+                    coverage = 0.0
+                    if renderer is None:
+                        try:
+                            renderer = renderer_getter()
+                        except Exception:  # noqa: BLE001 - 纯文字页不应因渲染器缺失失败
+                            renderer = None
+                    coverage_fn = getattr(renderer, "image_coverage", None)
+                    if coverage_fn is not None:
+                        try:
+                            coverage = float(coverage_fn(page_index))
+                        except Exception:  # noqa: BLE001
+                            coverage = 0.0
+                    if coverage >= MIXED_IMAGE_COVERAGE:
+                        record["warnings"].append("mixed_page_image_detected")
+                        if options.include_text_layer_audit:
+                            record["text_layer_text"] = layer_text
+                        if engine is None:
+                            record.update(source="text_layer", text=layer_text,
+                                          chars=count_chars(layer_text), status="suspect")
+                            record["warnings"].append("mixed_page_ocr_unavailable")
+                            result["pages"].append(record)
+                            continue
+                        result["pages"].append(_mixed_page_record(
+                            page_no, layer_text, engine, options, record, renderer, page_index
+                        ))
+                        continue
                     result["pages"].append(_text_layer_record(page_no, layer_text, record))
                     continue
                 if quality == "suspect":

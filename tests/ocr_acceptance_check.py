@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -92,16 +92,26 @@ def _order_ok(observed: list[str], expected: list[str]) -> bool:
     return len(positions) == len(want) and positions == sorted(positions)
 
 
+def prepare_evidence_dir(evidence: Path) -> bool:
+    """证据目录必须是新批次；已存在且非空时拒绝，绝不删除上一轮原页/失败输出。"""
+    if evidence.exists() and any(evidence.iterdir()):
+        print(f"REFUSE: 证据目录已存在且非空，请为新批次指定新的 --evidence：{evidence}")
+        return False
+    evidence.mkdir(parents=True, exist_ok=True)
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--evidence", default=str(ROOT.parent / ".verify" / "ocr-acceptance-20261021"))
+    parser.add_argument("--evidence", default="",
+                        help="本轮证据目录；省略则使用新的临时唯一目录，不覆盖旧证据")
     args = parser.parse_args()
-    evidence = Path(args.evidence)
-    evidence.mkdir(parents=True, exist_ok=True)
+    evidence = (Path(args.evidence) if args.evidence
+                else Path(tempfile.mkdtemp(prefix="ocr-acceptance-")))
+    if not prepare_evidence_dir(evidence):
+        return 2
     work = evidence / "work"
-    if work.exists():
-        shutil.rmtree(work)
-    work.mkdir(parents=True)
+    work.mkdir()
 
     try:
         engine = tool.build_engine("rapidocr")
@@ -177,6 +187,74 @@ def main() -> int:
     print("table observed:", observed, "row/col order:",
           observations["cases"]["table"]["row_column_order_ok"])
 
+    # ---------- 旋转表格：列顺序不能被打乱 ----------
+    for angle in (90, 270):
+        rotated_table = work / f"table-{angle}.png"
+        Image.open(table_png).rotate(angle, expand=True).save(rotated_table)
+        rotated_table_pdf = work / f"table-{angle}.pdf"
+        with Image.open(rotated_table) as image:
+            image.save(rotated_table_pdf, "PDF", resolution=200.0)
+        started = time.monotonic()
+        code, _ = tool.run([rotated_table_pdf], work / f"out-table-{angle}",
+                           tool.OcrOptions(), engine=engine)
+        elapsed = int((time.monotonic() - started) * 1000)
+        result = json.loads((work / f"out-table-{angle}" /
+                             rotated_table_pdf.with_suffix(".ocr.json").name).read_text(encoding="utf-8"))
+        lines = _lines_after_normalize(result)
+        joined_rotated = " ".join(lines).replace(" ", "")
+        positions = []
+        for cell in flat_expected:
+            for index, line in enumerate(lines):
+                if cell in line.replace(" ", ""):
+                    positions.append(index)
+                    break
+        observations["cases"][f"table-{angle}"] = {
+            "kind": "rotated_table",
+            "angle": angle,
+            "elapsed_ms": elapsed,
+            "rotation_degrees": result["pages"][0].get("rotation_degrees"),
+            "observed_lines": lines,
+            "cells_present": {cell: cell in joined_rotated for cell in flat_expected},
+            "row_column_order_ok": (len(positions) == len(flat_expected)
+                                    and positions == sorted(positions)),
+        }
+        print(f"table-{angle}: rotation={result['pages'][0].get('rotation_degrees')} "
+              f"row/col={observations['cases'][f'table-{angle}']['row_column_order_ok']}")
+
+    # ---------- 同页混合：文字页眉 + 扫描正文 ----------
+    header_pdf = work / "header-only.pdf"
+    header_pdf.write_bytes(build_text_pdf(
+        "Header: this page has native text and a scanned body image with facts below."
+    ))
+    same_page_pdf = work / "same-page-mixed.pdf"
+    from pypdf import PdfReader, PdfWriter, Transformation  # noqa: PLC0415
+
+    writer = PdfWriter()
+    page = PdfReader(str(header_pdf)).pages[0]
+    body = PdfReader(str(table_pdf)).pages[0]
+    page.merge_transformed_page(body, Transformation().scale(1.2, 1.2).translate(40, 60), over=True)
+    writer.add_page(page)
+    with same_page_pdf.open("wb") as handle:
+        writer.write(handle)
+    started = time.monotonic()
+    code, _ = tool.run([same_page_pdf], work / "out-same-page", tool.OcrOptions(), engine=engine)
+    same_elapsed = int((time.monotonic() - started) * 1000)
+    same_result = json.loads((work / "out-same-page" / "same-page-mixed.ocr.json").read_text(encoding="utf-8"))
+    same_page = same_result["pages"][0]
+    same_text = same_page.get("text") or ""
+    observations["cases"]["same-page-mixed"] = {
+        "kind": "same_page_mixed",
+        "elapsed_ms": same_elapsed,
+        "source": same_page.get("source"),
+        "status": same_page.get("status"),
+        "warnings": same_page.get("warnings"),
+        "header_preserved": "Header: this page has native text" in same_text,
+        "body_preserved": all(token in same_text.replace(" ", "") for token in ("400元", "18-27摄氏度")),
+        "text_chars": same_page.get("chars"),
+    }
+    print("same-page mixed:", observations["cases"]["same-page-mixed"])
+
+
     # ---------- 混合 PDF：不漏页 + 页码追溯 ----------
     text_pdf = work / "text-layer.pdf"
     text_pdf.write_bytes(build_text_pdf(
@@ -237,6 +315,17 @@ def main() -> int:
     table = observations["cases"]["table"]
     if not table["row_column_order_ok"] or not all(table["cells_present"].values()):
         failures.append("table: 行列顺序或单元格内容不完整")
+    for angle in (90, 270):
+        case = observations["cases"][f"table-{angle}"]
+        if not case["row_column_order_ok"] or not all(case["cells_present"].values()):
+            failures.append(f"table-{angle}: 旋转表格列顺序错误或单元格缺失")
+    same = observations["cases"]["same-page-mixed"]
+    if not (same["header_preserved"] and same["body_preserved"]):
+        failures.append("same-page-mixed: 原生页眉或扫描正文缺失")
+    if same["source"] != "ocr" or "mixed_page_ocr_merged" not in (same["warnings"] or []):
+        failures.append("same-page-mixed: 未走混合页 OCR 合并或缺少 warning")
+    if same["status"] != "suspect":
+        failures.append("same-page-mixed: 混合页不应显示为完整成功")
     mixed = observations["cases"]["mixed"]
     if not mixed["no_missing_pages"]:
         failures.append("mixed: 混合 PDF 页数/页码不完整")
@@ -248,6 +337,7 @@ def main() -> int:
             failures.append(f"traceability: {key} 失败")
     observations["failures"] = failures
     observations["known_limitations"] = known_limitations
+    observations["partial"] = bool(known_limitations)
     observations["passed"] = not failures
     (evidence / "acceptance.json").write_text(
         json.dumps(observations, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
