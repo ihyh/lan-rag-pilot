@@ -28,6 +28,23 @@ assert.deepEqual(
   '坏页码被过滤，不污染页面渲染'
 );
 assert.deepEqual(
+  JSON.parse(JSON.stringify(parseOcrPages('["ocr_failed_pages=2bad,1.5,3e2,9007199254740993,3"]'))),
+  { ok: [], suspect: [], failed: [3] },
+  '2bad/1.5/3e2/超安全整数不被误认成页码'
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(parseOcrPages(
+    ['ocr_failed_pages=2', 'ocr_suspect_pages=1', 'ocr_failed_pages=bad', 'ocr_failed_pages=4']
+  ))),
+  { ok: [], suspect: [1], failed: [2, 4] },
+  '重复状态标签合并，坏值不清掉已有有效页码'
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(parseOcrPages(['ocr_suspect_pages=2', 'ocr_suspect_pages=2']))),
+  { ok: [], suspect: [2], failed: [] },
+  '重复页码去重'
+);
+assert.deepEqual(
   JSON.parse(JSON.stringify(parseOcrPages(null))),
   { ok: [], suspect: [], failed: [] },
   '缺失 tags 返回空结构'
@@ -46,6 +63,8 @@ assert.match(admin, /OCR 可疑页：第 /, '管理页显示可疑页原文页�
 assert.match(admin, /OCR 失败页（未入库）：第 /, '管理页显示失败页原文页码');
 assert.match(admin, /doc-ocr-hint/, '提示有独立 DOM class');
 assert.match(admin, /doc-ocr-warn/, '状态列有 OCR 待核对提示');
+assert.match(admin, /reindexBtn\.disabled = true/, 'OCR 文档普通重建按钮被禁用');
+assert.match(admin, /不支持普通重建索引/, '禁用按钮告知需重新走 OCR 工具');
 assert.match(css, /\.doc-ocr-hint\s*\{/, 'CSS 提供 OCR 提示样式');
 assert.match(css, /\.doc-ocr-warn\s*\{/, 'CSS 提供状态列提示样式');
 

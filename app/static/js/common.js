@@ -674,7 +674,8 @@ function openChangePasswordModal() {
 /* ---------------- OCR 导入状态 ---------------- */
 
 /* 从文档 tags 解析 OCR 页状态；tags 可能是 JSON 字符串或数组。
-   仅返回正整数页码，坏数据不影响页面渲染。 */
+   只接受完整十进制正整数且必须 safe integer；同一状态重复标签合并、去重、升序，
+   坏值不会清掉此前已解析出的有效页码。 */
 function parseOcrPages(tags) {
   var list = tags;
   if (typeof list === 'string') {
@@ -686,11 +687,19 @@ function parseOcrPages(tags) {
     if (typeof tag !== 'string') { return; }
     var match = /^ocr_(ok|suspect|failed)_pages=(.*)$/.exec(tag.trim());
     if (!match) { return; }
-    result[match[1]] = (match[2] || '').split(',').map(function (value) {
-      return parseInt(value, 10);
-    }).filter(function (page) {
-      return Number.isInteger(page) && page > 0;
+    (match[2] || '').split(',').forEach(function (raw) {
+      var value = raw.trim();
+      if (!/^\d+$/.test(value)) { return; }
+      var page = Number(value);
+      if (Number.isSafeInteger(page) && page > 0) {
+        result[match[1]].push(page);
+      }
     });
+  });
+  Object.keys(result).forEach(function (status) {
+    result[status] = result[status]
+      .filter(function (page, index, all) { return all.indexOf(page) === index; })
+      .sort(function (left, right) { return left - right; });
   });
   return result;
 }

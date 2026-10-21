@@ -35,6 +35,25 @@ def _fetch_doc(db: sqlite3.Connection, doc_id: int):
     return db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
 
 
+OCR_PAGE_TAG_PREFIXES = (
+    "ocr_ok_pages=",
+    "ocr_suspect_pages=",
+    "ocr_failed_pages=",
+)
+
+
+def _is_ocr_imported(doc) -> bool:
+    """OCR 导入结果不能走普通重建：普通解析会重新加入 failed 页并丢失页状态。"""
+    try:
+        tags = json.loads((doc["tags"] if doc is not None else "") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        tags = []
+    return any(
+        isinstance(tag, str) and tag.startswith(OCR_PAGE_TAG_PREFIXES)
+        for tag in (tags if isinstance(tags, list) else [])
+    )
+
+
 def doc_dict(row) -> dict:
     item = dict(row)
     try:
@@ -248,6 +267,13 @@ def reindex_document(db: sqlite3.Connection, doc_id: int) -> dict:
     doc = _fetch_doc(db, doc_id)
     if doc is None:
         raise IngestError("文档不存在", status_code=404, code="not_found")
+    if _is_ocr_imported(doc):
+        raise IngestError(
+            "该文档由 OCR 结果导入，普通重建索引会重新启用失败页并丢失 OCR 页状态。"
+            "请重新运行 OCR 预处理并导入新结果。",
+            status_code=409,
+            code="ocr_reindex_blocked",
+        )
     _ready_or_raise()
     kind = parsing.EXTENSIONS[Path(doc["stored_name"]).suffix.lower()]
     db.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))

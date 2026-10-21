@@ -72,9 +72,28 @@ real I4 报告 `i4-old-report.json` / `i4-new-report.json`。
 - 截图：`.verify/ocr-import-20261021-round2/ui-admin-ocr-hint.png`
 - 文本/断言：`.verify/ocr-import-20261021-round2/ui-admin-ocr-hint.json`
 - 演示库：两行文档 `mixed.pdf`（可疑页 2）、`mixed-failed.pdf`（失败页 2，未入库）；
-  两者状态均显示“就绪”，并分别显示可疑/失败页提示与“OCR 待核对”。
-- 回归：`tests/admin_ocr_hint_check.js` 校验 tags 解析（JSON 字符串/数组/坏值/缺值）、
-  管理页接线与 CSS class；`run_checks.py` 当前 **47/47**。
+  两者状态均显示“就绪”，并分别显示可疑/失败页提示与“OCR 待核对”；
+- 两行“重建索引”按钮均**禁用**，tooltip 说明“OCR 导入文档不支持普通重建索引；请重新运行
+  OCR 预处理后导入新结果”；
+- 回归：`tests/admin_ocr_hint_check.js` 校验 tags 解析（JSON 字符串/数组/坏值/缺值/重复标签）
+  与管理页接线/CSS；`run_checks.py` 当前 **48/48**。
+
+## 重建索引一致性
+
+OCR 文档的 tags 是“对当前索引事实的说明”；普通重建会重新解析原 PDF、把 failed 页加回
+索引，却不更新 tags，造成“失败页未入库”的假提示。因此：
+
+- **后端**：`ingest.reindex_document()` 在删除任何 chunk 之前检查 OCR page tags；命中即返回
+  `409 ocr_reindex_blocked`，提示重新运行 OCR 预处理并导入新结果。文档 status/tags/chunks
+  全部保持不变。
+- **管理页**：OCR 文档的“重建索引”按钮禁用并说明原因；普通文档不受影响。
+- 回归：`tests/ocr_reindex_guard_check.py` 6/6（拒绝、状态/tags/chunk 不变、只含 page 1、
+  普通文档不误判）；`tests/admin_ocr_hint_check.js` 校验禁用按钮。
+
+## 页码解析加固
+
+`parseOcrPages` 只接受完整十进制正整数且必须为 safe integer：`2bad`、`1.5`、`3e2`、
+超大数都不会被当成页码；同一状态重复 tags 合并去重，坏值不会清掉此前已有有效页码。
 
 限制：这是**测试版管理页提示**；普通上传接口仍不会产生 OCR tags，只有通过本集成工具
 导入的文档才有提示。管理页提示尚未做生产登录/浏览器验收，当前演示使用隔离 DB + mock
@@ -94,13 +113,15 @@ python scripts/import_ocr_to_rag.py `
 
 离线回归：`python tests/ocr_import_check.py` —— **29 项断言**（mock 嵌入；物理页数、
 重复/越界/缺页、SHA 变体、报告别名、failed/suspect 可见性、来源归属、同源页码+关键字、
-原文件 SHA、旧文档隔离）。`run_checks.py` 当前 **47/47**；管理页提示另有
-`tests/admin_ocr_hint_check.js`。
+原文件 SHA、旧文档隔离）。`run_checks.py` 当前 **48/48**；管理页提示另有
+`tests/admin_ocr_hint_check.js`，重建守卫另有 `python tests/ocr_reindex_guard_check.py`。
 
 ## 未做 / 边界
 
 - 未接入真实上传 API/后台管理；普通上传不会产生 OCR tags，管理页提示只对集成工具导入的
   文档生效；不修改生产 schema/检索/生成逻辑；
 - suspect 页仍会入库，是否阻断/降权需产品决定；failed 页不进入 chunk；
+- OCR 导入文档**不支持普通重建索引**，必须重新运行 OCR 工具并导入新结果；否则只能删除后
+  重新导入；
 - 不重处理旧文档、不重建生产索引；180°/复杂版式等 OCR 限制仍在；
 - 未运行生成侧答案对照；`fact_correct`/`citation_supported` 仍无结论。

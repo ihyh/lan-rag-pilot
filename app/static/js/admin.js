@@ -134,8 +134,24 @@
       var data = await api('/api/admin/documents' + suffix);
       if (!data.items.length) { body.appendChild(empty('尚未上传文档')); return; }
       var rows = data.items.map(function (d) {
+        var ocrPages = parseOcrPages(d.tags);
+        var ocrNotes = [];
+        if (ocrPages.suspect.length) {
+          ocrNotes.push('OCR 可疑页：第 ' + ocrPages.suspect.join('、') + ' 页');
+        }
+        if (ocrPages.failed.length) {
+          ocrNotes.push('OCR 失败页（未入库）：第 ' + ocrPages.failed.join('、') + ' 页');
+        }
         var actions = h('td', { class: 'cell-actions' });
-        actions.appendChild(actionButton('重建索引', 'btn-outline', function (btn) { reindexDoc(d.id, d.filename, btn); }));
+        var reindexBtn = actionButton('重建索引', 'btn-outline', function (btn) { reindexDoc(d.id, d.filename, btn); });
+        if (ocrNotes.length) {
+          // 普通重建会重新解析原 PDF、把 failed 页加回索引，并使旧 OCR tags 失真。
+          reindexBtn.disabled = true;
+          reindexBtn.setAttribute('aria-disabled', 'true');
+          reindexBtn.classList.add('is-disabled');
+          reindexBtn.title = 'OCR 导入文档不支持普通重建索引；请重新运行 OCR 预处理后导入新结果。';
+        }
+        actions.appendChild(reindexBtn);
         actions.appendChild(actionButton('删除', 'btn-danger', function (btn) { removeDoc(d.id, d.filename, btn); }));
         // 可见范围属于访问控制，只由 root 决定（kb_admin 管内容、不管权限）。
         if (currentUser && currentUser.role === 'root') {
@@ -152,14 +168,6 @@
         ]);
         var name = h('td', { class: 'cell-main', title: d.filename }, [d.filename]);
         if (d.error) { name.appendChild(h('div', { class: 'doc-err', title: d.error }, [d.error])); }
-        var ocrPages = parseOcrPages(d.tags);
-        var ocrNotes = [];
-        if (ocrPages.suspect.length) {
-          ocrNotes.push('OCR 可疑页：第 ' + ocrPages.suspect.join('、') + ' 页');
-        }
-        if (ocrPages.failed.length) {
-          ocrNotes.push('OCR 失败页（未入库）：第 ' + ocrPages.failed.join('、') + ' 页');
-        }
         if (ocrNotes.length) {
           name.appendChild(h('div', { class: 'doc-ocr-hint', title: ocrNotes.join('；') }, [ocrNotes.join('；')]));
           stateCell.appendChild(h('div', { class: 'doc-ocr-warn' }, ['OCR 待核对']));
