@@ -114,6 +114,74 @@ def main() -> int:
     header = next(item for item in result if item["chunk_id"] == 1155)
     check(header["relation"] == "table_header", "表头来源标记 table_header")
 
+    print("\n== 标识符边界与 LIKE 元字符 ==")
+    db = make_db()
+    add_document(db, 1, "alarm.txt")
+    add_document(db, 2, "alarm2.txt")
+    add_chunk(db, 400, 1, 0, "12,10,OTHER_CODE")
+    add_chunk(db, 401, 2, 0, "2,1,REAL_CODE")
+    result = attach_literal_evidence(db, [], "代码2,1怎么解释", document_ids={1, 2})
+    check([item["chunk_id"] for item in result] == [401],
+          "2,1 不匹配 12,10（代码前后数字边界）")
+    check(all("12,10" not in (item["content"] or "") for item in result), "无关代码不进入补证")
+    db = make_db()
+    add_document(db, 1, "fields.txt")
+    add_chunk(db, 402, 1, 0, "bit40 = 另一个字段")
+    add_chunk(db, 403, 1, 1, "bit4 = E84触发事件")
+    result = attach_literal_evidence(db, [], "bit4 是什么意思", document_ids={1})
+    check([item["chunk_id"] for item in result] == [403], "bit4 不匹配 bit40（字段后缀边界）")
+    db = make_db()
+    add_document(db, 1, "tokens.txt")
+    add_chunk(db, 404, 1, 0, "AXB 只是相似字符串")
+    add_chunk(db, 405, 1, 1, "A_B 是真正的字段")
+    result = attach_literal_evidence(db, [], '字段“A_B”是什么', document_ids={1})
+    check([item["chunk_id"] for item in result] == [405],
+          "引号内 A_B 不匹配 AXB（LIKE 下划线已转义）")
+
+    print("\n== 早期大文档重复片段不挤掉后导入文档 ==")
+    db = make_db()
+    add_document(db, 1, "big.txt")
+    for index in range(50):
+        add_chunk(db, 500 + index, 1, index, f"2,1,文档A的第{index}条重复说明")
+    add_document(db, 2, "later.txt")
+    add_chunk(db, 700, 2, 0, "2,1,文档B的同号另一解释")
+    result = attach_literal_evidence(db, [], "代码2,1分别怎么解释", document_ids={1, 2})
+    documents = {item["document_id"] for item in result}
+    check(2 in documents, "后导入文档的同号定义进入候选（不按前40条截断）")
+    check({700} <= {item["chunk_id"] for item in result}, "后导入文档的具体片段被补入")
+    check(len(result) <= MAX_EXTRA_SOURCES, "补证总数仍受上限约束")
+
+    print("\n== 多工作表：按目标工作表绑定表头 ==")
+    db = make_db()
+    add_document(db, 26, "PLM_parameters.xlsx")
+    add_chunk(db, 800, 26, 0, "工作表《Cover》第 1 行：A1=封面标题；B1=版本")
+    add_chunk(db, 801, 26, 1, "工作表《Cover》第 2 行：A2=编制单位")
+    add_chunk(db, 802, 26, 2,
+              "工作表《Parameter》第 1 行：A1=Index；B1=Name；C1=Unit；D1=Description；E1=Mark")
+    add_chunk(db, 803, 26, 3,
+              "工作表《Parameter》第 18 行：A18=20；B18=Input Monitor Time；C18=/；"
+              "D18=监控输入的时间间隔；E18=扫描输入变化的时间间隔,单位ms")
+    result = attach_literal_evidence(
+        db, [], "Input Monitor Time 的索引和单位是什么？", document_ids={26},
+    )
+    chunk_ids = {item["chunk_id"] for item in result}
+    check(803 in chunk_ids, "目标参数行被补入")
+    check(802 in chunk_ids, "按目标工作表补入 Parameter 真实表头")
+    check(800 not in chunk_ids, "不拿封面首段冒充参数表头")
+    header = next(item for item in result if item["chunk_id"] == 802)
+    check(header["relation"] == "table_header", "表头来源标记 table_header")
+    db2 = make_db()
+    add_document(db2, 27, "other.xlsx")
+    add_chunk(db2, 810, 27, 0, "工作表《Cover》第 1 行：A1=封面")
+    add_chunk(db2, 811, 27, 5,
+              "工作表《MissingSheet》第 7 行：A7=Input Monitor Time；B7=值")
+    result = attach_literal_evidence(
+        db2, [], "Input Monitor Time 是什么？", document_ids={27},
+    )
+    check(811 in {item["chunk_id"] for item in result}, "目标行被补入")
+    check(all(item["relation"] != "table_header" for item in result),
+          "无法可靠定位表头时不标记 table_header")
+
     print("\n== 无匹配 / 停用词 / 数量上限 ==")
     result = attach_literal_evidence(db, [], "P20 的现场当前值是多少", document_ids={26})
     check(result == [], "字面在范围内不存在时不补")

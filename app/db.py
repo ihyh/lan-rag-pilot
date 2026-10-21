@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS chat_sources (
     chat_id     INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     chunk_id    INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
-    score       REAL    NOT NULL,
+    -- 允许为空：续段/字面补证等无相似度分数的来源用 NULL，不能伪造 score。
+    score       REAL,
     page        INTEGER,
     paragraph   INTEGER,
     excerpt     TEXT    NOT NULL
@@ -239,8 +240,48 @@ def init_db() -> None:
         _ensure_conversation_columns(conn)
         _ensure_document_visibility_column(conn)
         _ensure_chat_metric_columns(conn)
+        _ensure_chat_source_score_nullable(conn)
     finally:
         conn.close()
+
+
+def _ensure_chat_source_score_nullable(conn: sqlite3.Connection) -> None:
+    """旧库的 chat_sources.score 是 NOT NULL；续段/字面补证来源没有相似度分数。
+
+    不能为了写入伪造一个 score：把列改为可空，历史行原值保留。SQLite 不能直接
+    去掉 NOT NULL，只能重建表；迁移可重复执行。
+    """
+    columns = {row[1]: row for row in conn.execute("PRAGMA table_info(chat_sources)")}
+    score = columns.get("score")
+    if score is None or not score[3]:  # row[3] = notnull
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("ALTER TABLE chat_sources RENAME TO chat_sources_legacy")
+        conn.execute(
+            "CREATE TABLE chat_sources ("
+            " id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " chat_id     INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,"
+            " document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " chunk_id    INTEGER REFERENCES chunks(id) ON DELETE SET NULL,"
+            " score       REAL,"
+            " page        INTEGER,"
+            " paragraph   INTEGER,"
+            " excerpt     TEXT    NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO chat_sources"
+            " (id, chat_id, document_id, chunk_id, score, page, paragraph, excerpt)"
+            " SELECT id, chat_id, document_id, chunk_id, score, page, paragraph, excerpt"
+            " FROM chat_sources_legacy"
+        )
+        conn.execute("DROP TABLE chat_sources_legacy")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_sources_chat ON chat_sources(chat_id)")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _ensure_chat_metric_columns(conn: sqlite3.Connection) -> None:

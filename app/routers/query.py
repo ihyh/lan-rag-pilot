@@ -388,55 +388,66 @@ def _store_chat(
     conversation_id: int | None = None,
     document_ids: list[int] | None = None,
 ) -> tuple[int, int]:
+    """保存本轮问答与来源；整轮写在一个事务里。
+
+    失败（例如来源约束不满足）必须整体回滚，不能留下 status=ok 但引用残缺的记录；
+    自动提交连接下逐条写入会正好造成这种半成功状态。
+    """
     created = now_iso()
-    if conversation_id is None:
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        if conversation_id is None:
+            cur = db.execute(
+                "INSERT INTO conversations (user_id, title, document_ids, created_at, updated_at) "
+                "VALUES (?,?,?,?,?)",
+                (user_id, question[:30], json.dumps(document_ids or []), created, created),
+            )
+            conversation_id = int(cur.lastrowid)
+        turn_index = db.execute(
+            "SELECT COALESCE(MAX(turn_index),0)+1 AS n FROM chats WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()["n"]
         cur = db.execute(
-            "INSERT INTO conversations (user_id, title, document_ids, created_at, updated_at) "
-            "VALUES (?,?,?,?,?)",
-            (user_id, question[:30], json.dumps(document_ids or []), created, created),
-        )
-        conversation_id = int(cur.lastrowid)
-    turn_index = db.execute(
-        "SELECT COALESCE(MAX(turn_index),0)+1 AS n FROM chats WHERE conversation_id=?",
-        (conversation_id,),
-    ).fetchone()["n"]
-    cur = db.execute(
-        "INSERT INTO chats (user_id, conversation_id, turn_index, question, answer, status, error,"
-        " model, prompt_tokens, completion_tokens, latency_ms, retrieval_ms, created_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            user_id,
-            conversation_id,
-            turn_index,
-            question,
-            answer,
-            status,
-            error,
-            model,
-            prompt_tokens,
-            completion_tokens,
-            latency_ms,
-            retrieval_ms,
-            created,
-        ),
-    )
-    chat_id = int(cur.lastrowid)
-    db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (created, conversation_id))
-    for s in sources or []:
-        db.execute(
-            "INSERT INTO chat_sources (chat_id, document_id, chunk_id, score, page, paragraph, excerpt)"
-            " VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO chats (user_id, conversation_id, turn_index, question, answer, status, error,"
+            " model, prompt_tokens, completion_tokens, latency_ms, retrieval_ms, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                chat_id,
-                s["document_id"],
-                s.get("chunk_id"),
-                s["score"],
-                s.get("page"),
-                s.get("paragraph"),
-                _excerpt(s.get("content") or ""),
+                user_id,
+                conversation_id,
+                turn_index,
+                question,
+                answer,
+                status,
+                error,
+                model,
+                prompt_tokens,
+                completion_tokens,
+                latency_ms,
+                retrieval_ms,
+                created,
             ),
         )
-    return chat_id, conversation_id
+        chat_id = int(cur.lastrowid)
+        db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (created, conversation_id))
+        for s in sources or []:
+            db.execute(
+                "INSERT INTO chat_sources (chat_id, document_id, chunk_id, score, page, paragraph, excerpt)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (
+                    chat_id,
+                    s["document_id"],
+                    s.get("chunk_id"),
+                    s.get("score"),
+                    s.get("page"),
+                    s.get("paragraph"),
+                    _excerpt(s.get("content") or ""),
+                ),
+            )
+        db.commit()
+        return chat_id, conversation_id
+    except BaseException:
+        db.rollback()
+        raise
 
 
 def retrieve_sources(
@@ -509,9 +520,6 @@ def retrieve_sources(
     sources = _select_sources(
         sources, top_k, question, preserve_ranking=settings.rerank_enabled
     )
-    for source in sources:
-        if Path(source["filename"]).suffix.lower() == ".xlsx":
-            source["table_headers"] = vector_index.table_headers_for(source["document_id"])
     if settings.evidence_completion:
         # 问题点名的字面标识符（2,1 / bit4 / Input Monitor Time 等）跨文档补入原文，
         # 保留不同定义；不改召回排序与引用编号语义。
@@ -519,6 +527,10 @@ def retrieve_sources(
     if settings.context_continuation:
         # 只补同文档下一段，且以原文结构为条件；来源编号/页码保持真实。
         sources = attach_continuations(db, sources)
+    for source in sources:
+        # 组装后统一补表头元数据：新增 xlsx 来源与原有来源走同一规则。
+        if Path(source["filename"]).suffix.lower() == ".xlsx":
+            source["table_headers"] = vector_index.table_headers_for(source["document_id"])
     retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
     if not sources:
         return [], retrieval_ms, "no_selected"

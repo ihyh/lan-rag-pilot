@@ -129,6 +129,54 @@ def main() -> int:
     result = attach_continuations(db2, [source(50, 1, 0, 1, "empty.pdf", "anchor without end")])
     check(len(result) == 1, "下一段为空时不附加")
 
+    print("\n== 不应扩段：DOCX 解析顺序不可靠 ==")
+    db = make_db()
+    add_document(db, 1, "reader.docx")
+    add_chunk(db, 70, 1, 0, None, "Reader 配置段没有句末标点")
+    add_chunk(db, 71, 1, 1, None, "Byte 2: Reader 参数表")
+    result = attach_continuations(db, [source(70, 1, 0, None, "reader.docx", "Reader 配置段没有句末标点")])
+    check(len(result) == 1, "DOCX 不按 seq 邻接扩段")
+
+    print("\n== 不应扩段：下一页是顶层/多级新章节 ==")
+    db = make_db()
+    add_document(db, 1, "manual.pdf")
+    add_chunk(db, 80, 1, 0, 1, "Byte 1: Timeout ... (default 40).")
+    add_chunk(db, 81, 1, 1, 2, "6. Emergency shutdown\n按下急停后断开输出。")
+    result = attach_continuations(db, [source(80, 1, 0, 1, "manual.pdf",
+                                             "Byte 1: Timeout ... (default 40).")])
+    check(len(result) == 1, "顶层数字章节标题不被当作续文")
+    db2 = make_db()
+    add_document(db2, 1, "manual2.pdf")
+    add_chunk(db2, 82, 1, 0, 1, "Byte 1: Timeout ... (default 40).")
+    add_chunk(db2, 83, 1, 1, 2, "6.1 Emergency shutdown\n按下急停后断开输出。")
+    result = attach_continuations(db2, [source(82, 1, 0, 1, "manual2.pdf",
+                                               "Byte 1: Timeout ... (default 40).")])
+    check(len(result) == 1, "多级数字章节标题不被当作续文")
+    db3 = make_db()
+    add_document(db3, 1, "manual3.pdf")
+    add_chunk(db3, 84, 1, 0, 1, "Byte 1: Timeout ... (default 40).")
+    add_chunk(db3, 85, 1, 1, 2, "2、确认设备处于停止状态。")
+    result = attach_continuations(db3, [source(84, 1, 0, 1, "manual3.pdf",
+                                               "Byte 1: Timeout ... (default 40).")])
+    check(len(result) == 1, "仅“数字+顿号”不作为续写依据")
+
+    print("\n== 续文后才出现新章节：保留续文并截掉新章 ==")
+    db = make_db()
+    add_document(db, 1, "rfid2.pdf")
+    anchor = "Configure RFT-200S RFID READER: ID 0xA5\nParameters: Byte 1: Inter-Character time-out (must be >4: if not, default 40)."
+    following = ("Byte 2: ENQ-EOT time-out (must be >19: default 200).\n"
+                 "Byte 3: Message retry count (must be >1: default 2).\n"
+                 "5.4 Reset command\nReset 会清除当前配置。")
+    add_chunk(db, 90, 1, 0, 6, anchor)
+    add_chunk(db, 91, 1, 1, 7, following)
+    result = attach_continuations(db, [source(90, 1, 0, 6, "rfid2.pdf", anchor)])
+    check(len(result) == 2 and result[1]["chunk_id"] == 91, "续文后出现新章节时仍保留续段")
+    check(result[1].get("trimmed_at_section") is True, "标记被新章节截断")
+    check("Byte 2" in result[1]["content"] and "Byte 3" in result[1]["content"],
+          "新章节前的 Byte2/3 续文保留")
+    check("Reset command" not in result[1]["content"], "新章节正文不进入续段内容")
+    check(result[1]["page"] == 7, "截断后仍保留真实页码")
+
     print("\n== 数量上限与去重 ==")
     db = make_db()
     add_document(db, 1, "many.pdf")

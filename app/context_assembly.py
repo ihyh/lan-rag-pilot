@@ -2,12 +2,18 @@
 
 背景：参数表、步骤、定义在 PDF 页界或切块边界处被拆开时，检索只返回其中一段，
 模型看到的是孤立的一行。这里只在**能够从原文结构判断**时补下一段：
-- 当前片段末尾是未完结的句子/列表（没有句末标点，且忽略水印噪声行）；
-- 或下一段开头明显是续写（Byte 2、bit4、续表、第 N 步、编号条目等）。
-不扩大 chunk、不重切块、不重算向量，也不让模型补造关系；只把同文档下一段作为
-独立来源附在锚点之后，来源编号/页码仍各自真实。
+- 当前片段末尾是未完结的句子/列表（没有句末标点，且忽略水印噪声行、括注行）；
+- 或下一段开头明显是续写（Byte 2、bit4、续表、第 N 步、注：等明确标记）。
 
-默认关闭：RAG_CONTEXT_CONTINUATION=0，需显式开启并做前后对照。
+不扩大 chunk、不重切块、不重算向量，也不让模型补造关系；只把同文档下一段作为
+独立来源附在锚点之后，来源编号/页码仍各自真实。默认关闭：
+`RAG_CONTEXT_CONTINUATION=0`，需显式开启并做前后对照。
+
+复核后收紧的边界：
+- 不处理 DOCX：现有解析先输出全部普通段落、再输出全部表格，`seq` 邻接不等于原文邻接；
+- 不凭“数字+点/顿号”推断续写或章节：底层章节标题会整体跳过；新章节出现在续文之后时，
+  只保留新章节之前的原文，不把无关新章一起带入；
+- 无法确认时宁可不补，不制造错误关联。
 """
 from __future__ import annotations
 
@@ -16,28 +22,30 @@ import sqlite3
 from pathlib import Path
 
 MAX_EXTRA_SOURCES = 2
-# 只有页/段式文档值得补续段；xlsx 的行语义靠表头，不在此处扩。
-CONTINUATION_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
+# 只有页/段式文档值得补续段；xlsx 行语义靠表头，DOCX 解析顺序不可靠，均不在此处扩。
+CONTINUATION_SUFFIXES = {".pdf", ".txt", ".md"}
 
+# 明确的续写标记；数字+点/顿号（6. / 2、）不作为续写依据。
 CONTINUATION_START = re.compile(
     r"^\s*(?:"
     r"[（(]?续|续表|续页|续上|"
     r"以及|同时|此外|另外|但|若|如果|如遇|"
     r"第\s*[0-9一二三四五六七八九十]|"
-    r"[0-9]+\s*[、.．)）]|"
     r"注\s*[：:]|步骤|"
-    r"Byte\s*\d|bit\s*\d|P[0-9]{1,3}\b|[A-Z]{2,}[_0-9]*[：:=]"
+    r"Byte\s*\d|bit\s*\d|P[0-9]{1,3}\b"
     r")",
     re.IGNORECASE,
 )
-NOISE_LINE = re.compile(r"(?:fortrend|confidential|no\s*copy)", re.IGNORECASE)
+# 新章节/新标题：顶层与多级数字标题、中文章节、Markdown 标题。
 NEW_SECTION = re.compile(
     r"^\s*(?:"
-    r"[0-9]+(?:\.[0-9]+)+\s+\S|"
+    r"[0-9]+(?:\.[0-9]+)*[.、]\s*\S|"
     r"第\s*[0-9一二三四五六七八九十]+\s*[章节部分]|"
-    r"[一二三四五六七八九十]+、"
+    r"[一二三四五六七八九十]+、|"
+    r"#{1,6}\s+\S"
     r")"
 )
+NOISE_LINE = re.compile(r"(?:fortrend|confidential|no\s*copy)", re.IGNORECASE)
 TERMINALS = tuple("。！？.!?:：;；）)]】》")
 
 
@@ -78,12 +86,13 @@ def _starts_continuation(text: str) -> bool:
     return False
 
 
-def _looks_like_new_section(text: str) -> bool:
-    lines = _meaningful_lines(text)
-    for line in lines[:5]:
-        if NEW_SECTION.match(line):
-            return True
-    return False
+def _trim_before_new_section(text: str) -> tuple[str, bool]:
+    """把“续文后才出现的新章节”截掉；返回 (保留内容, 是否遇到新章节)。"""
+    lines = (text or "").replace("\x00", "").replace("\ufeff", "").splitlines()
+    for index, line in enumerate(lines):
+        if NEW_SECTION.match(line.strip()):
+            return "\n".join(lines[:index]), True
+    return text, False
 
 
 def _next_chunk(db: sqlite3.Connection, source: dict) -> sqlite3.Row | None:
@@ -124,15 +133,18 @@ def attach_continuations(
         if following is None:
             continue
         chunk_id = int(following["chunk_id"])
-        if chunk_id in used or not (following["content"] or "").strip():
+        raw_content = following["content"] or ""
+        if chunk_id in used or not raw_content.strip():
             continue
-        if _looks_like_new_section(following["content"] or ""):
+        candidate, has_new_section = _trim_before_new_section(raw_content)
+        if has_new_section and not candidate.strip():
+            # 下一页开头就是新章节，不能当作续文。
             continue
-        if not (_ends_incomplete(source.get("content") or "")
-                or _starts_continuation(following["content"] or "")):
+        explicit = _starts_continuation(candidate)
+        if not explicit and not _ends_incomplete(source.get("content") or ""):
             continue
         used.add(chunk_id)
-        result.append({
+        entry = {
             "chunk_id": chunk_id,
             "document_id": int(following["document_id"]),
             "seq": int(following["seq"]),
@@ -140,8 +152,11 @@ def attach_continuations(
             "page": following["page"],
             "paragraph": following["paragraph"],
             "score": None,
-            "content": following["content"],
+            "content": candidate,
             "continuation_of": int(source["chunk_id"]),
-        })
+        }
+        if has_new_section:
+            entry["trimmed_at_section"] = True
+        result.append(entry)
         added += 1
     return result
