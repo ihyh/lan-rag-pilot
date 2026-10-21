@@ -409,6 +409,56 @@ def main() -> None:
         ensure("旋转 270 度后识别" in page["text"], "采用旋转后的最佳文本")
         check(True, "旋转页兜底选择最佳结果并记录尝试")
 
+    print("\n== 旋转页行序：几何信息用于排序与旋转判定 ==")
+    with with_tmp() as temp:
+        root = Path(temp)
+        pdf = root / "order.pdf"
+        pdf.write_bytes(build_pdf([None]))
+
+        vertical = [
+            tool.OcrLine("第三行", 0.95, 50, 500, 40, 400),
+            tool.OcrLine("第二行", 0.95, 150, 500, 40, 400),
+            tool.OcrLine("第一行", 0.95, 250, 500, 40, 400),
+        ]
+        ensure(tool._mostly_vertical(vertical), "高大于宽的文字框标记为竖直")
+        ensure(tool._sort_reading_order([]) == [], "空行列表安全")
+        horizontal = [
+            tool.OcrLine("第三行", 0.95, 100, 500, 400, 40),
+            tool.OcrLine("第一行", 0.95, 100, 100, 400, 40),
+            tool.OcrLine("第二行", 0.95, 100, 300, 400, 40),
+        ]
+        ensure(not tool._mostly_vertical(horizontal), "横排文字框不标记为竖直")
+        ordered = tool._sort_reading_order(horizontal)
+        ensure([line.text for line in ordered] == ["第一行", "第二行", "第三行"],
+               "转正后按行中心 y/x 排序恢复阅读顺序")
+        no_geometry = [tool.OcrLine("后", None), tool.OcrLine("前", None)]
+        ensure([line.text for line in tool._sort_reading_order(no_geometry)] == ["后", "前"],
+               "无几何信息时保持引擎顺序，不伪造行序")
+
+        class GeometryEngine(FakeEngine):
+            def recognize(self, image):
+                self.calls += 1
+                if getattr(image, "angle", 0) == 270:
+                    return [
+                        tool.OcrLine("第三行", 0.95, 100, 300, 400, 40),
+                        tool.OcrLine("第一行", 0.95, 100, 100, 400, 40),
+                        tool.OcrLine("第二行", 0.95, 100, 200, 400, 40),
+                    ]
+                return [
+                    tool.OcrLine("第三行", 0.95, 50, 500, 40, 400),
+                    tool.OcrLine("第二行", 0.95, 150, 500, 40, 400),
+                    tool.OcrLine("第一行", 0.95, 250, 500, 40, 400),
+                ]
+
+        engine = GeometryEngine()
+        code, _ = run_tool([pdf], root / "out", engine=engine, factory=renderer_factory(FakeImage(0)))
+        page = read_json(root / "out" / "order.ocr.json")["pages"][0]
+        ensure(code == 0, "旋转页行序校正退出码 0")
+        ensure(page["rotation_degrees"] == 270, f"竖直文字触发旋转尝试，实际 {page['rotation_degrees']}")
+        ensure([line for line in page["text"].splitlines()] == ["第一行", "第二行", "第三行"],
+               "旋转后按几何顺序输出，行序不再反转")
+        check(True, "旋转页几何行序校正生效")
+
     print("\n== 页码选择与页数上限 ==")
     with with_tmp() as temp:
         root = Path(temp)

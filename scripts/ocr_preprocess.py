@@ -57,10 +57,18 @@ GARBLE_RATIO_LIMIT = 0.02
 
 @dataclass
 class OcrLine:
-    """一行的 OCR 结果；score 为 None 表示引擎没有给出可靠置信度。"""
+    """一行的 OCR 结果；score 为 None 表示引擎没有给出可靠置信度。
+
+    x_center/y_center/width/height 是文字框在**本次 OCR 图像**坐标系中的几何信息；
+    旧引擎/假引擎不提供时保持 None，不参与排序。
+    """
 
     text: str
     score: float | None = None
+    x_center: float | None = None
+    y_center: float | None = None
+    width: float | None = None
+    height: float | None = None
 
 
 @dataclass
@@ -208,8 +216,12 @@ class RapidOcrEngine:
         result = self._engine(image)
         if result is None:
             return []
-        texts = getattr(result, "txts", None) or ()
-        scores = getattr(result, "scores", None) or ()
+        texts = getattr(result, "txts", None)
+        scores = getattr(result, "scores", None)
+        boxes = getattr(result, "boxes", None)
+        texts = () if texts is None else texts
+        scores = () if scores is None else scores
+        boxes = () if boxes is None else boxes
         lines: list[OcrLine] = []
         for index, text in enumerate(texts):
             score = None
@@ -218,7 +230,14 @@ class RapidOcrEngine:
                     score = float(scores[index])
                 except (TypeError, ValueError):
                     score = None
-            lines.append(OcrLine(str(text), score))
+            geometry = _box_geometry(boxes[index]) if index < len(boxes) else None
+            if geometry is None:
+                lines.append(OcrLine(str(text), score))
+            else:
+                x_center, y_center, width, height = geometry
+                lines.append(OcrLine(
+                    str(text), score, x_center, y_center, width, height
+                ))
         return lines
 
 
@@ -336,21 +355,67 @@ def _line_scores(lines: Sequence[OcrLine]) -> list[float] | None:
     return [float(score) for score in scores]
 
 
+def _box_geometry(box):
+    """四点多边形 -> (x_center, y_center, width, height)；不可用时返回 None。"""
+    try:
+        points = list(box)
+        xs = [float(point[0]) for point in points]
+        ys = [float(point[1]) for point in points]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not xs or not ys:
+        return None
+    return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2,
+            max(xs) - min(xs), max(ys) - min(ys))
+
+
+def _has_geometry(lines: Sequence[OcrLine]) -> bool:
+    return bool(lines) and all(
+        line.x_center is not None and line.y_center is not None
+        and line.width is not None and line.height is not None
+        for line in lines
+    )
+
+
+def _mostly_vertical(lines: Sequence[OcrLine]) -> bool:
+    """文字框明显高大于宽：通常是横排文字被转了 90/270 度。"""
+    if not _has_geometry(lines):
+        return False
+    vertical = sum(
+        1 for line in lines
+        if line.height is not None and line.width is not None
+        and line.height > line.width * 1.3
+    )
+    return vertical * 2 > len(lines)
+
+
+def _sort_reading_order(lines: Sequence[OcrLine]) -> list[OcrLine]:
+    """按行中心 y/x 排序；只在已把图像转正后调用。"""
+    if not _has_geometry(lines):
+        return list(lines)
+    return sorted(lines, key=lambda line: (line.y_center, line.x_center))
+
+
 def recognize_with_rotation(image, engine: Engine, options: OcrOptions) -> dict:
-    """对一页做 OCR；首轮结果不可靠时尝试 90/180/270 度旋转，取最佳一轮。"""
+    """对一页做 OCR；首轮结果不可靠或文字框竖直时尝试 90/270/180 度旋转。
+
+    旋转候选优先选择“文字框水平”的一轮（说明页面已被转正），再比较置信度/字符数；
+    选中旋转轮次后按文字框几何顺序排序，修复旋转页行序反转。
+    """
     attempts: list[dict] = []
     first = engine.recognize(image)
+    first_vertical = _mostly_vertical(first)
     attempts.append({
         "rotation": 0,
         "lines": len(first),
         "chars": count_chars(_lines_text(first)),
         "mean_score": _mean_score(first),
     })
-    best = (0, first, _attempt_rank(first))
-    weak = count_chars(_lines_text(first)) < MIN_OCR_TEXT_CHARS
+    weak = count_chars(_lines_text(first)) < MIN_OCR_TEXT_CHARS or first_vertical
     scores = _line_scores(first)
     if scores is not None and sum(scores) / len(scores) < options.rotate_score:
         weak = True
+    candidates: list[tuple[int, list[OcrLine], tuple[float, int]]] = []
     if options.auto_rotate and weak:
         for angle in (90, 270, 180):
             rotated = _rotate_image(image, angle)
@@ -361,10 +426,13 @@ def recognize_with_rotation(image, engine: Engine, options: OcrOptions) -> dict:
                 "chars": count_chars(_lines_text(lines)),
                 "mean_score": _mean_score(lines),
             })
-            rank = _attempt_rank(lines)
-            if rank > best[2]:
-                best = (angle, lines, rank)
-    return {"rotation": best[0], "lines": best[1], "attempts": attempts}
+            candidates.append((angle, lines, _attempt_rank(lines)))
+    horizontal = [item for item in candidates if not _mostly_vertical(item[1])]
+    if horizontal:
+        angle, lines, rank = max(horizontal, key=lambda item: item[2])
+        if first_vertical or rank > _attempt_rank(first):
+            return {"rotation": angle, "lines": _sort_reading_order(lines), "attempts": attempts}
+    return {"rotation": 0, "lines": first, "attempts": attempts}
 
 
 def _page_confidence(lines: Sequence[OcrLine]) -> dict | None:
