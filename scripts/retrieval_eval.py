@@ -92,17 +92,23 @@ def evidence_metrics(case, candidates, selected):
 def summarize(records):
     elapsed = sorted(r["retrieval_ms"] for r in records)
     indexed = [r for r in records if r["metrics"]["index_evidence_complete"] and not r["metrics"]["unanswerable"]]
-    return {"questions": len(records), "complete": sum(r["metrics"]["evidence_complete"] for r in records),
-            **{key: statistics.mean(r["metrics"][key] for r in records)
-               for key in ("candidate_recall", "evidence_recall", "mrr")},
-            "p50_ms": statistics.median(elapsed),
-            "p95_ms": elapsed[max(0, int(len(elapsed) * .95 + .999) - 1)],
-            "index_complete_subset": sum(r["metrics"]["index_evidence_complete"] and not r["metrics"]["unanswerable"] for r in records),
-            "indexed_subset_metrics": {"questions": len(indexed), "complete": sum(r["metrics"]["evidence_complete"] for r in indexed),
-                                       **{key: statistics.mean(r["metrics"][key] for r in indexed) if indexed else None
-                                          for key in ("candidate_recall", "evidence_recall", "mrr")}},
-            "unanswerable": sum(r["metrics"]["unanswerable"] for r in records),
-            "quality_claim": False}
+    summary = {"questions": len(records), "complete": sum(r["metrics"]["evidence_complete"] for r in records),
+               **{key: statistics.mean(r["metrics"][key] for r in records)
+                  for key in ("candidate_recall", "evidence_recall", "mrr")},
+               "p50_ms": statistics.median(elapsed),
+               "p95_ms": elapsed[max(0, int(len(elapsed) * .95 + .999) - 1)],
+               "index_complete_subset": sum(r["metrics"]["index_evidence_complete"] and not r["metrics"]["unanswerable"] for r in records),
+               "indexed_subset_metrics": {"questions": len(indexed), "complete": sum(r["metrics"]["evidence_complete"] for r in indexed),
+                                          **{key: statistics.mean(r["metrics"][key] for r in indexed) if indexed else None
+                                             for key in ("candidate_recall", "evidence_recall", "mrr")}},
+               "unanswerable": sum(r["metrics"]["unanswerable"] for r in records),
+               "quality_claim": False}
+    rerank_ms = sorted(r["rerank_ms"] for r in records if r.get("rerank_ms") is not None)
+    if rerank_ms:
+        summary["rerank_p50_ms"] = statistics.median(rerank_ms)
+        summary["rerank_p95_ms"] = rerank_ms[max(0, int(len(rerank_ms) * .95 + .999) - 1)]
+        summary["rerank_questions"] = len(rerank_ms)
+    return summary
 
 
 def main():
@@ -196,6 +202,8 @@ def main():
                                    "reason": "legacy_selection" if s["chunk_id"] in selected_ids else "dedup_or_rank_budget"} for s in sources])
             rows.append({"id": case["id"], "question": case["question"], "previous_question": history,
                          "semantic_query": query, "trace": trace, "candidates": sources, "selected": selected,
+                         "candidate_count": len(sources), "selected_count": len(selected),
+                         "rerank_ms": (trace.get("rerank") or {}).get("latency_ms"),
                          "retrieval_ms": (time.perf_counter() - started) * 1000,
                          "metrics": evidence_metrics(case, sources, selected)})
             journal(journal_path, {"event": "question_completed", "record": rows[-1]})
