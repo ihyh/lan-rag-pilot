@@ -493,45 +493,124 @@ def main() -> None:
         ensure(page["status"] == "suspect", "方向未确认时页面标记可疑而非完整成功")
         check(True, "空/低分旋转候选回归控制通过")
 
-    print("\n== 同页文字页眉 + 扫描正文：强制 OCR 合并 ==")
+    print("\n== 同页文字页眉 + 扫描正文：阈值/强制入口/异常边界 ==")
     with with_tmp() as temp:
         root = Path(temp)
         pdf = root / "mixed-page.pdf"
         pdf.write_bytes(build_pdf([LONG_TEXT]))
 
-        class MixedRenderer:
-            page_count = 1
+        class CoverageRenderer:
+            """按页返回图像覆盖率；可指定某页渲染异常。"""
+
+            def __init__(self, coverages, fail_render=None):
+                self.coverages = list(coverages)
+                self.fail_render = fail_render
+                self.page_count = len(self.coverages)
 
             def render(self, index):
+                if self.fail_render == index:
+                    raise RuntimeError("render failed on page")
                 return FakeImage()
 
             def image_coverage(self, index):
-                return 0.5
+                return self.coverages[index]
 
             def close(self):
                 return None
 
-        def mixed_factory(path, options):
-            return MixedRenderer()
+        def factory_for(coverages, fail_render=None):
+            return lambda path, options: CoverageRenderer(coverages, fail_render)
 
-        engine = FakeEngine(lambda image: [
-            tool.OcrLine("扫描正文：每日上限 400 元。", 0.95, 80, 200, 400, 40),
-        ])
-        run_tool([pdf], root / "out", engine=engine, factory=mixed_factory)
-        page = read_json(root / "out" / "mixed-page.ocr.json")["pages"][0]
-        ensure(page["source"] == "ocr" and engine.calls == 1, "大块图像正文触发 OCR")
-        ensure("扫描正文" in page["text"], "OCR 正文被保留")
-        ensure("mixed_page_image_detected" in page["warnings"]
-               and "mixed_page_ocr_merged" in page["warnings"], "混合页 warning 可追溯")
-        ensure(page["status"] == "suspect", "混合页不能显示为完整成功")
-        ensure("text_layer_text" in page, "保留原生文字层供审计")
-        run_tool([pdf], root / "out-none", engine=None, factory=mixed_factory)
-        page_none = read_json(root / "out-none" / "mixed-page.ocr.json")["pages"][0]
-        ensure(page_none["source"] == "text_layer"
-               and "mixed_page_ocr_unavailable" in page_none["warnings"]
-               and page_none["status"] == "suspect",
-               "无引擎时保留文字层并提示图像正文未核对")
-        check(True, "页内混合页处理回归控制通过")
+        def body_engine():
+            return FakeEngine(lambda image: [
+                tool.OcrLine("扫描正文：每日上限 400 元。", 0.95, 80, 200, 400, 40),
+            ])
+
+        # 原 O3 反例覆盖约 17.97%：15% 自动阈值应触发 OCR，不再静默漏正文。
+        engine = body_engine()
+        run_tool([pdf], root / "out-18", engine=engine, factory=factory_for([0.1797]))
+        page = read_json(root / "out-18" / "mixed-page.ocr.json")["pages"][0]
+        ensure(page["source"] == "ocr" and engine.calls == 1, "18% 覆盖图像触发混合页 OCR")
+        ensure("扫描正文" in page["text"] and "mixed_page_ocr_merged" in page["warnings"],
+               "18% 覆盖原始反例正文被保留")
+        ensure(page["status"] == "suspect", "18% 混合页不显示为完整成功")
+
+        # 小于自动阈值但可能有正文：默认必须待核对，不能 ok/无 warning。
+        engine = body_engine()
+        run_tool([pdf], root / "out-10", engine=engine, factory=factory_for([0.10]))
+        page = read_json(root / "out-10" / "mixed-page.ocr.json")["pages"][0]
+        ensure(engine.calls == 0, "10% 覆盖默认不无条件 OCR")
+        ensure(page["status"] == "suspect"
+               and "page_image_content_unverified" in page["warnings"],
+               "10% 覆盖默认标记内容覆盖待核对，不静默成功")
+
+        # 明确的强制入口能恢复 10% 图像正文。
+        engine = body_engine()
+        run_tool([pdf], root / "out-10-forced", engine=engine,
+                 factory=factory_for([0.10]),
+                 options=tool.OcrOptions(force_mixed_ocr=True))
+        page = read_json(root / "out-10-forced" / "mixed-page.ocr.json")["pages"][0]
+        ensure(page["source"] == "ocr" and engine.calls == 1, "--force-mixed-ocr 强制 OCR 小图像正文")
+        ensure("扫描正文" in page["text"] and "mixed_page_forced_ocr" in page["warnings"],
+               "强制入口恢复正文并留下可追溯 warning")
+
+        # 极小 Logo 不因 3% 告警阈值被误当作正文。
+        engine = body_engine()
+        run_tool([pdf], root / "out-logo", engine=engine, factory=factory_for([0.01]))
+        page = read_json(root / "out-logo" / "mixed-page.ocr.json")["pages"][0]
+        ensure(engine.calls == 0 and page["status"] == "ok"
+               and "page_image_content_unverified" not in page["warnings"],
+               "1% Logo 页保持普通成功，不误报/不强 OCR")
+
+        # 两页：首个混合页 OCR 异常不能中断整份文件。
+        two_pages = root / "two-pages.pdf"
+        two_pages.write_bytes(build_pdf([LONG_TEXT, LONG_TEXT]))
+
+        class RaisingEngine(FakeEngine):
+            def recognize(self, image):
+                self.calls += 1
+                raise RuntimeError("ocr exploded")
+
+        code, _ = run_tool([two_pages], root / "out-ocr-fail", engine=RaisingEngine(),
+                           factory=factory_for([0.20, 0.0]))
+        result = read_json(root / "out-ocr-fail" / "two-pages.ocr.json")
+        ensure(code == 1, "混合页 OCR 异常退出码为 1（有失败页）")
+        ensure(result["pages"][0]["status"] == "failed"
+               and result["pages"][0]["error"]["code"] == "mixed_page_ocr_failed",
+               "混合页 OCR 异常记录 mixed_page_ocr_failed")
+        ensure("text_layer_text" in result["pages"][0]
+               and result["pages"][0]["text"] == LONG_TEXT,
+               "混合页 OCR 异常保留原生文字")
+        ensure(result["pages"][1]["status"] == "ok", "后续页继续处理，不被首个失败中断")
+        ensure((root / "out-ocr-fail" / "two-pages.ocr.txt").exists(),
+               "有失败页时仍写出保留页码的部分结果")
+
+        # 混合页渲染异常同样记失败并继续后续页，最终退出 1。
+        code, _ = run_tool([two_pages], root / "out-render-fail", engine=FakeEngine(),
+                           factory=factory_for([0.20, 0.0], fail_render=0))
+        result = read_json(root / "out-render-fail" / "two-pages.ocr.json")
+        ensure(code == 1, "混合页渲染异常退出码为 1")
+        ensure(result["pages"][0]["status"] == "failed"
+               and result["pages"][0]["error"]["code"] == "mixed_page_render_failed",
+               "混合页渲染异常记录 mixed_page_render_failed")
+        ensure(result["pages"][0]["text"] == LONG_TEXT, "渲染异常保留原生文字")
+        ensure(result["pages"][1]["status"] == "ok", "渲染异常后继续后续页")
+
+        # 前面成功、后面混合页失败：已成功的页仍保留，文件整体非零退出。
+        code, _ = run_tool([two_pages], root / "out-late-fail", engine=FakeEngine(),
+                           factory=factory_for([0.0, 0.20], fail_render=1))
+        result = read_json(root / "out-late-fail" / "two-pages.ocr.json")
+        ensure(code == 1 and result["pages"][0]["status"] == "ok"
+               and result["pages"][1]["status"] == "failed",
+               "前面成功页保留，后面混合页失败仍非零退出")
+        code, _ = run_tool([two_pages], root / "out-late-ocr-fail", engine=RaisingEngine(),
+                           factory=factory_for([0.0, 0.20]))
+        result = read_json(root / "out-late-ocr-fail" / "two-pages.ocr.json")
+        ensure(code == 1 and result["pages"][0]["status"] == "ok"
+               and result["pages"][1]["status"] == "failed"
+               and result["pages"][1]["error"]["code"] == "mixed_page_ocr_failed",
+               "前面成功、后面混合页 OCR 失败仍保留成功页并非零退出")
+        check(True, "同页混合页阈值/强制入口/异常边界回归通过")
 
     print("\n== 页码选择与页数上限 ==")
     with with_tmp() as temp:

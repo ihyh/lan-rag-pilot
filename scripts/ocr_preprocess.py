@@ -48,8 +48,11 @@ DEFAULT_ROTATE_SCORE = 0.75
 DEFAULT_MAX_PAGES = 500
 MIN_OCR_TEXT_CHARS = 10
 GARBLE_RATIO_LIMIT = 0.02
-# 文字层可用但页面图像对象覆盖超过该比例：视为“文字页眉+扫描正文”混合页，强制 OCR 合并。
-MIXED_IMAGE_COVERAGE = 0.25
+# 文字层可用但页面图像覆盖超过该比例：视为“文字页眉+扫描正文”混合页，强制 OCR 合并。
+# 原 O3 原始反例覆盖约 17.97%，故自动阈值取 15%；更小的图像正文用可见 warning +
+# --force-mixed-ocr 明确入口处理，避免对所有带小 Logo 的文字页无条件 OCR。
+MIXED_IMAGE_COVERAGE = 0.15
+MIXED_IMAGE_WARN_COVERAGE = 0.03
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +87,7 @@ class OcrOptions:
     max_pages: int = DEFAULT_MAX_PAGES
     pages: set[int] | None = None
     include_text_layer_audit: bool = True
+    force_mixed_ocr: bool = False
 
 
 class OcrEngineUnavailable(RuntimeError):
@@ -614,12 +618,21 @@ def _mixed_page_record(
     try:
         image = renderer.render(page_index)
     except Exception as exc:  # noqa: BLE001
+        # 与普通扫描页 render_failed 口径一致：失败页保留原生文字，继续后续页，最终退出 1。
         record.update(source="text_layer", text=layer_text,
-                      chars=count_chars(layer_text), status="suspect")
+                      chars=count_chars(layer_text), status="failed")
         record["warnings"].append("mixed_page_render_failed")
         record["error"] = {"code": "mixed_page_render_failed", "message": str(exc)[:300]}
         return record
-    ocr_record = _ocr_page_record(page_no, image, engine, options, record)
+    try:
+        ocr_record = _ocr_page_record(page_no, image, engine, options, record)
+    except Exception as exc:  # noqa: BLE001
+        # 识别异常不能越过单页边界中断整份文件；保留原生文字并记录失败页。
+        record.update(source="text_layer", text=layer_text,
+                      chars=count_chars(layer_text), status="failed")
+        record["warnings"].append("mixed_page_ocr_failed")
+        record["error"] = {"code": "mixed_page_ocr_failed", "message": str(exc)[:300]}
+        return record
     ocr_text = ocr_record.get("text") or ""
     if count_chars(ocr_text) == 0:
         record.update(source="text_layer", text=layer_text,
@@ -722,8 +735,13 @@ def process_document(
                             coverage = float(coverage_fn(page_index))
                         except Exception:  # noqa: BLE001
                             coverage = 0.0
-                    if coverage >= MIXED_IMAGE_COVERAGE:
+                    force_mixed = (
+                        options.force_mixed_ocr and coverage >= MIXED_IMAGE_WARN_COVERAGE
+                    )
+                    if coverage >= MIXED_IMAGE_COVERAGE or force_mixed:
                         record["warnings"].append("mixed_page_image_detected")
+                        if force_mixed and coverage < MIXED_IMAGE_COVERAGE:
+                            record["warnings"].append("mixed_page_forced_ocr")
                         if options.include_text_layer_audit:
                             record["text_layer_text"] = layer_text
                         if engine is None:
@@ -732,9 +750,26 @@ def process_document(
                             record["warnings"].append("mixed_page_ocr_unavailable")
                             result["pages"].append(record)
                             continue
-                        result["pages"].append(_mixed_page_record(
-                            page_no, layer_text, engine, options, record, renderer, page_index
-                        ))
+                        try:
+                            mixed_record = _mixed_page_record(
+                                page_no, layer_text, engine, options, record, renderer, page_index
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 兜底：单页失败不能中断文件
+                            record.update(source="text_layer", text=layer_text,
+                                          chars=count_chars(layer_text), status="failed")
+                            record["error"] = {
+                                "code": "mixed_page_failed", "message": str(exc)[:300],
+                            }
+                            mixed_record = record
+                        result["pages"].append(mixed_record)
+                        continue
+                    if coverage >= MIXED_IMAGE_WARN_COVERAGE:
+                        # 小于自动阈值但存在图像正文风险：不静默成功，明确待核对；
+                        # 需要正文时可显式传 --force-mixed-ocr。
+                        record["warnings"].append("page_image_content_unverified")
+                        text_record = _text_layer_record(page_no, layer_text, record)
+                        text_record["status"] = "suspect"
+                        result["pages"].append(text_record)
                         continue
                     result["pages"].append(_text_layer_record(page_no, layer_text, record))
                     continue
@@ -1070,6 +1105,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotate-score", type=float, default=DEFAULT_ROTATE_SCORE,
                         help=f"首轮均分低于该值时尝试旋转（默认 {DEFAULT_ROTATE_SCORE}）")
     parser.add_argument("--no-auto-rotate", action="store_true", help="关闭 90/180/270 度旋转兜底")
+    parser.add_argument("--force-mixed-ocr", action="store_true",
+                        help="文字页存在较小于阈值(≥3%)的图像时也强制 OCR 图像正文（混合页）")
     parser.add_argument("--pages", default="", help="只处理这些页，如 1-3,5（不选中的页记为 skipped）")
     parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES,
                         help=f"单文件最多处理页数（默认 {DEFAULT_MAX_PAGES}）")
@@ -1105,6 +1142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         auto_rotate=not args.no_auto_rotate,
         max_pages=args.max_pages,
         pages=pages,
+        force_mixed_ocr=args.force_mixed_ocr,
     )
     try:
         engine = build_engine(args.engine)

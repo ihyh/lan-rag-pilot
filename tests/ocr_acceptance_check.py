@@ -226,33 +226,70 @@ def main() -> int:
     header_pdf.write_bytes(build_text_pdf(
         "Header: this page has native text and a scanned body image with facts below."
     ))
-    same_page_pdf = work / "same-page-mixed.pdf"
     from pypdf import PdfReader, PdfWriter, Transformation  # noqa: PLC0415
 
-    writer = PdfWriter()
-    page = PdfReader(str(header_pdf)).pages[0]
-    body = PdfReader(str(table_pdf)).pages[0]
-    page.merge_transformed_page(body, Transformation().scale(1.2, 1.2).translate(40, 60), over=True)
-    writer.add_page(page)
-    with same_page_pdf.open("wb") as handle:
-        writer.write(handle)
-    started = time.monotonic()
-    code, _ = tool.run([same_page_pdf], work / "out-same-page", tool.OcrOptions(), engine=engine)
-    same_elapsed = int((time.monotonic() - started) * 1000)
-    same_result = json.loads((work / "out-same-page" / "same-page-mixed.ocr.json").read_text(encoding="utf-8"))
-    same_page = same_result["pages"][0]
-    same_text = same_page.get("text") or ""
-    observations["cases"]["same-page-mixed"] = {
-        "kind": "same_page_mixed",
-        "elapsed_ms": same_elapsed,
-        "source": same_page.get("source"),
-        "status": same_page.get("status"),
-        "warnings": same_page.get("warnings"),
-        "header_preserved": "Header: this page has native text" in same_text,
-        "body_preserved": all(token in same_text.replace(" ", "") for token in ("400元", "18-27摄氏度")),
-        "text_chars": same_page.get("chars"),
-    }
+    def make_same_page(name: str, scale: float, translate: tuple[float, float]) -> Path:
+        writer = PdfWriter()
+        page = PdfReader(str(header_pdf)).pages[0]
+        body = PdfReader(str(table_pdf)).pages[0]
+        page.merge_transformed_page(
+            body, Transformation().scale(scale, scale).translate(*translate), over=True
+        )
+        writer.add_page(page)
+        output = work / name
+        with output.open("wb") as handle:
+            writer.write(handle)
+        return output
+
+    def same_page_case(name: str, pdf: Path, options: tool.OcrOptions) -> dict:
+        out = work / f"out-{name}"
+        started = time.monotonic()
+        code, _ = tool.run([pdf], out, options, engine=engine)
+        elapsed = int((time.monotonic() - started) * 1000)
+        result = json.loads((out / (pdf.stem + ".ocr.json")).read_text(encoding="utf-8"))
+        page = result["pages"][0]
+        text = page.get("text") or ""
+        return {
+            "kind": "same_page_mixed",
+            "elapsed_ms": elapsed,
+            "source": page.get("source"),
+            "status": page.get("status"),
+            "warnings": page.get("warnings"),
+            "header_preserved": "Header: this page has native text" in text,
+            "body_preserved": all(token in text.replace(" ", "") for token in ("400元", "18-27摄氏度")),
+            "text_chars": page.get("chars"),
+        }
+
+    def force_options() -> tool.OcrOptions:
+        try:
+            return tool.OcrOptions(force_mixed_ocr=True)
+        except TypeError:
+            # 基线版本没有强制入口：照常运行，由 failures 记录缺失的恢复能力。
+            return tool.OcrOptions()
+
+    same_page_pdf = make_same_page("same-page-mixed.pdf", 1.2, (40, 60))
+    observations["cases"]["same-page-mixed"] = same_page_case(
+        "same-page", same_page_pdf, tool.OcrOptions()
+    )
     print("same-page mixed:", observations["cases"]["same-page-mixed"])
+
+    # 原 O3 反例原始量级约 17.97% 覆盖：自动阈值 15% 应恢复正文。
+    small_pdf = make_same_page("same-page-mixed-18pct.pdf", 0.83, (100, 330))
+    observations["cases"]["same-page-mixed-small"] = same_page_case(
+        "same-page-small", small_pdf, tool.OcrOptions()
+    )
+    print("same-page mixed 18%:", observations["cases"]["same-page-mixed-small"])
+
+    # 低于自动阈值但存在图像正文：默认必须可见待核对；显式入口可恢复正文。
+    tiny_pdf = make_same_page("same-page-mixed-10pct.pdf", 0.62, (150, 400))
+    observations["cases"]["same-page-mixed-tiny"] = same_page_case(
+        "same-page-tiny", tiny_pdf, tool.OcrOptions()
+    )
+    observations["cases"]["same-page-mixed-tiny-forced"] = same_page_case(
+        "same-page-tiny-forced", tiny_pdf, force_options()
+    )
+    print("same-page mixed 10%:", observations["cases"]["same-page-mixed-tiny"])
+    print("same-page mixed 10% forced:", observations["cases"]["same-page-mixed-tiny-forced"])
 
 
     # ---------- 混合 PDF：不漏页 + 页码追溯 ----------
@@ -319,13 +356,22 @@ def main() -> int:
         case = observations["cases"][f"table-{angle}"]
         if not case["row_column_order_ok"] or not all(case["cells_present"].values()):
             failures.append(f"table-{angle}: 旋转表格列顺序错误或单元格缺失")
-    same = observations["cases"]["same-page-mixed"]
-    if not (same["header_preserved"] and same["body_preserved"]):
-        failures.append("same-page-mixed: 原生页眉或扫描正文缺失")
-    if same["source"] != "ocr" or "mixed_page_ocr_merged" not in (same["warnings"] or []):
-        failures.append("same-page-mixed: 未走混合页 OCR 合并或缺少 warning")
-    if same["status"] != "suspect":
-        failures.append("same-page-mixed: 混合页不应显示为完整成功")
+    for name in ("same-page-mixed", "same-page-mixed-small"):
+        case = observations["cases"][name]
+        if not (case["header_preserved"] and case["body_preserved"]):
+            failures.append(f"{name}: 原生页眉或扫描正文缺失")
+        if case["source"] != "ocr" or "mixed_page_ocr_merged" not in (case["warnings"] or []):
+            failures.append(f"{name}: 未走混合页 OCR 合并或缺少 warning")
+        if case["status"] != "suspect":
+            failures.append(f"{name}: 混合页不应显示为完整成功")
+    tiny = observations["cases"]["same-page-mixed-tiny"]
+    if tiny["status"] != "suspect" or "page_image_content_unverified" not in (tiny["warnings"] or []):
+        failures.append("same-page-mixed-tiny: 低于阈值图像默认未标记内容覆盖待核对")
+    forced = observations["cases"]["same-page-mixed-tiny-forced"]
+    if not (forced["header_preserved"] and forced["body_preserved"]):
+        failures.append("same-page-mixed-tiny-forced: --force-mixed-ocr 未恢复原生页眉或正文")
+    if forced["source"] != "ocr" or "mixed_page_forced_ocr" not in (forced["warnings"] or []):
+        failures.append("same-page-mixed-tiny-forced: 未走强制混合页 OCR 或缺少 warning")
     mixed = observations["cases"]["mixed"]
     if not mixed["no_missing_pages"]:
         failures.append("mixed: 混合 PDF 页数/页码不完整")

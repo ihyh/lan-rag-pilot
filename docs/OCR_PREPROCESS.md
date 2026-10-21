@@ -44,10 +44,14 @@ py -3.12 -m venv .venv-ocr
 .venv-ocr\Scripts\python.exe scripts\ocr_preprocess.py 混合.pdf --out out\ocr2 --pages 1-3,7
 .venv-ocr\Scripts\python.exe scripts\ocr_preprocess.py 混合.pdf --out out\ocr3 --no-auto-rotate
 .venv-ocr\Scripts\python.exe scripts\ocr_preprocess.py 文本.pdf --out out\ocr4 --engine none
+
+# 文字页存在 3%–15% 图像正文、需要显式恢复正文时
+.venv-ocr\Scripts\python.exe scripts\ocr_preprocess.py 页眉加小图正文.pdf --out out\ocr5 --force-mixed-ocr
 ```
 
 常用参数：`--min-text-chars`（文字层可用阈值，默认 40 个非空白字符）、`--dpi`（扫描页渲染，
-默认 200）、`--auto-rotate/--no-auto-rotate`、`--pages`、`--max-pages`、`--overwrite`、`--json`。
+默认 200）、`--auto-rotate/--no-auto-rotate`、`--pages`、`--max-pages`、`--overwrite`、`--json`、
+`--force-mixed-ocr`（对 3%–15% 图像覆盖的文字页也强制混合页 OCR）。
 
 图片输入支持单帧 PNG/JPG/BMP/WebP，以及**多帧 TIFF**：多帧 TIFF 逐帧处理，页码/页选择/
 页数上限与 PDF 一致，不会静默只取第一帧；某一帧解码失败只把该页标记失败。
@@ -90,9 +94,11 @@ suspect_pages / failed_pages`。文件整体 `status`：`ok` / `partial` / `fail
 ## 行为保证
 
 - **按页判断**：每页分别看文字层（非空白字符数 + 乱码比例），不是只看整份文件总字数。
-- **保留可用文字层**：可用页默认不调用 OCR；但若页面存在大块图像（覆盖 ≥25%），视为
+- **保留可用文字层**：可用页默认不调用 OCR；但若页面存在大块图像（覆盖 ≥15%），视为
   “文字页眉 + 扫描正文”混合页：保留原生文字并 OCR 图像正文合并，页面标记 `suspect`；
-  无 OCR 引擎时保留原生文字并提示 `mixed_page_ocr_unavailable`，不显示为完整成功。
+  3%–15% 图像不静默成功，标记 `page_image_content_unverified`，需要正文时用
+  `--force-mixed-ocr` 明确入口；无 OCR 引擎时保留原生文字并提示
+  `mixed_page_ocr_unavailable`。混合页渲染/识别异常按单页失败处理并继续后续页，退出码 1。
 - **旋转页方向**：文字框明显竖直时触发 90/270/180 尝试；旋转候选必须非空、字符数不明显
   变少、置信度不明显变差才允许替换首轮文字，否则保留首轮并标记
   `rotation_candidate_rejected` / `page_orientation_unverified`。转正后直接使用引擎原始
@@ -114,8 +120,9 @@ suspect_pages / failed_pages`。文件整体 `status`：`ok` / `partial` / `fail
   `python tests/ocr_preprocess_check.py` —— **18 组**，覆盖按页分流、混合 PDF、
   无置信度不伪造、低置信度可疑页、**高均分+低分关键行（R6）**、乱码文字层回退、
   单页失败、旋转兜底、**旋转页/旋转表格行序（不按精确 y 重排）**、**旋转空/低分候选不覆盖
-  首轮高置信文字**、**同页文字页眉+扫描正文强制 OCR 合并**、页码选择与上限、
-  **多帧 TIFF 逐帧/页选择/上限/帧失败（R5）**、原件不变、拒绝覆盖、
+  首轮高置信文字**、**同页文字页眉+扫描正文：15% 自动阈值 / 3%–15% 待核对 /
+  --force-mixed-ocr 强制入口 / 混合页渲染与 OCR 异常继续后续页并退出 1**、
+  页码选择与上限、**多帧 TIFF 逐帧/页选择/上限/帧失败（R5）**、原件不变、拒绝覆盖、
   **运行清单覆盖语义（R7）**、损坏 PDF/图片/同名/不支持格式、CLI `--engine none`。
 - 真实引擎样例检查（需要 `requirements-ocr.txt`；缺依赖时自动 SKIP 并退出 0）：
   `python tests/ocr_preprocess_live_check.py` —— **38 项**，使用合成中文/英文/数字单位/
@@ -147,8 +154,9 @@ suspect_pages / failed_pages`。文件整体 `status`：`ok` / `partial` / `fail
   [OCR_ACCEPTANCE.md](OCR_ACCEPTANCE.md)，需要人工方向标记或独立方向分类器。
 - **表格/多栏**：简单网格与旋转网格样例的行列顺序、数字/单位可保持；复杂表格/两栏排版
   不做版面重建，行列仍可能串联（旧两行两列对照中第 2 行会被拆行）；数字与单位本身正确。
-- **同页文字页眉 + 扫描正文**：大块图像覆盖 ≥25% 时强制 OCR 并合并原生文字，保留
-  `text_layer_text` 审计并标记 `suspect`；仅页眉的输出不再显示为完整成功。
+- **同页文字页眉 + 扫描正文**：图像覆盖 ≥15% 自动 OCR 并合并原生文字（原反例约 18%
+  已可恢复）；3%–15% 标记待核对并可用 `--force-mixed-ocr` 恢复；渲染/OCR 异常记失败页、
+  保留原生文字并退出 1；仅页眉的输出不再显示为完整成功。
 - 中英文之间的空格可能丢失/增加（如「每日上限400元」「18-27 摄氏度」），字符内容正确。
 
 这些差异会进入输出 JSON 的 `warnings`（如 `rotated_to_read`）或需人工核对；工具不会把
