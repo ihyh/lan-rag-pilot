@@ -125,3 +125,6 @@ python scripts/import_ocr_to_rag.py `
   重新导入；
 - 不重处理旧文档、不重建生产索引；180°/复杂版式等 OCR 限制仍在；
 - 未运行生成侧答案对照；`fact_correct`/`citation_supported` 仍无结论。
+
+首轮端到端（扫描式样本 → 隔离导入 → 检索/引用/页码 → 本地模型回答）见
+[OCR_E2E_ACCEPTANCE.md](OCR_E2E_ACCEPTANCE.md)；仍不是真实私有扫描件或整体准确率结论。
