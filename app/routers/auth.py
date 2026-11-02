@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from .. import audit
 from ..config import settings
-from ..db import get_db, now_iso
+from ..db import atomic, get_db, now_iso
 from ..deps import CurrentUser, current_user_or_none, logical_role, require_user
 from ..embeddings import embedding_service
 from ..ratelimit import SlidingWindowLimiter
@@ -72,11 +72,19 @@ def login(
 
     token = new_session_token()
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
-    db.execute(
-        "INSERT INTO sessions (user_id, token_hash, created_at, expires_at) VALUES (?,?,?,?)",
-        (row["id"], hash_session_token(token), now_iso(), expires.isoformat(timespec="seconds")),
-    )
-    db.execute("UPDATE users SET last_login_at=? WHERE id=?", (now_iso(), row["id"]))
+    with atomic(db):
+        db.execute(
+            "INSERT INTO sessions (user_id, token_hash, created_at, expires_at) VALUES (?,?,?,?)",
+            (row["id"], hash_session_token(token), now_iso(), expires.isoformat(timespec="seconds")),
+        )
+        db.execute("UPDATE users SET last_login_at=? WHERE id=?", (now_iso(), row["id"]))
+        audit.log_audit(
+            db,
+            action="login",
+            user_id=row["id"],
+            username=row["username"],
+            ip=ip,
+        )
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -85,13 +93,6 @@ def login(
         samesite="lax",
         secure=settings.cookie_secure,
         path="/",
-    )
-    audit.log_audit(
-        db,
-        action="login",
-        user_id=row["id"],
-        username=row["username"],
-        ip=ip,
     )
     return {
         "ok": True,
@@ -111,15 +112,16 @@ def logout(
 ):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        db.execute("DELETE FROM sessions WHERE token_hash=?", (hash_session_token(token),))
-        if user is not None:
-            audit.log_audit(
-                db,
-                action="logout",
-                user_id=user.id,
-                username=user.username,
-                ip=_ip(request),
-            )
+        with atomic(db):
+            db.execute("DELETE FROM sessions WHERE token_hash=?", (hash_session_token(token),))
+            if user is not None:
+                audit.log_audit(
+                    db,
+                    action="logout",
+                    user_id=user.id,
+                    username=user.username,
+                    ip=_ip(request),
+                )
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
 
@@ -129,6 +131,7 @@ def me(user=Depends(current_user_or_none)):
     if user is None:
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
     return {
+        "id": user.id,
         "username": user.username,
         "role": user.role,
         "is_active": user.is_active,
@@ -147,24 +150,25 @@ def change_password(
     row = db.execute("SELECT password_hash FROM users WHERE id=?", (user.id,)).fetchone()
     if not verify_password(body.old_password, row["password_hash"]):
         raise HTTPException(status_code=400, detail="当前密码不正确")
-    db.execute(
-        "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
-        (hash_password(body.new_password), now_iso(), user.id),
-    )
     # 让其它会话失效（保留当前会话）
     cur_hash = hash_session_token(request.cookies.get(SESSION_COOKIE, "")) \
         if request.cookies.get(SESSION_COOKIE) else None
-    if cur_hash:
+    with atomic(db):
         db.execute(
-            "DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (user.id, cur_hash)
+            "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+            (hash_password(body.new_password), now_iso(), user.id),
         )
-    else:
-        db.execute("DELETE FROM sessions WHERE user_id=?", (user.id,))
-    audit.log_audit(
-        db,
-        action="password_change",
-        user_id=user.id,
-        username=user.username,
-        ip=_ip(request),
-    )
+        if cur_hash:
+            db.execute(
+                "DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (user.id, cur_hash)
+            )
+        else:
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user.id,))
+        audit.log_audit(
+            db,
+            action="password_change",
+            user_id=user.id,
+            username=user.username,
+            ip=_ip(request),
+        )
     return {"ok": True}

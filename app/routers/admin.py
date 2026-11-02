@@ -1,28 +1,35 @@
 """root 管理接口：文档 / 用户 / 审计 / 系统概览与运行参数。"""
 from __future__ import annotations
 
-import csv
-import io
 import re
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import StreamingResponse
 
-from .. import acl, audit, ingest, metrics, runtime as rt
+from .. import acl, audit, eval_sources, feedback_review, ingest, metrics, ocr_upload, runtime as rt
+from ..devices import COMMON_DEVICE, DEVICES, normalize_device
+from ..source_metadata import SOURCE_TYPES, document_source_type, parse_metadata, source_type_sql
 from ..config import settings
-from ..db import get_db, now_iso
+from ..db import atomic, get_db, now_iso
 from ..deps import require_kb_admin, require_root, stored_role_fields
 from ..embeddings import EmbeddingUnavailable, embedding_service
 from ..gate import llm_gate
+from ..llm_health import llm_probe
 from ..ingest import IngestError
 from ..schemas import (
+    MAX_SQLITE_ID,
+    ImageCaptionBody,
     DocumentAccessBody,
+    DocumentDeviceBody,
+    DocumentLifecycleBody,
     GroupBody,
     GroupMembersBody,
     SettingsPatch,
+    FeedbackDeleteBody,
+    FeedbackReviewBody,
+    EvalManifestBody,
     UserCreate,
     UserPatch,
 )
@@ -72,6 +79,12 @@ def _raise_embed(exc: EmbeddingUnavailable) -> None:
     ) from exc
 
 
+def _apply_document_labels(db: sqlite3.Connection, doc_id: int, device: str, caption: str) -> None:
+    """上传后补充设备与图说明（图片在 OCR 入库时才真正用到 caption）。"""
+    db.execute("UPDATE documents SET device=?, caption=?, updated_at=? WHERE id=?", (device, caption, now_iso(), doc_id))
+    db.commit()
+
+
 def _require_manageable_document(db: sqlite3.Connection, doc_id: int) -> None:
     if db.execute("SELECT 1 FROM documents WHERE id=?", (doc_id,)).fetchone() is None:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -79,19 +92,22 @@ def _require_manageable_document(db: sqlite3.Connection, doc_id: int) -> None:
 
 def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) -> list[dict]:
     rows = db.execute(
-        f"SELECT d.*, u.username AS uploaded_by_name, "
+        f"SELECT d.*, u.username AS uploaded_by_name, j.state AS ocr_state, j.error AS ocr_error, "
         f"(SELECT COUNT(*) FROM document_acl a "
         f" WHERE a.document_id = d.id AND a.subject_type = 'user') AS granted_user_count, "
         f"(SELECT COUNT(*) FROM document_acl a "
         f" WHERE a.document_id = d.id AND a.subject_type = 'group') AS granted_group_count "
         f"FROM documents d "
         f"LEFT JOIN users u ON u.id = d.uploaded_by "
+        f"LEFT JOIN ocr_jobs j ON j.document_id=d.id "
         f"{where} ORDER BY d.id DESC",
         params,
     ).fetchall()
     items = []
     for row in rows:
         item = dict(row)
+        item['source_type'] = document_source_type(item.get('source_metadata'), item.get('content_type'), item.get('filename'))
+        item['source_metadata'] = parse_metadata(item.get('source_metadata'))
         # fail-closed：任何非 shared 的取值都按受限显示。
         item["visibility"] = acl.normalize_visibility(item.get("visibility"))
         items.append(item)
@@ -100,9 +116,90 @@ def _document_rows(db: sqlite3.Connection, where: str = "", params: tuple = ()) 
 
 # ---------------- 文档管理 ----------------
 
+@router.patch('/admin/documents/{doc_id}/device')
+def update_document_device(doc_id: int, body: DocumentDeviceBody, request: Request,
+                           db: sqlite3.Connection=Depends(get_db), user=Depends(require_kb_admin)):
+    if not 0 < doc_id <= MAX_SQLITE_ID:
+        raise HTTPException(422, '文档ID必须为SQLite正整数')
+    try:
+        device = normalize_device(body.device)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        row = db.execute('SELECT device,status FROM documents WHERE id=?', (doc_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, '文档不存在')
+        if row['status'] == 'parsing':
+            raise HTTPException(409, '资料正在处理中，请完成后再修改设备类型')
+        if row['device'] != body.expected_device:
+            raise HTTPException(409, '设备类型已更改，请刷新资料列表后重试')
+        db.execute('UPDATE documents SET device=?,updated_at=? WHERE id=?', (device, now_iso(), doc_id))
+        audit.log_audit(db, action='document_device', user_id=user.id, username=user.username,
+                        detail=f"doc:{doc_id} device:{row['device']}->{device}", ip=_ip(request))
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return {'id': doc_id, 'device': device}
+
+@router.patch('/admin/documents/{doc_id}/caption')
+def update_image_caption(doc_id: int, body: ImageCaptionBody, request: Request,
+                         db: sqlite3.Connection=Depends(get_db), user=Depends(require_kb_admin)):
+    if not 0 < doc_id <= MAX_SQLITE_ID:
+        raise HTTPException(422, '文档ID必须为SQLite正整数')
+    try:
+        return ocr_upload.update_caption(db,doc_id,body.caption.strip(),body.expected_caption,user,_ip(request))
+    except IngestError as exc:
+        _raise_ingest(exc)
+    except EmbeddingUnavailable as exc:
+        _raise_embed(exc)
+
+
+@router.patch('/admin/documents/{doc_id}/lifecycle')
+def update_document_lifecycle(
+    doc_id: int,
+    body: DocumentLifecycleBody,
+    request: Request,
+    db: sqlite3.Connection = Depends(get_db),
+    user=Depends(require_kb_admin),
+):
+    if not 0 < doc_id <= MAX_SQLITE_ID:
+        raise HTTPException(422, '文档ID必须为SQLite正整数')
+    version = _clean_version(body.version)
+    try:
+        device_value = normalize_device(body.device)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        current = db.execute('SELECT status FROM documents WHERE id=?', (doc_id,)).fetchone()
+        if current is None:
+            raise HTTPException(404, '文档不存在')
+        if current['status'] == 'parsing':
+            raise HTTPException(409, '资料仍在处理中，请完成后再调整版本')
+        replacement = body.replacement_document_id
+        if replacement is not None:
+            if replacement == doc_id:
+                raise HTTPException(422, '替代资料不能是文档自身')
+            target = db.execute('SELECT status,lifecycle FROM documents WHERE id=?', (replacement,)).fetchone()
+            if target is None or target['status'] != 'ready' or target['lifecycle'] != 'active':
+                raise HTTPException(409, '替代资料必须是已就绪且启用的另一份文档')
+        db.execute('UPDATE documents SET lifecycle=?,replacement_document_id=?,applicability=?,device=?,version=?,updated_at=? WHERE id=?',
+                   (body.lifecycle, replacement, body.applicability, device_value, version, now_iso(), doc_id))
+        audit.log_audit(db, action='document_lifecycle', user_id=user.id, username=user.username,
+                        detail=f'doc:{doc_id} lifecycle:{body.lifecycle} replacement:{replacement}', ip=_ip(request))
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return {'id': doc_id, **body.model_dump(), 'version': version}
+
 @router.get("/admin/documents")
 def list_documents(
     version: str | None = Query(default=None, max_length=32),
+    source_type: str | None = Query(default=None, alias="type", max_length=16),
+    device: str | None = Query(default=None, max_length=32),
     uploaded_date_from: str | None = Query(default=None),
     uploaded_date_to: str | None = Query(default=None),
     db: sqlite3.Connection = Depends(get_db),
@@ -123,6 +220,23 @@ def list_documents(
         params.append(date_to)
     if date_from and date_to and date_from > date_to:
         raise HTTPException(status_code=422, detail="上传日期起始值不能晚于结束值")
+    if device:
+        try:
+            device_wanted = normalize_device(device)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        if device_wanted:
+            if device_wanted == COMMON_DEVICE:
+                where.append("d.device=?")
+                params.append(device_wanted)
+            else:
+                where.append("d.device IN (?,?)")
+                params.extend((device_wanted, COMMON_DEVICE))
+    if source_type:
+        wanted = source_type.strip().lower()
+        if wanted not in SOURCE_TYPES:
+            raise HTTPException(status_code=422, detail="type 只能是 file、web、image 或 log")
+        where.append(source_type_sql(wanted))
     clause = "WHERE " + " AND ".join(where) if where else ""
     items = _document_rows(db, clause, tuple(params))
     return {"items": items, "total": len(items)}
@@ -134,11 +248,23 @@ def upload_document(
     file: UploadFile = File(...),
     version: str = Form(default="1.0"),
     visibility: str = Form(default="shared"),
+    as_log: bool = Form(default=False),
+    device: str = Form(default=""),
+    caption: str = Form(default=""),
     db: sqlite3.Connection = Depends(get_db),
     user=Depends(require_kb_admin),
 ):
     filename = _clean_filename(file.filename)
+    if as_log or Path(filename).suffix.lower() == '.log':
+        raise HTTPException(status_code=422, detail='不再支持日志专用导入，请上传支持的普通文件')
     version = _clean_version(version)
+    try:
+        device = normalize_device(device)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    caption = (caption or "").strip()
+    if len(caption) > 2000:
+        raise HTTPException(status_code=422, detail="图说明最多2000字")
     visibility = acl.normalize_visibility(visibility)
     _require_visibility_permission(user, visibility)
     cl = request.headers.get("content-length")
@@ -162,6 +288,7 @@ def upload_document(
             visibility=visibility,
         )
         doc = ingest.index_registered_document(db, doc["id"], kind)
+        _apply_document_labels(db, doc["id"], device, caption)
     except IngestError as exc:
         audit.log_audit(
             db,
@@ -195,17 +322,9 @@ def delete_document(
     _require_manageable_document(db, doc_id)
     try:
         with ingest.ingest_lock:
-            removed = ingest.delete_document(db, doc_id)
+            ingest.delete_document(db, doc_id, user=user, ip=_ip(request))
     except IngestError as exc:
         _raise_ingest(exc)
-    audit.log_audit(
-        db,
-        action="doc_delete",
-        user_id=user.id,
-        username=user.username,
-        detail=f"doc:{removed['id']} 文件:{removed['filename']}",
-        ip=_ip(request),
-    )
     return Response(status_code=204)
 
 
@@ -219,7 +338,7 @@ def reindex_document(
     _require_manageable_document(db, doc_id)
     try:
         with ingest.ingest_lock:
-            doc = ingest.reindex_document(db, doc_id)
+            doc = ingest.reindex_document(db,doc_id,user=user,ip=_ip(request))
     except IngestError as exc:
         audit.log_audit(
             db,
@@ -232,14 +351,6 @@ def reindex_document(
         _raise_ingest(exc)
     except EmbeddingUnavailable as exc:
         _raise_embed(exc)
-    audit.log_audit(
-        db,
-        action="doc_reindex",
-        user_id=user.id,
-        username=user.username,
-        detail=f"doc:{doc_id} 文件:{doc['filename']} 切片数:{doc['num_chunks']}",
-        ip=_ip(request),
-    )
     return doc
 
 
@@ -314,27 +425,28 @@ def update_document_access(
             detail="受限文档必须至少指定一个可见账号或用户组；若希望全员可见，请选择 shared。",
         )
 
-    acl.set_document_access(
-        db, doc_id, body.visibility, body.user_ids, body.group_ids, user.id, now_iso()
-    )
-    audit.log_audit(
-        db,
-        action="document_access_update",
-        user_id=user.id,
-        username=user.username,
-        detail=(
-            f"doc:{doc_id} 文件:{row['filename']} "
-            f"可见范围:{acl.normalize_visibility(body.visibility)} "
-            f"授权账号:{len(body.user_ids)} 授权组:{len(body.group_ids)}"
-        ),
-        ip=_ip(request),
-    )
-    return {
-        "document_id": doc_id,
-        "visibility": acl.normalize_visibility(body.visibility),
-        "granted_user_ids": acl.granted_user_ids(db, doc_id),
-        "granted_group_ids": acl.granted_group_ids(db, doc_id),
-    }
+    with atomic(db):
+        acl.set_document_access(
+            db, doc_id, body.visibility, body.user_ids, body.group_ids, user.id, now_iso()
+        )
+        audit.log_audit(
+            db,
+            action="document_access_update",
+            user_id=user.id,
+            username=user.username,
+            detail=(
+                f"doc:{doc_id} 文件:{row['filename']} "
+                f"可见范围:{acl.normalize_visibility(body.visibility)} "
+                f"授权账号:{len(body.user_ids)} 授权组:{len(body.group_ids)}"
+            ),
+            ip=_ip(request),
+        )
+        return {
+            "document_id": doc_id,
+            "visibility": acl.normalize_visibility(body.visibility),
+            "granted_user_ids": acl.granted_user_ids(db, doc_id),
+            "granted_group_ids": acl.granted_group_ids(db, doc_id),
+        }
 
 
 # ---------------- 用户组管理（只有 root；组是访问控制的载体） ----------------
@@ -374,19 +486,20 @@ def create_group(
     user=Depends(require_root),
 ):
     name = _clean_group_name(body.name)
-    try:
-        group_id = acl.create_group(db, name, body.description, now_iso())
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail=f"用户组「{name}」已存在") from None
-    audit.log_audit(
-        db,
-        action="group_create",
-        user_id=user.id,
-        username=user.username,
-        detail=f"group:{group_id} 名称:{name}",
-        ip=_ip(request),
-    )
-    return {"id": group_id, "name": name, "description": body.description, "member_ids": []}
+    with atomic(db):
+        try:
+            group_id = acl.create_group(db, name, body.description, now_iso())
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail=f"用户组「{name}」已存在") from None
+        audit.log_audit(
+            db,
+            action="group_create",
+            user_id=user.id,
+            username=user.username,
+            detail=f"group:{group_id} 名称:{name}",
+            ip=_ip(request),
+        )
+        return {"id": group_id, "name": name, "description": body.description, "member_ids": []}
 
 
 @router.patch("/admin/groups/{group_id}")
@@ -399,19 +512,20 @@ def update_group(
 ):
     _require_group(db, group_id)
     name = _clean_group_name(body.name)
-    try:
-        acl.update_group(db, group_id, name, body.description, now_iso())
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail=f"用户组「{name}」已存在") from None
-    audit.log_audit(
-        db,
-        action="group_update",
-        user_id=user.id,
-        username=user.username,
-        detail=f"group:{group_id} 名称:{name}",
-        ip=_ip(request),
-    )
-    return {"id": group_id, "name": name, "description": body.description}
+    with atomic(db):
+        try:
+            acl.update_group(db, group_id, name, body.description, now_iso())
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail=f"用户组「{name}」已存在") from None
+        audit.log_audit(
+            db,
+            action="group_update",
+            user_id=user.id,
+            username=user.username,
+            detail=f"group:{group_id} 名称:{name}",
+            ip=_ip(request),
+        )
+        return {"id": group_id, "name": name, "description": body.description}
 
 
 @router.put("/admin/groups/{group_id}/members")
@@ -430,27 +544,28 @@ def set_group_members(
             status_code=422,
             detail=f"以下用户不存在或不能加入用户组（root 本来就不受限）：{unknown}",
         )
-    acl.set_group_members(db, group_id, body.user_ids, now_iso())
-    # 成员变化会直接改变一批文档的可见性，因此审计里带上当前生效的授权文档数，
-    # 便于事后回答"这次改动到底影响了什么"。
-    granted = len(
-        db.execute(
-            "SELECT 1 FROM document_acl WHERE subject_type=? AND subject_id=?",
-            (acl.SUBJECT_GROUP, group_id),
-        ).fetchall()
-    )
-    audit.log_audit(
-        db,
-        action="group_members_update",
-        user_id=user.id,
-        username=user.username,
-        detail=(
-            f"group:{group_id} 名称:{group['name']} "
-            f"成员数:{len(body.user_ids)} 该组已授权文档数:{granted}"
-        ),
-        ip=_ip(request),
-    )
-    return {"id": group_id, "member_ids": sorted({int(x) for x in body.user_ids})}
+    with atomic(db):
+        acl.set_group_members(db, group_id, body.user_ids, now_iso())
+        # 成员变化会直接改变一批文档的可见性，因此审计里带上当前生效的授权文档数，
+        # 便于事后回答"这次改动到底影响了什么"。
+        granted = len(
+            db.execute(
+                "SELECT 1 FROM document_acl WHERE subject_type=? AND subject_id=?",
+                (acl.SUBJECT_GROUP, group_id),
+            ).fetchall()
+        )
+        audit.log_audit(
+            db,
+            action="group_members_update",
+            user_id=user.id,
+            username=user.username,
+            detail=(
+                f"group:{group_id} 名称:{group['name']} "
+                f"成员数:{len(body.user_ids)} 该组已授权文档数:{granted}"
+            ),
+            ip=_ip(request),
+        )
+        return {"id": group_id, "member_ids": sorted({int(x) for x in body.user_ids})}
 
 
 @router.delete("/admin/groups/{group_id}", status_code=204)
@@ -467,19 +582,20 @@ def delete_group(
             (acl.SUBJECT_GROUP, group_id),
         ).fetchall()
     )
-    acl.delete_group(db, group_id)
-    audit.log_audit(
-        db,
-        action="group_delete",
-        user_id=user.id,
-        username=user.username,
-        detail=(
-            f"group:{group_id} 名称:{group['name']} "
-            f"同时清理了 {affected} 份文档对该组的授权"
-        ),
-        ip=_ip(request),
-    )
-    return Response(status_code=204)
+    with atomic(db):
+        acl.delete_group(db, group_id)
+        audit.log_audit(
+            db,
+            action="group_delete",
+            user_id=user.id,
+            username=user.username,
+            detail=(
+                f"group:{group_id} 名称:{group['name']} "
+                f"同时清理了 {affected} 份文档对该组的授权"
+            ),
+            ip=_ip(request),
+        )
+        return Response(status_code=204)
 
 
 # ---------------- 用户管理 ----------------
@@ -504,29 +620,30 @@ def create_user(
 ):
     now = now_iso()
     db_role, is_kb_admin = stored_role_fields(body.role)
-    try:
-        cur = db.execute(
-            "INSERT INTO users (username, password_hash, role, is_kb_admin, is_active, created_at, updated_at)"
-            " VALUES (?,?,?,?,1,?,?)",
-            (body.username, hash_password(body.password), db_role, is_kb_admin, now, now),
+    with atomic(db):
+        try:
+            cur = db.execute(
+                "INSERT INTO users (username, password_hash, role, is_kb_admin, is_active, created_at, updated_at)"
+                " VALUES (?,?,?,?,1,?,?)",
+                (body.username, hash_password(body.password), db_role, is_kb_admin, now, now),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="用户名已存在") from None
+        audit.log_audit(
+            db,
+            action="user_create",
+            user_id=user.id,
+            username=user.username,
+            detail=f"新用户:{body.username} 角色:{body.role}",
+            ip=_ip(request),
         )
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail="用户名已存在") from None
-    audit.log_audit(
-        db,
-        action="user_create",
-        user_id=user.id,
-        username=user.username,
-        detail=f"新用户:{body.username} 角色:{body.role}",
-        ip=_ip(request),
-    )
-    return {
-        "id": int(cur.lastrowid),
-        "username": body.username,
-        "role": body.role,
-        "is_active": True,
-        "created_at": now,
-    }
+        return {
+            "id": int(cur.lastrowid),
+            "username": body.username,
+            "role": body.role,
+            "is_active": True,
+            "created_at": now,
+        }
 
 
 @router.patch("/admin/users/{user_id}")
@@ -571,24 +688,25 @@ def update_user(
     updates.append("updated_at=?")
     params.append(now_iso())
     params.append(user_id)
-    db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
-    if body.password is not None or body.role is not None or body.is_active is False:
-        db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
-    audit.log_audit(
-        db,
-        action="user_update",
-        user_id=user.id,
-        username=user.username,
-        detail=f"目标用户:{target['username']} 变更:"
-        + ",".join(
-            p for p, changed in [
-                ("密码", body.password is not None),
-                ("角色", body.role is not None),
-                ("启停", body.is_active is not None),
-            ] if changed
-        ),
-        ip=_ip(request),
-    )
+    with atomic(db):
+        db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", params)
+        if body.password is not None or body.role is not None or body.is_active is False:
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        audit.log_audit(
+            db,
+            action="user_update",
+            user_id=user.id,
+            username=user.username,
+            detail=f"目标用户:{target['username']} 变更:"
+            + ",".join(
+                p for p, changed in [
+                    ("密码", body.password is not None),
+                    ("角色", body.role is not None),
+                    ("启停", body.is_active is not None),
+                ] if changed
+            ),
+            ip=_ip(request),
+        )
     fresh = db.execute(
         "SELECT u.id, u.username, CASE WHEN u.role='root' THEN 'root' "
         "WHEN u.is_kb_admin=1 THEN 'kb_admin' ELSE 'user' END AS role, "
@@ -677,46 +795,51 @@ def list_all_conversations(
 def list_feedback(
     limit: int = 50,
     offset: int = 0,
+    review_status: str | None = None,
     db: sqlite3.Connection = Depends(get_db),
     _=Depends(require_root),
 ):
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    total = db.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()["n"]
-    rows = db.execute(
-        "SELECT f.id, f.chat_id, f.user_id, u.username, c.question, c.answer, "
-        "f.rating, f.comment, f.created_at FROM feedback f "
-        "JOIN users u ON u.id=f.user_id JOIN chats c ON c.id=f.chat_id "
-        "ORDER BY f.id DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": total}
+    if review_status is not None and review_status not in (*feedback_review.STATES, 'not_required'):
+        raise HTTPException(422,'审核状态无效')
+    return feedback_review.list_feedback(db,review_status,limit,offset)
 
 
-@router.get("/admin/feedback.csv")
-def export_feedback_csv(
-    db: sqlite3.Connection = Depends(get_db),
-    _=Depends(require_root),
-):
-    rows = db.execute(
-        "SELECT f.id, f.chat_id, f.user_id, u.username, c.question, c.answer, "
-        "f.rating, f.comment, f.created_at FROM feedback f "
-        "JOIN users u ON u.id=f.user_id JOIN chats c ON c.id=f.chat_id "
-        "ORDER BY f.id DESC"
-    ).fetchall()
-    output = io.StringIO()
-    output.write("\\ufeff")
-    writer = csv.writer(output)
-    writer.writerow(["feedback_id", "chat_id", "user_id", "username", "question", "answer", "rating", "comment", "created_at"])
-    writer.writerows([tuple(row) for row in rows])
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": "attachment; filename=rag_feedback.csv",
-            "Cache-Control": "no-store",
-        },
-    )
+@router.get('/admin/feedback/{feedback_id}/review')
+def inspect_feedback_review(feedback_id:int,db=Depends(get_db),_=Depends(require_root)):
+    if not 0<feedback_id<=MAX_SQLITE_ID:
+        raise HTTPException(422,'反馈ID无效')
+    return feedback_review.inspect(db,feedback_id)
+
+
+@router.patch('/admin/feedback/{feedback_id}/review')
+def review_feedback(feedback_id:int,body:FeedbackReviewBody,request:Request,db=Depends(get_db),user=Depends(require_root)):
+    if not 0<feedback_id<=MAX_SQLITE_ID:
+        raise HTTPException(422,'反馈ID无效')
+    return feedback_review.save(db,feedback_id,body,user,_ip(request))
+
+
+@router.delete('/admin/feedback/{feedback_id}',status_code=204)
+def delete_feedback(feedback_id:int,body:FeedbackDeleteBody,request:Request,db=Depends(get_db),user=Depends(require_root)):
+    if not 0<feedback_id<=MAX_SQLITE_ID:
+        raise HTTPException(422,'反馈ID无效')
+    with atomic(db):
+        row=feedback_review._feedback(db,feedback_id)
+        latest=db.execute('SELECT MAX(id) FROM feedback_reviews WHERE feedback_id=?',(feedback_id,)).fetchone()[0] or 0
+        if body.feedback_hash!=feedback_review.fingerprint(row) or body.expected_review_id!=latest:
+            raise HTTPException(409,'反馈或审核已变化，请刷新后重新确认')
+        db.execute('DELETE FROM feedback WHERE id=?',(feedback_id,))
+        audit.log_audit(db,action='feedback_delete',user_id=user.id,username=user.username,
+                        detail=f'feedback:{feedback_id} chat:{row["chat_id"]}',ip=_ip(request))
+    return Response(status_code=204)
+
+
+@router.post('/admin/eval-manifest')
+def evaluation_manifest(body:EvalManifestBody,db=Depends(get_db),_=Depends(require_root)):
+    db.execute('BEGIN')
+    try:return {'items':eval_sources.document_manifest(db,body.document_ids)}
+    finally:db.rollback()
 
 
 # ---------------- 系统概览 / 运行参数 ----------------
@@ -738,6 +861,7 @@ def _latency_block(db: sqlite3.Connection) -> dict:
 
 @router.get("/admin/overview")
 def overview(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)):
+    llm_snapshot = llm_probe.snapshot()
     counts = {
         "users": db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"],
         "documents": db.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"],
@@ -763,6 +887,7 @@ def overview(db: sqlite3.Connection = Depends(get_db), _=Depends(require_root)):
             "embed_backend": settings.embed_backend,
             "embed_device": embedding_service.device,
             "llm_model": settings.deepseek_model,
+            "llm_check": llm_snapshot.as_dict() if llm_snapshot else None,
             "chunk_max_tokens": settings.chunk_max_tokens,
             "chunk_overlap_tokens": settings.chunk_overlap_tokens,
             "min_relevance_score": settings.min_relevance_score,
@@ -787,23 +912,15 @@ def patch_settings(
 ):
     if body.top_k is None and body.queries_per_minute is None and body.max_concurrent_llm is None:
         raise HTTPException(status_code=400, detail="没有需要更新的运行参数")
-    changes: list[str] = []
-    if body.top_k is not None:
-        rt.set_value(db, "top_k", body.top_k)
-        changes.append(f"top_k={body.top_k}")
-    if body.queries_per_minute is not None:
-        rt.set_value(db, "queries_per_minute", body.queries_per_minute)
-        changes.append(f"queries_per_minute={body.queries_per_minute}")
+    with atomic(db):
+        changes: list[str] = []
+        for key in ('top_k','queries_per_minute','max_concurrent_llm'):
+            value = getattr(body,key)
+            if value is not None:
+                rt.set_value(db,key,value)
+                changes.append(f'{key}={value}')
+        audit.log_audit(db,action='settings_update',user_id=user.id,username=user.username,
+                        detail=','.join(changes),ip=_ip(request))
     if body.max_concurrent_llm is not None:
-        rt.set_value(db, "max_concurrent_llm", body.max_concurrent_llm)
         llm_gate.set_max(body.max_concurrent_llm)
-        changes.append(f"max_concurrent_llm={body.max_concurrent_llm}")
-    audit.log_audit(
-        db,
-        action="settings_update",
-        user_id=user.id,
-        username=user.username,
-        detail=",".join(changes),
-        ip=_ip(request),
-    )
     return {"settings": rt.get_all(db)}

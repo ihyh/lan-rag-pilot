@@ -169,6 +169,18 @@ class Settings:
         self.rerank_enabled = _bool("RAG_RERANK_ENABLED", False)
         self.rerank_model = os.environ.get("RAG_RERANK_MODEL") or str(self.models_dir / "bge-reranker-v2-m3")
         self.history_auxiliary = _bool("RAG_HISTORY_AUXILIARY", False)
+        # 选段后按原文结构补齐被页/块边界拆开的续段（参数表、步骤、定义）。
+        # 默认关闭，需显式开启并做真实问题前后对照。
+        self.context_continuation = _bool("RAG_CONTEXT_CONTINUATION", False)
+        # 选段后按问题点名的字面标识符补入原文片段（跨文档保留同号不同定义）。
+        # 默认关闭，需显式开启并做真实问题前后对照。
+        self.evidence_completion = _bool("RAG_EVIDENCE_COMPLETION", False)
+        # 表格参数题由服务端按单元格/表头直接回答，避免模型混淆行号与索引、Unit 与 Mark。
+        # 默认关闭，需显式开启并做真实问题前后对照。
+        self.table_answers = _bool("RAG_TABLE_ANSWERS", False)
+        # 命令参数列表（Byte N）由服务端按原文块直接回答，避免单位/默认值被概括错。
+        # 默认关闭，需显式开启并做真实问题前后对照。
+        self.parameter_answers = _bool("RAG_PARAMETER_ANSWERS", False)
         # 真实嵌入的低相似度拒答阈值；mock 后端测试时由查询层跳过。
         raw_min_score = _float("RAG_MIN_RELEVANCE_SCORE", 0.25)
         self.min_relevance_score = (
@@ -232,6 +244,14 @@ class Settings:
         fail-closed：宁可起不来，也不要带着错误边界对外服务。
         """
         problems: list[str] = []
+
+        for name, value, maximum in (
+            ("RAG_TOP_K", self.top_k, 20),
+            ("RAG_QUERIES_PER_MINUTE", self.queries_per_minute, 120),
+            ("RAG_MAX_CONCURRENT_LLM", self.max_concurrent_llm, 32),
+        ):
+            if not 1 <= value <= maximum:
+                problems.append(f"{name}={value} 必须在 1–{maximum} 之间。")
 
         if not self.secret_key:
             problems.append(

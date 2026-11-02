@@ -1,4 +1,4 @@
-# 仅用于 OCR 预处理工具（scripts/ocr_preprocess.py），不进入默认安装。
+# 用于独立 OCR 工具及管理页 OCR 上传子进程；安装到 .venv-ocr，不进入问答主环境。
 # Windows / CPU 可运行：rapidocr 自带 PP-OCRv6 小模型，随包分发，无需另外下载。
 rapidocr>=3.10,<4.0
 onnxruntime>=1.18,<2.0

@@ -46,6 +46,52 @@ def journal(path, event):
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def selection_switches_allowed(hits, scope) -> bool:
+    """与生产 retrieve_sources 一致：无候选或空文档范围时绝不进入补证阶段。
+
+    `scope is not None` 且为空表示“没有任何可见文档”，不是“不限定文档”；空集合会被
+    字面补证 helper 当成不限定范围，因此这里必须显式短路。
+    """
+    if not hits:
+        return False
+    return not (scope is not None and len(scope) == 0)
+
+
+def apply_selection_switches(selected, *, question, scope, hits, evidence_completion,
+                             context_continuation, db, attach_literal=None,
+                             attach_continuation=None):
+    """复用生产补证/续段函数；边界与生产一致，供 CLI 和边界测试共同调用。"""
+    if not selection_switches_allowed(hits, scope):
+        return list(selected)
+    if evidence_completion:
+        selected = attach_literal(
+            db, selected, question,
+            document_ids=set(scope) if scope is not None else None,
+        )
+    if context_continuation:
+        selected = attach_continuation(db, selected)
+    return selected
+
+
+def _explicit_scope(scope):
+    if scope is None:
+        return None
+    if not isinstance(scope, list) or any(type(value) is not int or not 0 < value <= 2**63 - 1 for value in scope):
+        raise ValueError("scope 必须为 None 或 SQLite 范围内的正整数文档 ID 数组")
+    # 与生产 QueryBody 一致：重复 ID 去重，空数组仍表示没有可见文档。
+    return set(scope)
+
+
+def resolve_scope(scope, active_ids):
+    requested = _explicit_scope(scope)
+    if requested is None:
+        return set(active_ids)
+    unavailable = sorted(requested - active_ids)
+    if unavailable:
+        raise ValueError(f"显式 scope 文档不存在、未就绪或为历史版本: {unavailable}；禁止缩小范围后继续评测")
+    return requested
+
+
 def load_cases(path):
     cases = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(cases, list) and cases, "non-empty case array required"
@@ -57,6 +103,10 @@ def load_cases(path):
         group = case["group"]
         assert group not in groups or groups[group] == case["split"], "fact group crosses splits"
         groups[group] = case["split"]
+        try:
+            _explicit_scope(case.get("scope"))
+        except ValueError as exc:
+            raise ValueError(f"case {case['id']}: {exc}") from exc
         assert isinstance(case["required_evidence"], list)
         for evidence in case["required_evidence"]:
             assert evidence["chunk_ids"] and all(type(n) is int for n in evidence["chunk_ids"])
@@ -92,17 +142,23 @@ def evidence_metrics(case, candidates, selected):
 def summarize(records):
     elapsed = sorted(r["retrieval_ms"] for r in records)
     indexed = [r for r in records if r["metrics"]["index_evidence_complete"] and not r["metrics"]["unanswerable"]]
-    return {"questions": len(records), "complete": sum(r["metrics"]["evidence_complete"] for r in records),
-            **{key: statistics.mean(r["metrics"][key] for r in records)
-               for key in ("candidate_recall", "evidence_recall", "mrr")},
-            "p50_ms": statistics.median(elapsed),
-            "p95_ms": elapsed[max(0, int(len(elapsed) * .95 + .999) - 1)],
-            "index_complete_subset": sum(r["metrics"]["index_evidence_complete"] and not r["metrics"]["unanswerable"] for r in records),
-            "indexed_subset_metrics": {"questions": len(indexed), "complete": sum(r["metrics"]["evidence_complete"] for r in indexed),
-                                       **{key: statistics.mean(r["metrics"][key] for r in indexed) if indexed else None
-                                          for key in ("candidate_recall", "evidence_recall", "mrr")}},
-            "unanswerable": sum(r["metrics"]["unanswerable"] for r in records),
-            "quality_claim": False}
+    summary = {"questions": len(records), "complete": sum(r["metrics"]["evidence_complete"] for r in records),
+               **{key: statistics.mean(r["metrics"][key] for r in records)
+                  for key in ("candidate_recall", "evidence_recall", "mrr")},
+               "p50_ms": statistics.median(elapsed),
+               "p95_ms": elapsed[max(0, int(len(elapsed) * .95 + .999) - 1)],
+               "index_complete_subset": sum(r["metrics"]["index_evidence_complete"] and not r["metrics"]["unanswerable"] for r in records),
+               "indexed_subset_metrics": {"questions": len(indexed), "complete": sum(r["metrics"]["evidence_complete"] for r in indexed),
+                                          **{key: statistics.mean(r["metrics"][key] for r in indexed) if indexed else None
+                                             for key in ("candidate_recall", "evidence_recall", "mrr")}},
+               "unanswerable": sum(r["metrics"]["unanswerable"] for r in records),
+               "quality_claim": False}
+    rerank_ms = sorted(r["rerank_ms"] for r in records if r.get("rerank_ms") is not None)
+    if rerank_ms:
+        summary["rerank_p50_ms"] = statistics.median(rerank_ms)
+        summary["rerank_p95_ms"] = rerank_ms[max(0, int(len(rerank_ms) * .95 + .999) - 1)]
+        summary["rerank_questions"] = len(rerank_ms)
+    return summary
 
 
 def main():
@@ -115,6 +171,10 @@ def main():
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--history-mode", choices=("legacy", "current", "auxiliary"), default="legacy")
+    parser.add_argument("--evidence-completion", action="store_true",
+                        help="选段后按问题字面标识符补原文（与生产开关同函数）")
+    parser.add_argument("--context-continuation", action="store_true",
+                        help="选段后补同文档下一段（与生产开关同函数）")
     args = parser.parse_args()
     if args.out.suffix.lower() != ".json":
         parser.error("--out must be a new .json report; the .jsonl sibling preserves partial progress")
@@ -142,6 +202,8 @@ def main():
     from app.embeddings import embedding_service
     from app.index import VectorIndex
     from app.routers.query import _select_sources
+    from app.context_assembly import attach_continuations
+    from app.evidence_completion import attach_literal_evidence
     configuration = {name: getattr(settings, name, None) for name in (
         "embed_model", "embed_backend", "embed_device", "min_relevance_score",
         "general_lexical", "rerank_enabled", "rerank_model")}
@@ -155,6 +217,18 @@ def main():
     with sqlite3.connect(args.db.resolve().as_uri() + "?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA query_only=ON")
+        lifecycle_available = 'lifecycle' in {row[1] for row in db.execute('PRAGMA table_info(documents)')}
+        active_ids = {row[0] for row in db.execute("SELECT id FROM documents WHERE status='ready'" + (" AND lifecycle='active'" if lifecycle_available else ''))}
+        scopes = {}
+        for case in cases:
+            try:
+                scopes[case["id"]] = resolve_scope(case.get("scope"), active_ids)
+            except ValueError as exc:
+                journal(journal_path, {"event": "scope_blocked", "id": case["id"],
+                                      "requested_scope": case.get("scope"),
+                                      "unavailable_document_ids": sorted(set(case["scope"]) - active_ids),
+                                      "error": str(exc)})
+                raise ValueError(f"case {case['id']}: {exc}") from exc
         reload_started = time.perf_counter()
         index.reload(db)
         reload_ms = (time.perf_counter() - reload_started) * 1000
@@ -175,7 +249,8 @@ def main():
             if args.history_mode == "auxiliary" and history:
                 options["auxiliary_vec"] = embedding_service.embed_query(f"{history}\n{case['question']}")
             embed_ms = (time.perf_counter() - started) * 1000
-            hits = index.search(vector, min(200, args.top_k * 20), document_ids=set(case["scope"]) if case.get("scope") is not None else None,
+            scope = scopes[case["id"]]
+            hits = index.search(vector, min(200, args.top_k * 20), document_ids=scope,
                                 min_score=settings.min_relevance_score, query_text=case["question"], **options)
             sources = [dict(data[h["chunk_id"]], score=h["score"]) for h in hits]
             if getattr(settings, "rerank_enabled", False):
@@ -185,7 +260,14 @@ def main():
                 selected = _select_sources(ranked, args.top_k, case["question"], preserve_ranking=True, trace=trace)
             else:
                 selection_started = time.perf_counter()
-                selected = _select_sources(sources, args.top_k, case["question"])
+                selected = _select_sources(sources, args.top_k, case["question"], trace=trace)
+            selected = apply_selection_switches(
+                selected, question=case["question"], scope=scope, hits=hits,
+                evidence_completion=args.evidence_completion,
+                context_continuation=args.context_continuation, db=db,
+                attach_literal=attach_literal_evidence,
+                attach_continuation=attach_continuations,
+            )
             for source in selected:
                 if Path(source["filename"]).suffix.lower() == ".xlsx":
                     source["table_headers"] = index.table_headers_for(source["document_id"])
@@ -196,6 +278,8 @@ def main():
                                    "reason": "legacy_selection" if s["chunk_id"] in selected_ids else "dedup_or_rank_budget"} for s in sources])
             rows.append({"id": case["id"], "question": case["question"], "previous_question": history,
                          "semantic_query": query, "trace": trace, "candidates": sources, "selected": selected,
+                         "candidate_count": len(sources), "selected_count": len(selected),
+                         "rerank_ms": (trace.get("rerank") or {}).get("latency_ms"),
                          "retrieval_ms": (time.perf_counter() - started) * 1000,
                          "metrics": evidence_metrics(case, sources, selected)})
             journal(journal_path, {"event": "question_completed", "record": rows[-1]})
@@ -206,12 +290,15 @@ def main():
               "code_root": str(args.code_root), "model": settings.embed_model,
               "top_k": args.top_k, "summary": summarize(rows), "records": rows}
     report["identity"] = identity
+    report['lifecycle_filter'] = 'active_only' if lifecycle_available else 'legacy_snapshot_without_lifecycle'
     report["settings"] = configuration
     report["index_reload_ms"] = reload_ms
     report["peak_process_memory_bytes"] = peak_memory_bytes()
     report["history_mode"] = args.history_mode
     report["strategies"] = {name: getattr(settings, name, False) for name in ("general_lexical", "rerank_enabled", "history_auxiliary")}
     report["strategies"]["history_auxiliary"] = args.history_mode == "auxiliary"
+    report["strategies"]["evidence_completion"] = args.evidence_completion
+    report["strategies"]["context_continuation"] = args.context_continuation
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("x", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2)

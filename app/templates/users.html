@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>用户与权限 · 个人知识库</title>
+<meta name="theme-color" content="#07101f">
+<link rel="icon" href="/static/favicon.svg?v=dark-workbench-20261025" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css?v=function-bar-20261102">
+</head>
+<body>
+<header class="topnav" id="topnav">
+  <div class="nav-inner">
+    <a class="brand" href="/app">
+      <img class="brand-mark" src="/static/icons/icon.svg?v=dark-workbench-20261025" alt="">
+      <span class="brand-name">个人知识库<span class="brand-caption">PERSONAL KNOWLEDGE</span></span>
+    </a>
+    <button class="btn btn-icon nav-toggle" id="navToggle" type="button"
+            aria-label="展开菜单" aria-expanded="false" aria-controls="navMenu"></button>
+    <div class="nav-menu" id="navMenu">
+      <div class="nav-user">
+        <button class="user-chip" id="userChip" type="button" aria-label="查看我的权限" title="查看我的权限"></button>
+        <button class="btn btn-ghost-light" id="chgPwdBtn" type="button">修改密码</button>
+        <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
+      </div>
+      <div class="function-nav">
+        <span class="function-label">功能导航</span>
+        <nav class="nav-links" aria-label="功能导航">
+          <a class="nav-link" href="/app" id="appLink">问答工作台</a>
+          <a class="nav-link" href="/admin" id="adminLink">资料管理</a>
+          <a class="nav-link" href="/library" id="libraryLink">查资料</a>
+          <a class="nav-link is-active" href="/admin?view=users" aria-current="page" id="usersLink" hidden>用户与权限</a>
+        </nav>
+      </div>
+    </div>
+  </div>
+</header>
+<main class="page-shell" id="usersWorkspace" hidden>
+  <div class="users-heading"><div><h1>用户与权限</h1><p class="muted">管理账号、角色与用户组；文档的访问授权可在资料管理中设置。</p></div></div>
+  <div class="tabbar" role="tablist" aria-label="用户与权限">
+    <button class="tab is-active" id="tabBtn-users" data-tab="users" type="button" role="tab" aria-selected="true" aria-controls="panel-users">用户管理</button>
+    <button class="tab" id="tabBtn-groups" data-tab="groups" type="button" role="tab" aria-selected="false" aria-controls="panel-groups">用户组</button>
+  </div>
+  <!-- ============ 用户 ============ -->
+  <section class="tab-panel is-active" id="panel-users" data-panel="users">
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">新建用户</h2>
+      </div>
+      <form id="createUserForm" autocomplete="off">
+        <div class="user-create-grid">
+          <label class="field">
+            <span class="field-label">用户名 *（2–32 位，字母/数字/_.-）</span>
+            <input class="input" id="nu-username" name="username" type="text"
+                   pattern="[A-Za-z0-9_.\-]{2,32}" minlength="2" maxlength="32" required autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">初始密码 *（至少 6 位）</span>
+            <input class="input" id="nu-password" name="password" type="password"
+                   minlength="6" maxlength="128" required autocomplete="new-password">
+          </label>
+          <label class="field">
+            <span class="field-label">角色</span>
+            <select class="select" id="nu-role" name="role">
+              <option value="user">普通用户（user）</option>
+              <option value="kb_admin">文档管理员</option>
+              <option value="root">管理员（root）</option>
+            </select>
+          </label>
+          <button class="btn btn-primary" type="submit" id="createUserBtn">创建用户</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">角色权限说明</h2>
+      </div>
+      <div class="role-permission-grid" aria-label="角色权限说明">
+        <article class="role-permission-item" data-role-permission="root">
+          <div class="role-permission-head">
+            <span class="tag-role tag-root">root</span>
+            <strong>系统管理员</strong>
+          </div>
+          <ul class="role-permission-list">
+            <li>使用知识库问答并管理自己的对话</li>
+            <li>上传、查看、重新处理和删除文档</li>
+            <li>创建、停用用户，重置密码和设置角色</li>
+            <li>查看和删除全部对话，查看反馈、审计和系统概览，修改运行参数</li>
+          </ul>
+        </article>
+        <article class="role-permission-item" data-role-permission="kb_admin">
+          <div class="role-permission-head">
+            <span class="tag-role tag-kb_admin">kb_admin</span>
+            <strong>文档管理员</strong>
+          </div>
+          <ul class="role-permission-list">
+            <li>使用知识库问答并管理自己的对话</li>
+            <li>上传、查看、重新处理和删除文档</li>
+            <li>不能管理用户、查看全局记录或修改运行参数</li>
+          </ul>
+        </article>
+        <article class="role-permission-item" data-role-permission="user">
+          <div class="role-permission-head">
+            <span class="tag-role tag-user">user</span>
+            <strong>普通用户</strong>
+          </div>
+          <ul class="role-permission-list">
+            <li>使用知识库问答并管理自己的对话</li>
+            <li>查看问答引用片段并提交回答反馈，不能打开完整原文</li>
+            <li>不能管理文档、用户或系统设置</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">用户列表</h2>
+        <div class="panel-tools">
+          <button class="btn btn-outline btn-sm" id="refreshUsersBtn" type="button">刷新列表</button>
+        </div>
+      </div>
+      <div class="list-loading" id="usersLoading"><span class="spin spin-lg"></span></div>
+      <div id="usersBody"></div>
+    </div>
+  </section>
+
+  <!-- ============ 用户组 ============ -->
+  <section class="tab-panel" id="panel-groups" data-panel="groups">
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">新建用户组</h2>
+      </div>
+      <p class="small muted" style="margin:-4px 0 12px">
+        用户组用于「一次授权给一批人」。把文档设为「仅指定账号或用户组可见」时可勾选用户组，
+        组内成员即刻获得访问权；从组里移除成员即等于撤销这批文档的访问权。
+      </p>
+      <form id="createGroupForm" autocomplete="off">
+        <div class="user-create-grid">
+          <label class="field">
+            <span class="field-label">组名 *（1–32 位）</span>
+            <input class="input" id="ng-name" name="name" type="text" maxlength="32" required autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">说明（可选）</span>
+            <input class="input" id="ng-description" name="description" type="text" maxlength="200" autocomplete="off">
+          </label>
+          <button class="btn btn-primary" type="submit" id="createGroupBtn">创建用户组</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card panel-card">
+      <div class="panel-head">
+        <h2 class="panel-title">用户组列表</h2>
+      </div>
+      <div class="list-loading" id="groupsLoading"><span class="spin spin-lg"></span></div>
+      <div id="groupsBody"></div>
+    </div>
+  </section>
+
+
+</main>
+<script src="/static/js/common.js?v=users-module-20261102"></script>
+<script src="/static/js/users.js?v=users-module-20261102"></script>
+</body>
+</html>

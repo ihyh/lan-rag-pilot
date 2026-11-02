@@ -46,6 +46,16 @@ def repo_ps1_files() -> list[Path]:
     return sorted(REPO / item.decode("utf-8") for item in proc.stdout.split(b"\0") if item)
 
 
+def tracked_shell_files() -> list[Path]:
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.sh"],
+        cwd=REPO,
+        capture_output=True,
+        check=True,
+    )
+    return sorted(REPO / item.decode("utf-8") for item in proc.stdout.split(b"\0") if item)
+
+
 def parse_with_windows_powershell(path: Path) -> tuple[bool, str]:
     """用 Windows PowerShell 5.1 真正解析一次；非 Windows 上跳过。
 
@@ -110,6 +120,20 @@ def main() -> None:
             continue
         ok, detail = parse_with_windows_powershell(path)
         check(ok, f"{rel}：{detail}")
+
+    # .sh 必须没有 BOM：BOM 会破坏 shebang，让脚本无法直接执行。
+    print("\n== .sh 不得带 BOM（BOM 会破坏 shebang）==")
+    sh_files = tracked_shell_files()
+    check(REPO / "tests/smoke_runner.sh" in sh_files, "包含公开 CI 冒烟脚本")
+    for path in sh_files:
+        rel = path.relative_to(REPO).as_posix()
+        raw = path.read_bytes()
+        check(raw[:3] != BOM, f"{rel}：不带 BOM")
+        if raw.startswith(b"#!"):
+            check(
+                raw.split(b"\n", 1)[0].startswith(b"#!"),
+                f"{rel}：首行仍是 shebang",
+            )
 
     start_source = (REPO / "scripts/start_local.ps1").read_text(encoding="utf-8-sig")
     check(

@@ -235,6 +235,14 @@ def chunk_units(
         if not t:
             continue
         tk = ta.count(t)
+        if t.startswith("文档表格《"):
+            flush()
+            if tk > max_tokens:
+                raise ParseError("DOCX 表格行及本表首行超过切块预算，请拆分长行或调大切块上限；未截断单元格。",
+                                 code="table_row_too_large")
+            remaining()
+            pieces_out.append(Piece(text=t, token_count=tk, page=unit.page, paragraph=unit.paragraph))
+            continue
         if buffer_texts and (buffer_page != unit.page or buffer_tokens + tk > max_tokens):
             flush()
         if not buffer_texts:

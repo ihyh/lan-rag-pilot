@@ -333,9 +333,9 @@ def run_piece_budget() -> None:
 
 def run_real_tokenizer_replay() -> None:
     """真实 BGE tokenizer 可用时，重放已复现的两种真实形态与真实文件。"""
-    model_dir = os.environ.get("CHUNK_CHECK_MODEL") or str(Path(__file__).resolve().parents[1] / "models/bge-small-zh-v1.5")
-    if not Path(model_dir).exists():
-        skip(f"真实 tokenizer 重放：未找到本地模型目录 {model_dir}（CI 上属预期）")
+    model_dir = os.environ.get("CHUNK_CHECK_MODEL")
+    if not model_dir or not Path(model_dir).exists():
+        skip("真实 tokenizer 重放：需显式设置 CHUNK_CHECK_MODEL（公开检查默认不读取本机模型）")
         return
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -364,12 +364,16 @@ def run_real_tokenizer_replay() -> None:
         check(True, f"真实 tokenizer｜{label}：{len(pieces)} 片，"
                     f"最短 {min(n for _, n in pieces)} token，校验方式={mode}")
 
-    uploads = Path(os.environ.get("CHUNK_CHECK_UPLOADS") or Path(__file__).resolve().parents[1] / "data/uploads")
+    uploads_dir = os.environ.get("CHUNK_CHECK_UPLOADS")
+    uploads = Path(uploads_dir) if uploads_dir else None
     from app.parsing import PARSERS
 
     for label, name, kind in (
         ("PDF 原文件", "141b731ddfdd4df7bc0723f584b9fe45.pdf", "pdf"),
     ):
+        if uploads is None:
+            skip("真实文件重放：未显式设置 CHUNK_CHECK_UPLOADS，不读取私人资料")
+            continue
         path = uploads / name
         if not path.exists():
             skip(f"真实文件重放：{name} 不存在（本机专属样本，CI 上属预期）")

@@ -290,6 +290,10 @@ def parse_doc(path: Path) -> list[Unit]:
 
 def parse_docx(path: Path) -> list[Unit]:
     from docx import Document
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    from openpyxl.utils import get_column_letter
 
     doc = Document(str(path))
     units: list[Unit] = []
@@ -304,12 +308,25 @@ def parse_docx(path: Path) -> list[Unit]:
             para_no += 1
             units.append(Unit(text=text, paragraph=para_no))
 
-    for p in doc.paragraphs:
-        add(p.text)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                add(cell.text)
+    table_no = 0
+    for element in doc.element.body:
+        if element.tag == qn("w:p"):
+            add(Paragraph(element, doc).text)
+        elif element.tag == qn("w:tbl"):
+            table_no += 1
+            first_row = ""
+            for row_no, row in enumerate(Table(element, doc).rows, 1):
+                grid_before = row._tr.find("w:trPr/w:gridBefore", namespaces=row._tr.nsmap)
+                first_column = 1 + (int(grid_before.get(qn("w:val"))) if grid_before is not None else 0)
+                cells = [f"{get_column_letter(col)}{row_no}={_clean(cell.text)}"
+                         for col, cell in enumerate(row.cells, first_column) if _clean(cell.text)]
+                if not cells:
+                    continue
+                row_text = f"文档表格《{table_no}》第 {row_no} 行：" + "；".join(cells)
+                if row_no == 1:
+                    first_row = row_text
+                # 首行只是原文，不推断表头；回答侧仍核对明确列名。
+                add(first_row + "\n" + row_text if row_no > 1 and first_row else row_text)
     if not units:
         raise ParseError("DOCX 中没有可索引的文本内容", code="empty_doc")
     check_units(units, "DOCX")

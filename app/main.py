@@ -19,7 +19,10 @@ from .llm_health import llm_probe
 from .pages import router as pages_router
 from .routers import admin as admin_router
 from .routers import auth as auth_router
+from .routers import library as library_router
 from .routers import query as query_router
+from .routers import ocr as ocr_router
+from .routers import web_images as web_images_router
 from .security import hash_password
 from .reranking import reranker
 
@@ -38,9 +41,10 @@ def _bootstrap() -> None:
     try:
         db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now_iso(),))
         db.execute(
-            "UPDATE documents SET status='failed', error=? WHERE status='parsing'",
+            "UPDATE documents SET status='failed', error=? WHERE status='parsing' AND id NOT IN (SELECT document_id FROM ocr_jobs WHERE state='review')",
             ("服务重启导致上次入库中断，请对该文档执行“重新索引”",),
         )
+        db.execute("UPDATE ocr_jobs SET state='failed',error='服务重启中断OCR，请重试；原结果保留',updated_at=? WHERE state IN ('queued','running')", (now_iso(),))
         n_users = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         if n_users == 0:
             if not settings.root_password:
@@ -118,6 +122,9 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router, prefix="/api")
     app.include_router(query_router.router, prefix="/api")
     app.include_router(admin_router.router, prefix="/api")
+    app.include_router(library_router.router, prefix="/api")
+    app.include_router(ocr_router.router, prefix="/api")
+    app.include_router(web_images_router.router, prefix="/api")
 
     @app.get("/api/health")
     def health():

@@ -11,18 +11,23 @@
 //
 // 静态资源走「网络优先 + 失败回退缓存」，在线始终拿最新，离线仍有壳可用。
 
-const CACHE = 'rag-static-v4';
+const CACHE = 'rag-static-v69-answer-font-20261101';
 const STATIC_PREFIX = '/static/';
 
 // 只预缓存体积固定、与登录状态无关的资源。
 const PRECACHE = [
   '/static/css/app.css',
+  '/static/css/image-upload-preview.css',
   '/static/js/common.js',
+  '/static/js/answer-format.js',
   '/static/js/app.js',
   '/static/js/admin.js',
-  '/static/manifest.webmanifest',
-  '/static/favicon.svg',
-  '/static/icons/icon.svg'
+  '/static/js/library.js',
+  '/static/js/ocr.js',
+  '/static/js/review-sources.js',
+  '/static/manifest.webmanifest?v=dark-workbench-20261025',
+  '/static/favicon.svg?v=dark-workbench-20261025',
+  '/static/icons/icon.svg?v=dark-workbench-20261025'
 ];
 
 self.addEventListener('install', event => {

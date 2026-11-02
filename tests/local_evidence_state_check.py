@@ -1,24 +1,19 @@
-"""Offline ON/OFF-context opt-out checks; no app config, model or database import."""
-import ast
+"""Offline ON/OFF-context opt-out checks; no model calls or database access."""
 import copy
+import os
+import sys
 from pathlib import Path
-import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-tree = ast.parse((ROOT / "app/llm.py").read_text(encoding="utf-8"))
-names = {"_question_local_evidence", "_build_user_content", "_bounded_ui_projection"}
-# Find the existing projection caller rather than loading application/runtime configuration.
-projection = next(n.name for n in tree.body if isinstance(n, ast.FunctionDef)
-                  and n.name != "_question_local_evidence" and n.name != "_build_user_content"
-                  and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
-                          and c.func.id == "_question_local_evidence" for c in ast.walk(n)))
-names.add(projection)
-nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-space = dict(re=re, Path=Path)
-exec(compile(ast.Module(body=nodes,type_ignores=[]),"pure-local-hint","exec"),space)
-hint = space["_question_local_evidence"]
-build = space["_build_user_content"]
+sys.path.insert(0, str(ROOT))
+os.environ.setdefault("RAG_SECRET_KEY", "synthetic-state-test")
+from app import llm
+
+hint = llm._question_local_evidence
+build = llm._build_user_content
+projection = "_explicit_manual_projection"
+space = vars(llm)
 
 
 class StateHintChecks(unittest.TestCase):

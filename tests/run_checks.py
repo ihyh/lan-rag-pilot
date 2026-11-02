@@ -25,9 +25,12 @@ PYTHON_CHECKS = [
     "history_retrieval_check.py",
     "ocr_preprocess_check.py",
     "ocr_preprocess_live_check.py",
-    "mcp_server_check.py",
+    "negative_test_record_check.py", "test_action_fields_check.py",
+    "users_module_page_check.py", "feedback_delete_check.py",
+    "feedback_simple_check.py", "common_device_check.py",
+    "image_caption_only_check.py", "simple_upload_check.py",
 ]
-JS_CHECKS = ["form_modal_check.js", "citations_check.js", "device_scope_check.js", "scope_selection_check.js", "sw_cache_check.js"]
+JS_CHECKS = ["form_modal_check.js", "citations_check.js", "device_scope_check.js", "scope_selection_check.js", "sw_cache_check.js", "answer_format_check.js", "history_pagination_ui_check.js", "feedback_delete_ui_check.js", "feedback_simple_ui_check.js", "simple_import_ui_check.js", "device_edit_ui_check.js"]
 
 
 def main() -> int:

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>查资料 · 个人知识库</title>
+<meta name="theme-color" content="#07101f">
+<link rel="manifest" href="/static/manifest.webmanifest?v=dark-workbench-20261025">
+<link rel="icon" href="/static/favicon.svg?v=dark-workbench-20261025" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css?v=function-bar-20261102">
+<link rel="stylesheet" href="/static/css/library-workspace.css?v=nav-align-20261102">
+</head>
+<body class="library-workspace">
+<header class="topnav" id="topnav">
+  <div class="nav-inner">
+    <a class="brand" href="/app"><img class="brand-mark" src="/static/icons/icon.svg?v=dark-workbench-20261025" alt=""><span class="brand-name">个人知识库<span class="brand-caption">PERSONAL KNOWLEDGE</span></span></a>
+    <button class="btn btn-icon nav-toggle" id="navToggle" type="button" aria-label="展开菜单" aria-expanded="false" aria-controls="navMenu"></button>
+    <div class="nav-menu" id="navMenu">
+      <div class="nav-user">
+        <button class="user-chip" id="userChip" type="button" aria-label="查看我的权限"></button>
+        <button class="btn btn-ghost-light" id="chgPwdBtn" type="button">修改密码</button>
+        <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
+      </div>
+      <div class="function-nav">
+        <span class="function-label">功能导航</span>
+        <nav class="nav-links" aria-label="功能导航">
+          <a class="nav-link" href="/app" id="appLink">问答工作台</a>
+          <a class="nav-link" href="/admin" id="adminLink">资料管理</a>
+          <a class="nav-link is-active" href="/library" id="libraryLink" aria-current="page">查资料</a>
+          <a class="nav-link" href="/admin?view=users" id="usersLink" hidden>用户与权限</a>
+        </nav>
+      </div>
+    </div>
+  </div>
+</header>
+<main class="quality-shell">
+  <header class="quality-heading" aria-labelledby="libraryPageTitle">
+    <div class="quality-heading-content">
+      <span class="quality-heading-icon" aria-hidden="true"><svg class="ic" viewBox="0 0 24 24" focusable="false"><circle cx="10.8" cy="10.8" r="6.3"/><path d="M15.5 15.5L21 21"/></svg></span>
+      <div class="quality-heading-copy">
+        <h1 id="libraryPageTitle">资料原文检索与文档体检</h1>
+        <p class="muted">检索已入库的原文片段，或检查文档的入库状态与位置；不生成答案。</p>
+      </div>
+    </div>
+    <a class="btn btn-outline quality-back-link" href="/app"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>返回提问</a>
+  </header>
+  <div class="quality-grid">
+    <aside class="card quality-docs" aria-label="选择要检查的资料">
+      <div class="panel-head"><h2 class="panel-title">我的资料</h2></div>
+      <label class="sr-only" for="qualityDocFilter">搜索文件名</label>
+      <div class="scope-search-row">
+        <input class="scope-search" id="qualityDocFilter" type="search" placeholder="搜索文件名或版本" autocomplete="off">
+        <button class="scope-btn scope-reload" id="qualityReload" type="button" title="刷新资料列表" aria-label="刷新资料列表"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg></button>
+      </div>
+      <div class="quality-doc-tools">
+        <p class="small muted" id="qualityDocCount" role="status"></p>
+        <button class="quality-all" id="qualityAll" type="button" title="在全部已就绪资料中检索（默认仅启用版本）">检索全部资料 <svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.8" cy="10.8" r="6.3"/><path d="M15.5 15.5L21 21"/></svg></button>
+      </div>
+      <div class="quality-doc-list" id="qualityDocs"></div>
+    </aside>
+    <section class="card quality-main" aria-label="查资料工作区">
+      <div class="quality-toolbar">
+        <div class="quality-switch" role="group" aria-label="查看方式">
+          <button class="btn btn-primary" id="qualitySearchTab" type="button" aria-pressed="true" aria-controls="qualitySearch">原文检索</button>
+          <button class="btn btn-outline" id="qualityInspectTab" type="button" aria-pressed="false" aria-controls="qualityInspect">文档体检</button>
+        </div>
+      </div>
+      <p class="quality-scope" id="qualityScope" role="status">原文检索范围：全部已就绪资料（默认仅启用版本；历史资料需勾选）。</p>
+      <section class="quality-panel" id="qualitySearch" aria-label="原文检索">
+        <div class="quality-panel-heading"><h2>查找资料原文</h2><p class="small muted">输入关键词，查看对应文件和原文片段。</p></div>
+        <form class="quality-search-form" id="qualitySearchForm">
+          <label class="field" for="qualityQuery"><span class="field-label">原文关键词</span><input class="input" id="qualityQuery" type="search" maxlength="200" required placeholder="例如：Load cycle、Index 20、告警代码" autocomplete="off"></label>
+          <label class="field quality-device-field" for="qualityDeviceFilter">
+            <span class="field-label">设备</span>
+            <select class="input" id="qualityDeviceFilter"><option value="">全部设备</option><option value="通用">仅通用资料</option><option value="PLM">PLM（含通用）</option><option value="Plus_500">Plus_500（含通用）</option><option value="Plus_Pro">Plus_Pro（含通用）</option><option value="LP">LP（含通用）</option></select>
+          </label>
+          <button class="btn btn-primary" id="qualitySearchBtn" type="submit">查找原文</button>
+        </form>
+        <div class="quality-search-options">
+        <label class="check-item"><input type="checkbox" id="qualityIncludeArchived">包含历史版本（仅查原文，不用于普通问答）</label>
+        <details class="quality-search-help"><summary>检索说明</summary><p class="small muted">按字面文字匹配，英文字母不分大小写。多个关键词用空格分隔，需同时出现。结果按文件分组，显示位置和片段，可打开原文件核对；未命中不代表原文件没有相关内容，可减少关键词再试。</p></details>
+        </div>
+        <div class="quality-search-output" role="region" aria-labelledby="qualityResultsHeading">
+        <h3 class="quality-results-title" id="qualityResultsHeading">检索结果</h3>
+        <p class="quality-result-status" id="qualitySearchStatus" role="status">输入关键词开始检索。</p>
+        <div class="quality-file-groups" id="qualityGroupSummary"></div>
+        <div class="quality-chunks" id="qualityResults"></div>
+        <div class="quality-pagination" id="qualitySearchPager" tabindex="-1" aria-label="检索分页"></div>
+        </div>
+      </section>
+      <section class="quality-panel hidden" id="qualityInspect" aria-label="文档体检">
+        <div class="quality-panel-heading"><h2>检查文档入库情况</h2><p class="small muted">选择资料查看已入库的片段与位置。</p></div>
+        <button class="btn btn-outline btn-sm" id="qualityCheckAll" type="button">检查全部资料</button>
+        <div id="qualityCheckAllResults" aria-live="polite"></div>
+        <div id="qualitySummary" tabindex="-1" aria-live="polite"><p class="quality-empty">选择一份资料，查看实际入库的片段与位置提示；请对照原件核对内容。</p></div>
+        <div class="quality-chunks" id="qualityChunks"></div>
+        <div class="quality-pagination" id="qualityInspectPager" tabindex="-1" aria-label="正文分页"></div>
+      </section>
+    </section>
+  </div>
+</main>
+<script src="/static/js/common.js?v=users-module-20261102"></script>
+<script src="/static/js/web-import.js?v=web-image-shared-20261027"></script>
+<script src="/static/js/log-import.js?v=simple-import-20261028"></script>
+<script src="/static/js/library.js?v=text-legibility-20261029"></script>
+</body>
+</html>
