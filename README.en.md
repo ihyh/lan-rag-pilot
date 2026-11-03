@@ -4,6 +4,18 @@ Store manuals, spreadsheets and images locally, retrieve supporting passages, an
 
 Status: **2026-11-02**. Production uses FastAPI/Jinja and vanilla JavaScript. Vue and visual redesign previews are not the production UI. Independent business acceptance is deferred; synthetic checks do not establish real-answer accuracy.
 
+## Screenshots
+
+Captured from an isolated demo using fictional accounts, sample documents and a mock answer. No local user data, private documents or image materials are included. Click an image to enlarge. These screenshots demonstrate the UI, not real-world answer accuracy.
+
+| Chat, citations and history | Document management and device metadata |
+| --- | --- |
+| [![Chat](docs/screenshots/chat.jpg)](docs/screenshots/chat.jpg) | [![Documents](docs/screenshots/documents.jpg)](docs/screenshots/documents.jpg) |
+| **Keyword search and source passages** | **Users, roles and groups** |
+| [![Source search](docs/screenshots/source-search.jpg)](docs/screenshots/source-search.jpg) | [![Users and permissions](docs/screenshots/users.jpg)](docs/screenshots/users.jpg) |
+
+[Capture notes](docs/screenshots/README.md)
+
 ## Start
 
 Install Git for Windows, Python 3.12 and Ollama, then run:

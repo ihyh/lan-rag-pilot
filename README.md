@@ -6,6 +6,18 @@
 
 源码仓库不包含私人文档、账号数据、数据库、模型权重或本机预览副本。[English](README.en.md)
 
+## 界面预览
+
+以下截图来自独立演示环境，使用虚构账号、示例资料和模拟回答，不含本地用户数据、真实文档或图文内容。点击图片可查看大图；截图仅展示功能与交互，不代表真实业务答案的正确率。
+
+| 问答工作台：回答、引用与历史 | 资料管理：设备类型与文档操作 |
+| --- | --- |
+| [![问答工作台](docs/screenshots/chat.jpg)](docs/screenshots/chat.jpg) | [![资料管理](docs/screenshots/documents.jpg)](docs/screenshots/documents.jpg) |
+| **原文检索：关键词与命中片段** | **用户与权限：账号、角色与用户组** |
+| [![原文检索](docs/screenshots/source-search.jpg)](docs/screenshots/source-search.jpg) | [![用户与权限](docs/screenshots/users.jpg)](docs/screenshots/users.jpg) |
+
+[截图说明](docs/screenshots/README.md)
+
 ## 安装与启动
 
 默认环境：Windows 10/11、Python 3.12、Ollama `qwen3:4b-instruct`、BGE-small-zh-v1.5（512 维，CPU 嵌入）。先安装 Git for Windows、Python 3.12 和 [Ollama](https://ollama.com/download/windows)，并启动 Ollama。
