@@ -25,11 +25,14 @@ async function boot(role,api,name='users') {
 const button=(node,label)=>[...node.querySelectorAll('button')].find(b=>b.textContent.trim()===label);
 const submit=(w,form)=>form.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
 
-test('navigation removes the lone shield and retains role-based visibility',async()=>{
+test('navigation uses consistent icons and retains role-based visibility',async()=>{
   for(const name of ['app','admin','library','users']) {
     const dom=await page(name),w=dom.window,d=w.document;
     w.fetch=async()=>({ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({username:'operator',role:'user'})});
-    await w.initSession();assert.equal(d.querySelector('#adminLink svg'),null);
+    await w.initSession();
+    for (const id of ['appLink','adminLink','libraryLink','usersLink']) {
+      assert.equal(d.querySelectorAll('#'+id+' .nav-link-icon svg').length,1);
+    }
     assert.equal(d.querySelector('#usersLink').hidden,true);
     assert.equal(d.querySelector('#adminLink').hidden,true);assert.equal(w.getComputedStyle(d.querySelector('#adminLink')).display,'none');
     dom.window.close();

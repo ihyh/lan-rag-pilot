@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#07101f">
 <link rel="manifest" href="/static/manifest.webmanifest?v=dark-workbench-20261025">
 <link rel="icon" href="/static/favicon.svg?v=dark-workbench-20261025" type="image/svg+xml">
-<link rel="stylesheet" href="/static/css/app.css?v=function-bar-20261102">
+<link rel="stylesheet" href="/static/css/app.css?v=nav-icons-20261103">
 </head>
 <body class="app-body">
 <header class="topnav" id="topnav">
@@ -24,7 +24,6 @@
         <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
       </div>
       <div class="function-nav">
-        <span class="function-label">功能导航</span>
         <nav class="nav-links" aria-label="功能导航">
           <a class="nav-link is-active" href="/app" id="appLink" aria-current="page">问答工作台</a>
           <a class="nav-link" href="/admin" id="adminLink" hidden>资料管理</a>
@@ -38,7 +37,7 @@
 <div class="banner warn hidden" id="meNotice" role="alert"></div>
 <main class="layout-app" id="appLayout">
   <details class="history-pane" id="historyPanel" open>
-    <summary class="panel-summary"><span class="pane-title"><span id="historyIcon"></span>对话记录</span><span class="panel-chevron" aria-hidden="true">⌄</span></summary>
+    <summary class="panel-summary"><span class="pane-title"><span id="historyIcon"></span>对话记录</span><span class="panel-chevron" aria-hidden="true"><svg class="ic" viewBox="0 0 24 24" focusable="false"><path d="m9 5 7 7-7 7"/></svg></span></summary>
     <div class="history-body">
       <div class="pane-actions">
         <button class="btn btn-primary btn-block" id="newChatBtn" type="button">＋ 新建对话</button>
@@ -93,7 +92,7 @@
     <p class="answer-disclaimer">回答可能存在偏差，请以引用原文为准。</p>
   </section>
   <details class="library-pane" id="libraryPanel" tabindex="-1" open>
-    <summary class="panel-summary"><span class="pane-title"><span id="scopeIcon"></span>检索资料</span><span class="scope-badge is-all" id="documentScopeValue" role="status">全库检索</span><span class="panel-chevron" aria-hidden="true">⌄</span></summary>
+    <summary class="panel-summary"><span class="pane-title"><span id="scopeIcon"></span>检索资料</span><span class="scope-badge is-all" id="documentScopeValue" role="status">全库检索</span><span class="panel-chevron" aria-hidden="true"><svg class="ic" viewBox="0 0 24 24" focusable="false"><path d="m9 5 7 7-7 7"/></svg></span></summary>
     <div class="library-content" id="libraryContent">
       <div class="scope-card" id="documentScope">
         <div class="scope-modes" role="radiogroup" aria-label="检索范围模式">
@@ -128,7 +127,7 @@
     <div class="library-footer"><button class="btn btn-primary btn-block" id="finishSelectionBtn" type="button">返回提问</button></div>
   </details>
 </main>
-<script src="/static/js/common.js?v=users-module-20261102"></script>
+<script src="/static/js/common.js?v=nav-icons-20261103"></script>
 <script src="/static/js/answer-format.js?v=answer-layout-20261101"></script>
 <script src="/static/js/app.js?v=answer-layout-20261101"></script>
 </body>
