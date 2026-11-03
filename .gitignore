@@ -50,3 +50,10 @@ design.md
 
 # 本机交接记录含运行状态与备份路径，不随源码发布
 HANDOVER-*.md
+
+# 产品发布仓库不收录本地测试、评测和开发过程记录
+/tests/
+/eval/
+/requirements-smoke.txt
+/docs/_history/
+/docs/reviews/

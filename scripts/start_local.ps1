@@ -1,6 +1,5 @@
 ﻿# 本文件必须保存为「UTF-8 with BOM」。Windows PowerShell 5.1 对无 BOM 的文件按
-# ANSI 解码，中文会变成乱码并直接导致语法错误。改动后请确认 BOM 仍在；
-# tests/win_script_encoding_check.py 会在 CI 上守住这一点。
+# ANSI 解码，中文会变成乱码并直接导致语法错误。改动后请确认 BOM 仍在。
 param(
     [string]$Python = "",
     [switch]$Check

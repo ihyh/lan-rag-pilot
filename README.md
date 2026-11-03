@@ -2,7 +2,7 @@
 
 把设备手册、表格和图文资料保存在本机，按文档范围检索证据，通过 Ollama 生成带引用的回答，并回到原文核对。
 
-**当前进度：2026-11-02。** 已实现文档入库、图文说明、OCR 核对、设备范围选择、对话分页、反馈审核及独立用户与权限页面。正式前端使用 FastAPI/Jinja 模板和原生 JavaScript；Vue 和其他视觉预览未作为正式版本发布。独立业务验收目前按用户要求跳过，工程测试不能代替真实答案正确率。详见 [开发进度](ROADMAP.md)。
+提供文档入库、图文说明、OCR 核对、设备范围选择、对话分页、反馈审核及独立用户与权限管理。前端使用 FastAPI/Jinja 模板和原生 JavaScript。
 
 源码仓库不包含私人文档、账号数据、数据库、模型权重或本机预览副本。[English](README.en.md)
 
@@ -63,20 +63,8 @@ cd C:\rag
 
 默认仅本机访问；手机访问使用 Tailscale 私有网络的 HTTPS Serve。不要开放公网 Funnel。HTTPS 配置、权限和单 worker 限制见 [安全说明](docs/SECURITY.md)。
 
-## 开发验证
+## 发布内容
 
-使用 Python 3.12 和 Node.js 24，在独立环境运行：
+本仓库仅发布运行源码、安装启动脚本、配置示例、使用文档和演示截图。测试、评测样例、开发复核记录及个人交接文件保留在本地，不随产品发布。
 
-```powershell
-python -m pip install -r requirements-smoke.txt
-python tests/run_checks.py
-npm ci --prefix tests/ui
-npm test --prefix tests/ui
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/smoke_runner.ps1 -Python (Get-Command python).Source
-```
-
-回归检查使用合成数据；冒烟脚本启动 mock 模型和应用，使用临时数据目录、8090/8099 测试端口，并检查重启后的持久化。需保证这些端口空闲。DOM 测试不能替代实际浏览器视觉检查，mock 问答不能证明真实模型正确率。可选 OCR 引擎验证缺少依赖时会明确跳过。
-
-真实问题应另建经人工核对的评测集，在隔离资料副本执行，见 [业务评测流程](eval/BUSINESS_EVAL_WORKFLOW.md)。通用词法、重排、多轮辅助等实验开关不是默认启用功能，见 [通用检索实验](docs/GENERIC_RETRIEVAL.md)。
-
-更多说明：[使用入门](docs/GETTING_STARTED.md) · [文档索引](docs/README.md) · [反馈审核](docs/FEEDBACK_REVIEW.md) · [模型配置](docs/MODELS.md) · [故障排查](docs/TROUBLESHOOTING.md) · [评测工具](eval/README.md)
+更多说明：[使用入门](docs/GETTING_STARTED.md) · [文档索引](docs/README.md) · [反馈审核](docs/FEEDBACK_REVIEW.md) · [模型配置](docs/MODELS.md) · [故障排查](docs/TROUBLESHOOTING.md)
