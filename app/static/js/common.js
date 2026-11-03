@@ -329,13 +329,15 @@ function busy(btn, on, busyText) {
  * openModal(opts) -> { el, close, body }
  * opts: { title, body(Node), footer(actions Node 可空), closable(默认 true) }
  */
+var modalStack = [];
 function openModal(opts) {
   opts = opts || {};
+  var opener = document.activeElement;
   var overlay = h('div', { class: 'modal-overlay' });
   var bodyWrap = h('div', { class: 'modal-body' });
   if (opts.body) { bodyWrap.appendChild(opts.body); }
 
-  var modal = h('div', { class: 'modal card', role: 'dialog', 'aria-modal': 'true' }, [
+  var modal = h('div', { class: 'modal card', role: 'dialog', 'aria-modal': 'true', tabindex: '-1' }, [
     h('div', { class: 'modal-head' }, [
       h('h3', null, [opts.title || '']),
       h('button', { class: 'btn btn-icon', type: 'button', 'aria-label': '关闭', title: '关闭', html: icon('close') })
@@ -345,17 +347,44 @@ function openModal(opts) {
   ]);
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
+  modalStack.push(modal);
 
   var closed = false;
+  function top() { return modalStack[modalStack.length - 1]; }
+  function available(node) {
+    return node && node.isConnected && !node.disabled && node.getClientRects().length
+      && window.getComputedStyle(node).visibility !== 'hidden';
+  }
+  function controls() {
+    return qsa('a[href], button, input, select, textarea, [tabindex]', modal).filter(function (node) {
+      return node.tabIndex >= 0 && available(node);
+    });
+  }
   function close() {
-    if (closed || !overlay.parentNode) { return; }
+    if (closed) { return; }
+    var wasTop = top() === modal;
     closed = true;
+    clearTimeout(focusTimer);
     document.removeEventListener('keydown', onKey);
-    overlay.parentNode.removeChild(overlay);
+    modalStack.splice(modalStack.indexOf(modal), 1);
+    if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
+    if (wasTop) {
+      var target = available(opener) && (!top() || top().contains(opener)) ? opener : top();
+      if (available(target)) { target.focus({ preventScroll: true }); }
+    }
     if (opts.onClose) { try { opts.onClose(); } catch (e) { /* ignore */ } }
   }
   function onKey(ev) {
-    if (ev.key === 'Escape' && opts.closable !== false) { close(); }
+    if (top() !== modal || ev.isComposing || ev.keyCode === 229) { return; }
+    if (ev.key === 'Escape' && opts.closable !== false) {
+      ev.preventDefault(); ev.stopImmediatePropagation(); close();
+    } else if (ev.key === 'Tab') {
+      var items = controls(), index = items.indexOf(document.activeElement);
+      if (!items.length || index < 0 || (ev.shiftKey ? index === 0 : index === items.length - 1)) {
+        ev.preventDefault();
+        (items[ev.shiftKey ? items.length - 1 : 0] || modal).focus();
+      }
+    }
   }
   var closeBtn = qs('.modal-head .btn', modal);
   closeBtn.addEventListener('click', close);
@@ -365,8 +394,12 @@ function openModal(opts) {
     });
   }
   document.addEventListener('keydown', onKey);
-  var firstInput = qs('input, select, textarea', modal);
-  if (firstInput) { setTimeout(function () { try { firstInput.focus(); } catch (e) { } }, 30); }
+  var focusTimer = setTimeout(function () {
+    if (closed || top() !== modal) { return; }
+    var items = controls();
+    var firstInput = items.find(function (node) { return /^(INPUT|SELECT|TEXTAREA)$/.test(node.tagName); });
+    (opts.focusClose ? closeBtn : firstInput || items[0] || modal).focus();
+  }, 30);
   return { el: overlay, modal: modal, body: bodyWrap, close: close };
 }
 
@@ -385,17 +418,29 @@ function formModal(opts) {
   ]);
   form.appendChild(errBox);
 
+  var advancedFields = null;
   (opts.fields || []).forEach(function (f) {
+    var target = form;
+    if (f.advanced) {
+      if (!advancedFields) {
+        advancedFields = h('details', { class: 'review-advanced' }, [h('summary', {}, [opts.advancedTitle || '更多信息'])]);
+        if (opts.advancedOpen) { advancedFields.open = true; }
+        form.appendChild(advancedFields);
+      }
+      target = advancedFields;
+    }
     var attrs = {
       class: 'input' + (f.type === 'textarea' ? '' : ''),
       name: f.name,
       placeholder: f.placeholder || '',
+      maxlength: f.maxlength === undefined ? null : f.maxlength,
+      readonly: f.readonly ? '' : null,
       required: f.required ? '' : null
     };
     if (f.type === 'textarea') {
       var ta = h('textarea', Object.assign({ rows: f.rows || 4 }, attrs));
       if (f.value) { ta.value = f.value; }
-      form.appendChild(h('label', { class: 'field' }, [
+      target.appendChild(h('label', { class: 'field' }, [
         h('span', { class: 'field-label' }, [f.label]),
         ta
       ]));
@@ -414,7 +459,7 @@ function formModal(opts) {
       if (!(f.options || []).length) {
         list.appendChild(h('p', { class: 'check-empty' }, [f.emptyText || '暂无可选项']));
       }
-      form.appendChild(h('label', { class: 'field' }, [
+      target.appendChild(h('label', { class: 'field' }, [
         h('span', { class: 'field-label' }, [f.label]),
         list
       ]));
@@ -441,7 +486,7 @@ function formModal(opts) {
         autocomplete: f.autocomplete || null
       }, attrs));
     }
-    form.appendChild(h('label', { class: 'field' }, [
+    target.appendChild(h('label', { class: 'field' }, [
       h('span', { class: 'field-label' }, [f.label]),
       input
     ]));
@@ -456,7 +501,9 @@ function formModal(opts) {
   foot.appendChild(cancelBtn);
   foot.appendChild(okBtn);
 
-  var m = openModal({ title: opts.title || '', body: form, footer: foot, closable: opts.closable !== false });
+  var m = openModal({ title: opts.title || '', body: form, footer: foot, closable: opts.closable !== false, focusClose: opts.focusClose });
+  if (opts.modalClass) { m.modal.classList.add(opts.modalClass); }
+  if (opts.onReady) { opts.onReady(form); }
 
   function showErr(msg) {
     errBox.classList.remove('hidden');
@@ -559,10 +606,13 @@ async function initSession(opts) {
   var appLink = qs('#appLink');
   if (appLink && !appLink.firstChild) { appLink.insertBefore(h('span', { html: icon('chat') }), appLink.firstChild); }
   var adminLinkEl = qs('#adminLink');
-  if (adminLinkEl && !adminLinkEl.firstChild) {
-    adminLinkEl.insertBefore(h('span', { html: icon('shield') }), adminLinkEl.firstChild);
+  if (adminLinkEl) {
     adminLinkEl.hidden = !(root || kbAdmin);
   }
+  var libraryLinkEl = qs('#libraryLink');
+  if (libraryLinkEl) { libraryLinkEl.hidden = !(root || kbAdmin); }
+  var usersLinkEl = qs('#usersLink');
+  if (usersLinkEl) { usersLinkEl.hidden = !root; }
   var pwdBtnEl = qs('#chgPwdBtn');
   if (pwdBtnEl && !pwdBtnEl.querySelector('svg')) {
     pwdBtnEl.insertBefore(h('span', { html: icon('key') }), pwdBtnEl.firstChild);
@@ -653,10 +703,12 @@ function openMyPermissionsModal(me) {
 }
 
 function openChangePasswordModal() {
+  var username = qs('.user-chip .u-name');
   return formModal({
     title: '修改密码',
     submitText: '确认修改',
     fields: [
+      { name: 'username', label: '当前账号', value: username ? username.textContent : '', readonly: true, autocomplete: 'username' },
       { name: 'old_password', label: '当前密码', type: 'password', required: true, autocomplete: 'current-password' },
       { name: 'new_password', label: '新密码（至少 6 位）', type: 'password', required: true, minlength: 6, autocomplete: 'new-password' },
       { name: 'confirm', label: '确认新密码', type: 'password', required: true, autocomplete: 'new-password' }
@@ -669,6 +721,39 @@ function openChangePasswordModal() {
       toast('密码修改成功', 'success');
     }
   });
+}
+
+/* ---------------- OCR 导入状态 ---------------- */
+
+/* 从文档 tags 解析 OCR 页状态；tags 可能是 JSON 字符串或数组。
+   只接受完整十进制正整数且必须 safe integer；同一状态重复标签合并、去重、升序，
+   坏值不会清掉此前已解析出的有效页码。 */
+function parseOcrPages(tags) {
+  var list = tags;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch (e) { list = []; }
+  }
+  var result = { ok: [], suspect: [], failed: [] };
+  if (!Array.isArray(list)) { return result; }
+  list.forEach(function (tag) {
+    if (typeof tag !== 'string') { return; }
+    var match = /^ocr_(ok|suspect|failed)_pages=(.*)$/.exec(tag.trim());
+    if (!match) { return; }
+    (match[2] || '').split(',').forEach(function (raw) {
+      var value = raw.trim();
+      if (!/^\d+$/.test(value)) { return; }
+      var page = Number(value);
+      if (Number.isSafeInteger(page) && page > 0) {
+        result[match[1]].push(page);
+      }
+    });
+  });
+  Object.keys(result).forEach(function (status) {
+    result[status] = result[status]
+      .filter(function (page, index, all) { return all.indexOf(page) === index; })
+      .sort(function (left, right) { return left - right; });
+  });
+  return result;
 }
 
 /* ---------------- 角色 ---------------- */
@@ -689,5 +774,5 @@ window.KB = {
   h: h, clear: clear, qs: qs, qsa: qsa, openModal: openModal, formModal: formModal,
   registerSW: registerSW, initSession: initSession, detailText: detailText,
   openChangePasswordModal: openChangePasswordModal, wireGlobalErrors: wireGlobalErrors,
-  roleLabel: roleLabel, ROLE_LABELS: ROLE_LABELS
+  roleLabel: roleLabel, ROLE_LABELS: ROLE_LABELS, parseOcrPages: parseOcrPages
 };

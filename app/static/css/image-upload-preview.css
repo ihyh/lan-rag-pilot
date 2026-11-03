@@ -1,0 +1,14 @@
+/* 图文资料上传表单 */
+.image-import-head p { margin-top: 6px; }
+.image-import-form { max-width: 1040px; margin-top: 18px; }
+.image-import-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr); gap: 16px; }
+.image-import-fields .field { min-width: 0; }
+.image-import-preview { display: block; max-width: 100%; max-height: 45vh; object-fit: contain; margin: 0 0 18px; border-radius: 8px; }
+.image-ai-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.image-ai-result { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.image-ai-result .quality-text { padding: 10px 0; max-height: 280px; overflow: auto; }
+.image-import-confirm { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.image-import-confirm .check-item { margin-bottom: 12px; align-items: flex-start; }
+.image-import-confirm .check-item input { margin-top: 5px; flex: none; }
+.image-import-confirm [role="status"]:not(:empty) { margin-bottom: 10px; }
+@media (max-width: 700px) { .image-import-fields { grid-template-columns: minmax(0, 1fr); gap: 0; } }

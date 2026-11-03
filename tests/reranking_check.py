@@ -1,6 +1,7 @@
 """Rerank windows/selection contracts without downloading or mocking accuracy."""
 from pathlib import Path
 import json
+import sqlite3
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -39,9 +40,21 @@ def route_contracts():
     from app.main import create_app
     service = Reranker()
     service._model = Model()
-    db, index, model = MagicMock(), MagicMock(), MagicMock()
+    from app.db import SCHEMA
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.executescript(SCHEMA)
+    db.execute("INSERT INTO documents(id,filename,stored_name,content_type,size_bytes,sha256,status,created_at,updated_at) VALUES(1,'manual.txt','manual.txt','text/plain',20,?,'ready','test','test')", ('a'*64,))
+    index, model = MagicMock(), MagicMock()
     items = [dict(source(1, "other"), paragraph=None), dict(source(2, "needle target"), paragraph=None)]
-    db.execute.return_value.fetchall.return_value = items
+    for item in items:
+        db.execute("INSERT INTO chunks(id,document_id,seq,page,paragraph,content,token_count,vector) VALUES(?,1,?,1,NULL,?,1,?)", (item['chunk_id'],item['seq'],item['content'],b''))
+    db.commit()
+    def stream_connect():
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        db.backup(connection)
+        return connection
     index.size.return_value = 2
     index.search.return_value = items
     result = {"answer": "target [1]", "model": "mock", "latency_ms": 1,
@@ -59,20 +72,20 @@ def route_contracts():
          patch.object(route.query_limiter, "allow", return_value=(True, 0)), \
          patch.object(route, "llm_gate", MagicMock()), patch.object(route, "llm_chat", model), \
          patch.object(route, "_store_chat", return_value=(1, 1)) as store, \
-         patch.object(route.audit, "log_audit"), patch.object(route, "connect", return_value=db), \
+         patch.object(route.audit, "log_audit"), patch.object(route, "connect", side_effect=stream_connect), \
          patch.object(route, "llm_stream_chat", return_value=iter([
              {"type": "delta", "text": "target [1]"},
              {"type": "usage", "model": "mock", "latency_ms": 1, "prompt_tokens": 10, "completion_tokens": 3}])):
         client = TestClient(app)
         answer = client.post("/api/query", json={"question": "target?", "document_ids": [1]})
         assert answer.status_code == 200, answer.text
-        assert set(answer.json()["sources"][0]) == {"chunk_id", "document_id", "filename", "page", "paragraph", "score"}
+        assert set(answer.json()["sources"][0]) == {"chunk_id", "document_id", "filename", "page", "paragraph", "score", "excerpt", "source_snapshot", "evidence_status"}
         assert answer.json()["sources"][0]["chunk_id"] == 2
         assert model.call_args.args[1][0]["content"] == "needle target"
         assert index.search.call_args.kwargs["document_ids"] == {1}
         stream = client.post("/api/query?stream=true", json={"question": "target?", "document_ids": [1]})
         events = [json.loads(line) for line in stream.text.splitlines()]
-        assert stream.status_code == 200 and [e["type"] for e in events] == ["delta", "done"]
+        assert stream.status_code == 200 and [e["type"] for e in events] == ["delta", "sources", "done"]
         assert store.call_args.kwargs["sources"][0]["chunk_id"] == 2
         with patch.object(service, "rank", side_effect=RerankUnavailable("model unavailable")):
             for streamed in (False, True):

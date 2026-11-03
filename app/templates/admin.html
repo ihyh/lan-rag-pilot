@@ -1,13 +1,17 @@
+{% if request.query_params.get('view') == 'users' %}
+{% include 'users.html' %}
+{% else %}
 <!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>管理 · 个人知识库</title>
-<meta name="theme-color" content="#101d36">
-<link rel="manifest" href="/static/manifest.webmanifest">
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/css/app.css">
+<meta name="theme-color" content="#07101f">
+<link rel="manifest" href="/static/manifest.webmanifest?v=dark-workbench-20261025">
+<link rel="icon" href="/static/favicon.svg?v=dark-workbench-20261025" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css?v=admin-width-20261102">
+<link rel="stylesheet" href="/static/css/image-upload-preview.css?v=image-layout-20261029">
 </head>
 <body>
 
@@ -15,20 +19,25 @@
 <header class="topnav" id="topnav">
   <div class="nav-inner">
     <a class="brand" href="/app">
-      <img class="brand-mark" src="/static/icons/icon.svg" alt="个人知识库">
-      <span class="brand-name">个人知识库</span>
+      <img class="brand-mark" src="/static/icons/icon.svg?v=dark-workbench-20261025" alt="">
+      <span class="brand-name">个人知识库<span class="brand-caption">PERSONAL KNOWLEDGE</span></span>
     </a>
     <button class="btn btn-icon nav-toggle" id="navToggle" type="button"
             aria-label="展开菜单" aria-expanded="false" aria-controls="navMenu"></button>
     <div class="nav-menu" id="navMenu">
-      <nav class="nav-links">
-        <a class="nav-link" href="/app" id="appLink">问答</a>
-        <a class="nav-link is-active" href="/admin" id="adminLink">管理</a>
-      </nav>
       <div class="nav-user">
         <button class="user-chip" id="userChip" type="button" aria-label="查看我的权限" title="查看我的权限"></button>
         <button class="btn btn-ghost-light" id="chgPwdBtn" type="button">修改密码</button>
         <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
+      </div>
+      <div class="function-nav">
+        <span class="function-label">功能导航</span>
+        <nav class="nav-links" aria-label="功能导航">
+          <a class="nav-link" href="/app" id="appLink">问答工作台</a>
+          <a class="nav-link is-active" href="/admin" id="adminLink" aria-current="page">资料管理</a>
+          <a class="nav-link" href="/library" id="libraryLink">查资料</a>
+          <a class="nav-link" href="/admin?view=users" id="usersLink" hidden>用户与权限</a>
+        </nav>
       </div>
     </div>
   </div>
@@ -36,23 +45,19 @@
 
 <div class="banner warn hidden" id="meNotice" role="alert"></div>
 
-<main class="page-shell">
+<main class="page-shell admin-shell">
 
   <!-- 一级标签 -->
   <div class="tabbar" role="tablist" aria-label="管理功能">
-    <button class="tab is-active root-only" id="tabBtn-overview" data-tab="overview" type="button" role="tab">
+    <button class="tab is-active root-only" id="tabBtn-overview" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="panel-overview">
       概览
     </button>
-    <button class="tab" id="tabBtn-docs" data-tab="docs" type="button" role="tab">
+    <button class="tab" id="tabBtn-docs" data-tab="docs" type="button" role="tab" aria-selected="false" aria-controls="panel-docs">
       文档
     </button>
-    <button class="tab root-only" id="tabBtn-users" data-tab="users" type="button" role="tab">
-      用户
-    </button>
-    <button class="tab root-only" id="tabBtn-groups" data-tab="groups" type="button" role="tab">
-      用户组
-    </button>
-    <button class="tab root-only" id="tabBtn-audit" data-tab="audit" type="button" role="tab">
+
+
+    <button class="tab root-only" id="tabBtn-audit" data-tab="audit" type="button" role="tab" aria-selected="false" aria-controls="panel-audit">
       审计
     </button>
   </div>
@@ -61,47 +66,45 @@
   <section class="tab-panel is-active root-only" id="panel-overview" data-panel="overview">
     <div class="list-loading" id="overviewLoading"><span class="spin spin-lg"></span></div>
     <div id="overviewContent" class="hidden">
-      <div class="cards-grid" id="statCards"></div>
-      <div class="grid-2">
-        <div class="card panel-card">
+      <div class="cards-grid overview-stats" id="statCards"></div>
+      <div class="grid-2 overview-panels">
+        <div class="card panel-card overview-panel">
           <div class="panel-head">
             <h2 class="panel-title">模型状态</h2>
           </div>
           <div id="modelCard"></div>
         </div>
-        <div class="card panel-card">
+        <div class="card panel-card overview-panel">
           <div class="panel-head">
-            <h2 class="panel-title">问答耗时（最近若干轮）</h2>
+            <h2 class="panel-title">问答耗时</h2>
           </div>
           <div id="latencyCard"></div>
         </div>
       </div>
-      <div class="grid-2">
-        <div class="card panel-card">
-          <div class="panel-head">
-            <h2 class="panel-title">运行参数</h2>
-          </div>
-          <form id="settingsForm">
-            <div class="settings-grid">
-              <label class="field">
-                <span class="field-label">检索片段条数 top_k（1–20）</span>
-                <input class="input" type="number" id="cfg-top_k" name="top_k" min="1" max="20" step="1" required>
-              </label>
-              <label class="field">
-                <span class="field-label">每分钟问答上限（1–120）</span>
-                <input class="input" type="number" id="cfg-queries_per_minute" name="queries_per_minute" min="1" max="120" step="1" required>
-              </label>
-              <label class="field">
-                <span class="field-label">模型最大并发数（1–32）</span>
-                <input class="input" type="number" id="cfg-max_concurrent_llm" name="max_concurrent_llm" min="1" max="32" step="1" required>
-              </label>
-            </div>
-            <div class="panel-tools" style="margin-top:14px">
-              <button class="btn btn-primary" type="submit" id="saveSettingsBtn">保存运行参数</button>
-              <span class="small muted" id="settingsHint"></span>
-            </div>
-          </form>
+      <div class="card panel-card overview-settings">
+        <div class="panel-head">
+          <h2 class="panel-title">运行参数</h2>
         </div>
+        <form id="settingsForm">
+          <div class="settings-grid">
+            <label class="field">
+              <span class="field-label">检索片段条数 top_k（1–20）</span>
+              <input class="input" type="number" id="cfg-top_k" name="top_k" min="1" max="20" step="1" required>
+            </label>
+            <label class="field">
+              <span class="field-label">每分钟问答上限（1–120）</span>
+              <input class="input" type="number" id="cfg-queries_per_minute" name="queries_per_minute" min="1" max="120" step="1" required>
+            </label>
+            <label class="field">
+              <span class="field-label">模型最大并发数（1–32）</span>
+              <input class="input" type="number" id="cfg-max_concurrent_llm" name="max_concurrent_llm" min="1" max="32" step="1" required>
+            </label>
+          </div>
+          <div class="panel-tools" style="margin-top:14px">
+            <button class="btn btn-primary" type="submit" id="saveSettingsBtn">保存运行参数</button>
+            <span class="small muted" id="settingsHint" role="status"></span>
+          </div>
+        </form>
       </div>
     </div>
     <div class="card panel-card hidden" id="overviewError"></div>
@@ -109,167 +112,86 @@
 
   <!-- ============ 文档 ============ -->
   <section class="tab-panel" id="panel-docs" data-panel="docs">
-    <div class="card panel-card">
-      <div class="panel-head">
-        <h2 class="panel-title">上传文档</h2>
-        <span class="small muted" id="uploadMeta"></span>
-      </div>
-      <div class="user-create-grid" style="margin-bottom:14px">
-        <label class="field">
-          <span class="field-label">文档版本</span>
-          <input class="input" id="docVersion" type="text" value="1.0" maxlength="32"
-                 pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,31}" required>
-        </label>
+    <nav class="import-entry" aria-label="资料管理功能">
+      <a class="btn btn-primary" href="#docs/list" data-doc-view="documentList" aria-current="page">文档列表</a>
+      <a class="btn btn-outline" href="#docs/upload" data-doc-view="fileImport">上传文件</a>
+      <a class="btn btn-outline" href="#docs/images" data-doc-view="imageTextImport">图文资料</a>
+    </nav>
+    <input type="hidden" id="docVersion" value="1.0">
+    <div class="card panel-card import-panel hidden" id="fileImport" tabindex="-1">
+      <div class="panel-head import-heading">
+        <div><h2 class="panel-title">上传文件</h2><p class="small muted">选择本地文件，上传后可在文档列表查看。</p></div>
       </div>
       <div class="upload-zone" id="uploadZone" role="button" tabindex="0" aria-label="上传文档区域">
         <span id="uploadZoneIcon"></span>
-        <p class="uz-title">点击选择或拖拽文件到此处上传</p>
-        <p class="uz-tip">支持 PDF / DOC / DOCX / XLSX / TXT / Markdown，单个文件不超过 <span id="maxUploadMB">25</span> MB</p>
+        <p class="uz-title">选择文件，或拖到这里</p>
+        <p class="uz-tip">PDF、Word、表格、TXT、Markdown 和图片</p>
+        <p class="uz-tip">普通文件 ≤ <span id="maxUploadMB">25</span> MB · PDF OCR ≤ 20 MB / 50页 · 图片 ≤ 10 MB</p>
       </div>
-      <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.xlsx,.txt,.md" class="hidden">
+      <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.xlsx,.txt,.md,.png,.jpg,.jpeg" class="hidden">
       <div class="file-chips" id="fileChips"></div>
+      <div class="import-modes">
+        <label class="check-item"><input type="checkbox" id="docUseOcr" disabled>扫描 PDF：识别文字后核对入库</label>
+      </div>
+      <div class="import-meta-fields" style="display:grid;gap:12px;margin:14px 0">
+        <label class="field">
+          <span class="field-label">设备（用于筛选和问答范围）</span>
+          <select class="input" id="docDevice"><option value="">未指定</option><option value="通用">通用（全部设备）</option><option value="PLM">PLM</option><option value="Plus_500">Plus_500</option><option value="Plus_Pro">Plus_Pro</option><option value="LP">LP</option></select>
+        </label>
+      </div>
+      <p class="small muted import-availability" id="ocrAvailability" role="status">正在检查图片识别是否可用…</p>
+      <details class="import-options">
+        <summary>编码与格式说明</summary>
+        <div class="import-options-body">
+          <p class="small muted">图片和扫描 PDF 的识别结果需人工核对；可疑 PDF 页需逐项核对，失败内容不会入库。需要添加图片说明时，请使用“图文资料”。</p>
+          <span class="small muted" id="uploadMeta"></span>
+        </div>
+      </details>
     </div>
 
-    <div class="card panel-card">
-      <div class="panel-head">
+    <section class="card panel-card import-panel hidden" id="imageTextImport" tabindex="-1" aria-labelledby="imageTextTitle">
+      <div class="panel-head image-import-head"><div><h2 class="panel-title" id="imageTextTitle">图文资料</h2><p class="small muted">上传一张图片并填写说明，让资料更容易被检索和核对。</p></div></div>
+      <form id="imageTextForm" class="image-import-form">
+        <div class="image-import-fields">
+          <label class="field"><span class="field-label">图片 * <span class="muted">（PNG / JPEG，最多 10 MB）</span></span><input class="input" id="imageTextFile" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" required></label>
+          <label class="field"><span class="field-label">设备（选填）</span><select class="input" id="imageTextDevice"><option value="">未指定</option><option value="通用">通用（全部设备）</option><option value="PLM">PLM</option><option value="Plus_500">Plus_500</option><option value="Plus_Pro">Plus_Pro</option><option value="LP">LP</option></select></label>
+        </div>
+        <img id="imageTextPreview" class="hidden image-import-preview" alt="待上传图片预览">
+        <label class="field"><span class="field-label">图片说明 * <span class="muted">（最多 2000 字）</span></span><textarea class="input" id="imageTextCaption" rows="6" maxlength="2000" required placeholder="描述设备、接口、连接关系和数值；图中标注有误时写明更正。"></textarea></label>
+        <div class="image-ai-tools"><button class="btn btn-outline" id="imageTextAnalyze" type="button">AI 分析图片</button><span class="small muted">AI 结果仅供参考，核对后可追加到说明。</span></div>
+        <div id="imageTextAnalysis" class="hidden image-ai-result"><p class="small muted">AI 分析结果（需人工核对）</p><pre class="quality-text" id="imageTextAnalysisText"></pre><button class="btn btn-outline btn-sm" id="imageTextUseAnalysis" type="button">将结果追加到说明</button></div>
+        <div class="image-import-confirm">
+          <label class="check-item"><input id="imageTextConfirmed" type="checkbox" required>我已核对图片说明，标明错误、更正及不确定的内容。</label>
+          <p id="imageTextStatus" class="small muted" role="status" aria-live="polite"></p>
+          <button class="btn btn-primary" id="imageTextSubmit" type="submit">上传图文资料</button>
+        </div>
+      </form>
+    </section>
+
+    <div class="card panel-card" id="documentList" tabindex="-1">
+      <div class="panel-head doc-list-head">
         <h2 class="panel-title">文档列表</h2>
-        <div class="panel-tools">
-          <input class="input" id="docFilterVersion" type="text" maxlength="32" placeholder="版本">
+        <div class="panel-tools doc-list-tools">
+          <input class="input" id="docFilterName" type="search" maxlength="200" placeholder="搜索文件名" aria-label="搜索文件名">
+          <select class="select" id="docFilterDevice" aria-label="设备筛选">
+            <option value="">全部设备</option><option value="通用">仅通用资料</option><option value="PLM">PLM（含通用）</option><option value="Plus_500">Plus_500（含通用）</option><option value="Plus_Pro">Plus_Pro（含通用）</option><option value="LP">LP（含通用）</option>
+          </select>
           <span class="small muted">当日日期：<strong id="docToday"></strong></span>
           <button class="btn btn-outline btn-sm" id="refreshDocsBtn" type="button">刷新列表</button>
         </div>
       </div>
-      <p class="small muted">“重建索引”会使用已上传的原文件重新解析、分段并生成检索向量；仅在处理失败或检索异常时使用。</p>
+      <div class="doc-list-notes"><p class="small muted" id="docFilterCount" role="status" aria-live="polite"></p><p class="small muted">选择设备类型后自动保存；“重建索引”仅在处理失败或检索异常时使用。</p></div>
       <div class="list-loading" id="docsLoading"><span class="spin spin-lg"></span></div>
       <div id="docsBody"></div>
-    </div>
-  </section>
-
-  <!-- ============ 用户 ============ -->
-  <section class="tab-panel root-only" id="panel-users" data-panel="users">
-    <div class="card panel-card">
-      <div class="panel-head">
-        <h2 class="panel-title">新建用户</h2>
-      </div>
-      <form id="createUserForm" autocomplete="off">
-        <div class="user-create-grid">
-          <label class="field">
-            <span class="field-label">用户名（2–32 位，字母/数字/_.-）</span>
-            <input class="input" id="nu-username" name="username" type="text"
-                   pattern="[A-Za-z0-9_.\-]{2,32}" minlength="2" maxlength="32" required autocomplete="off">
-          </label>
-          <label class="field">
-            <span class="field-label">初始密码（至少 6 位）</span>
-            <input class="input" id="nu-password" name="password" type="password"
-                   minlength="6" maxlength="128" required autocomplete="new-password">
-          </label>
-          <label class="field">
-            <span class="field-label">角色</span>
-            <select class="select" id="nu-role" name="role">
-              <option value="user">普通用户（user）</option>
-              <option value="kb_admin">文档管理员</option>
-              <option value="root">管理员（root）</option>
-            </select>
-          </label>
-          <button class="btn btn-primary" type="submit" id="createUserBtn">创建用户</button>
-        </div>
-      </form>
-    </div>
-
-    <div class="card panel-card">
-      <div class="panel-head">
-        <h2 class="panel-title">角色权限说明</h2>
-      </div>
-      <div class="role-permission-grid" aria-label="角色权限说明">
-        <article class="role-permission-item" data-role-permission="root">
-          <div class="role-permission-head">
-            <span class="tag-role tag-root">root</span>
-            <strong>系统管理员</strong>
-          </div>
-          <ul class="role-permission-list">
-            <li>使用知识库问答并管理自己的对话</li>
-            <li>上传、查看、重新处理和删除文档</li>
-            <li>创建、停用用户，重置密码和设置角色</li>
-            <li>查看和删除全部对话，查看反馈、审计和系统概览，修改运行参数</li>
-          </ul>
-        </article>
-        <article class="role-permission-item" data-role-permission="kb_admin">
-          <div class="role-permission-head">
-            <span class="tag-role tag-kb_admin">kb_admin</span>
-            <strong>文档管理员</strong>
-          </div>
-          <ul class="role-permission-list">
-            <li>使用知识库问答并管理自己的对话</li>
-            <li>上传、查看、重新处理和删除文档</li>
-            <li>不能管理用户、查看全局记录或修改运行参数</li>
-          </ul>
-        </article>
-        <article class="role-permission-item" data-role-permission="user">
-          <div class="role-permission-head">
-            <span class="tag-role tag-user">user</span>
-            <strong>普通用户</strong>
-          </div>
-          <ul class="role-permission-list">
-            <li>使用知识库问答并管理自己的对话</li>
-            <li>查看问答引用片段并提交回答反馈，不能打开完整原文</li>
-            <li>不能管理文档、用户或系统设置</li>
-          </ul>
-        </article>
-      </div>
-    </div>
-
-    <div class="card panel-card">
-      <div class="panel-head">
-        <h2 class="panel-title">用户列表</h2>
-        <div class="panel-tools">
-          <button class="btn btn-outline btn-sm" id="refreshUsersBtn" type="button">刷新列表</button>
-        </div>
-      </div>
-      <div class="list-loading" id="usersLoading"><span class="spin spin-lg"></span></div>
-      <div id="usersBody"></div>
-    </div>
-  </section>
-
-  <!-- ============ 用户组 ============ -->
-  <section class="tab-panel root-only" id="panel-groups" data-panel="groups">
-    <div class="card panel-card">
-      <div class="panel-head">
-        <h2 class="panel-title">新建用户组</h2>
-      </div>
-      <p class="small muted" style="margin:-4px 0 12px">
-        用户组用于「一次授权给一批人」。把文档设为「仅指定账号或用户组可见」时可勾选用户组，
-        组内成员即刻获得访问权；从组里移除成员即等于撤销这批文档的访问权。
-      </p>
-      <form id="createGroupForm" autocomplete="off">
-        <div class="user-create-grid">
-          <label class="field">
-            <span class="field-label">组名（1–32 位）</span>
-            <input class="input" id="ng-name" name="name" type="text" maxlength="32" required autocomplete="off">
-          </label>
-          <label class="field">
-            <span class="field-label">说明（可选）</span>
-            <input class="input" id="ng-description" name="description" type="text" maxlength="200" autocomplete="off">
-          </label>
-          <button class="btn btn-primary" type="submit" id="createGroupBtn">创建用户组</button>
-        </div>
-      </form>
-    </div>
-
-    <div class="card panel-card">
-      <div class="panel-head">
-        <h2 class="panel-title">用户组列表</h2>
-      </div>
-      <div class="list-loading" id="groupsLoading"><span class="spin spin-lg"></span></div>
-      <div id="groupsBody"></div>
     </div>
   </section>
 
   <!-- ============ 审计 ============ -->
   <section class="tab-panel root-only" id="panel-audit" data-panel="audit">
     <div class="tabbar muted-tabs" role="tablist" aria-label="审计内容">
-      <button class="subtab is-active" data-subtab="chats" type="button" role="tab">对话记录</button>
-      <button class="subtab" data-subtab="feedback" type="button" role="tab">用户反馈</button>
-      <button class="subtab" data-subtab="logs" type="button" role="tab">审计日志</button>
+      <button class="subtab is-active" data-subtab="chats" type="button" role="tab" aria-selected="true" aria-controls="subpanel-chats">对话记录</button>
+      <button class="subtab" data-subtab="feedback" type="button" role="tab" aria-selected="false" aria-controls="subpanel-feedback">用户反馈</button>
+      <button class="subtab" data-subtab="logs" type="button" role="tab" aria-selected="false" aria-controls="subpanel-logs">审计日志</button>
     </div>
 
     <div class="subtab-panel is-active" id="subpanel-chats">
@@ -292,10 +214,15 @@
           <h2 class="panel-title">用户反馈</h2>
           <div class="panel-tools">
             <span class="small muted" id="feedbackHint"></span>
-            <a class="btn btn-outline btn-sm" href="/api/admin/feedback.csv">导出 CSV</a>
+            <select class="input" style="width:auto" id="feedbackFilterStatus" aria-label="反馈审核状态">
+              <option value="">全部审核状态</option><option value="pending">待审核</option><option value="not_required">无需审核</option>
+              <option value="confirmed">已确认问题</option><option value="resolved">已解决（人工确认）</option>
+              <option value="dismissed">不采纳</option>
+            </select>
             <button class="btn btn-outline btn-sm" id="refreshFeedbackBtn" type="button">刷新</button>
           </div>
         </div>
+        <p class="small muted">日常审核只需填写标有 * 的项目；来源和复测信息可按需补充。不会自动发题或改写答案。</p>
         <div class="list-loading" id="feedbackLoading"><span class="spin spin-lg"></span></div>
         <div id="feedbackBody"></div>
       </div>
@@ -318,7 +245,13 @@
 
 </main>
 
-<script src="/static/js/common.js"></script>
-<script src="/static/js/admin.js"></script>
+<script src="/static/js/common.js?v=users-module-20261102"></script>
+<script src="/static/js/ocr.js?v=import-simplify-20261029"></script>
+<script src="/static/js/web-import.js?v=personal-20261027"></script>
+<script src="/static/js/log-import.js?v=simple-import-20261028"></script>
+<script src="/static/js/review-sources.js?v=source-terms-20261029"></script>
+<script src="/static/js/admin.js?v=menu-mapping-20261102"></script>
 </body>
 </html>
+
+{% endif %}

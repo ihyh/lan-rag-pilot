@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator
 
@@ -43,6 +44,12 @@ CREATE TABLE IF NOT EXISTS documents (
     version      TEXT    NOT NULL DEFAULT '1.0',
     effective_date TEXT,
     tags         TEXT    NOT NULL DEFAULT '[]',
+    source_metadata TEXT,
+    lifecycle    TEXT    NOT NULL DEFAULT 'active' CHECK (lifecycle IN ('active','archived')),
+    replacement_document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
+    applicability TEXT NOT NULL DEFAULT '',
+    device       TEXT NOT NULL DEFAULT '',
+    caption      TEXT NOT NULL DEFAULT '',
     -- 可见范围：shared = 所有启用账号可见（默认，保持原有共享库行为）；
     -- 其它任何取值都视为受限，必须显式授权才可见（fail-closed）。
     visibility   TEXT    NOT NULL DEFAULT 'shared',
@@ -63,6 +70,16 @@ CREATE TABLE IF NOT EXISTS document_acl (
     PRIMARY KEY (document_id, subject_type, subject_id)
 );
 CREATE INDEX IF NOT EXISTS idx_document_acl_subject ON document_acl(subject_type, subject_id);
+
+CREATE TABLE IF NOT EXISTS ocr_jobs (
+    document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    state TEXT NOT NULL CHECK (state IN ('queued','running','review','ready','failed')),
+    error TEXT,
+    result_name TEXT,
+    accepted_pages TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 -- 用户组：用于"一次授权给一批人"。
 -- 这是**新建**的概念，不是恢复 v2 取消掉的部门/知识库划分：
@@ -89,6 +106,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     seq         INTEGER NOT NULL,
     page        INTEGER,
     paragraph   INTEGER,
+    line_start  INTEGER,
+    line_end    INTEGER,
     token_count INTEGER NOT NULL,
     content     TEXT    NOT NULL,
     vector      BLOB    NOT NULL,
@@ -142,6 +161,7 @@ CREATE TABLE IF NOT EXISTS chats (
     conversation_id   INTEGER REFERENCES conversations(id) ON DELETE CASCADE,
     turn_index        INTEGER NOT NULL DEFAULT 1,
     question          TEXT    NOT NULL,
+    followup_context  TEXT,
     answer            TEXT    NOT NULL DEFAULT '',
     status            TEXT    NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','error')),
     error             TEXT,
@@ -161,10 +181,12 @@ CREATE TABLE IF NOT EXISTS chat_sources (
     chat_id     INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     chunk_id    INTEGER REFERENCES chunks(id) ON DELETE SET NULL,
-    score       REAL    NOT NULL,
+    -- 允许为空：续段/字面补证等无相似度分数的来源用 NULL，不能伪造 score。
+    score       REAL,
     page        INTEGER,
     paragraph   INTEGER,
-    excerpt     TEXT    NOT NULL
+    excerpt     TEXT    NOT NULL,
+    source_snapshot TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sources_chat ON chat_sources(chat_id);
 
@@ -178,6 +200,24 @@ CREATE TABLE IF NOT EXISTS feedback (
     UNIQUE (chat_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_time ON feedback(created_at);
+
+CREATE TABLE IF NOT EXISTS feedback_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id INTEGER NOT NULL REFERENCES feedback(id) ON DELETE CASCADE,
+    feedback_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','confirmed','resolved','dismissed')),
+    failure_type TEXT NOT NULL DEFAULT '',
+    expected_answer TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '',
+    applicability TEXT NOT NULL DEFAULT '',
+    should_refuse INTEGER CHECK(should_refuse IN (0,1)),
+    note TEXT NOT NULL DEFAULT '',
+    snapshot TEXT NOT NULL,
+    reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reviewer_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_reviews_latest ON feedback_reviews(feedback_id,id);
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,6 +260,20 @@ def connect(path=None) -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def atomic(conn: sqlite3.Connection):
+    """将业务写入与审计作为一个单元；保存点也允许现有事务嵌套使用。"""
+    conn.execute('SAVEPOINT rag_write')
+    try:
+        yield
+    except BaseException:
+        conn.execute('ROLLBACK TO rag_write')
+        conn.execute('RELEASE rag_write')
+        raise
+    else:
+        conn.execute('RELEASE rag_write')
+
+
 def get_db() -> Iterator[sqlite3.Connection]:
     """FastAPI yield dependency：每个请求使用独立连接并在结束时关闭。"""
     conn = connect()
@@ -235,12 +289,73 @@ def init_db() -> None:
     try:
         conn.executescript(SCHEMA)
         _ensure_document_metadata_columns(conn)
+        _ensure_chunk_line_columns(conn)
         _ensure_user_permission_columns(conn)
         _ensure_conversation_columns(conn)
         _ensure_document_visibility_column(conn)
         _ensure_chat_metric_columns(conn)
+        _ensure_chat_source_score_nullable(conn)
+        _ensure_chat_source_snapshot_column(conn)
     finally:
         conn.close()
+
+
+def _ensure_chunk_line_columns(conn: sqlite3.Connection) -> None:
+    columns={row[1] for row in conn.execute('PRAGMA table_info(chunks)')}
+    for name in ('line_start','line_end'):
+        if name not in columns:
+            conn.execute(f'ALTER TABLE chunks ADD COLUMN {name} INTEGER')
+
+
+def _ensure_chat_source_score_nullable(conn: sqlite3.Connection) -> None:
+    """旧库的 chat_sources.score 是 NOT NULL；续段/字面补证来源没有相似度分数。
+
+    不能为了写入伪造一个 score：把列改为可空，历史行原值保留。SQLite 不能直接
+    去掉 NOT NULL，只能重建表；迁移可重复执行。
+    """
+    columns = {row[1]: row for row in conn.execute("PRAGMA table_info(chat_sources)")}
+    score = columns.get("score")
+    if score is None or not score[3]:  # row[3] = notnull
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        sequence = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='chat_sources'").fetchone()
+        conn.execute("ALTER TABLE chat_sources RENAME TO chat_sources_legacy")
+        conn.execute(
+            "CREATE TABLE chat_sources ("
+            " id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " chat_id     INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,"
+            " document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
+            " chunk_id    INTEGER REFERENCES chunks(id) ON DELETE SET NULL,"
+            " score       REAL,"
+            " page        INTEGER,"
+            " paragraph   INTEGER,"
+            " excerpt     TEXT    NOT NULL,"
+            " source_snapshot TEXT"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO chat_sources"
+            " (id, chat_id, document_id, chunk_id, score, page, paragraph, excerpt, source_snapshot)"
+            " SELECT id, chat_id, document_id, chunk_id, score, page, paragraph, excerpt, "
+            + ("source_snapshot" if "source_snapshot" in columns else "NULL") +
+            " FROM chat_sources_legacy"
+        )
+        conn.execute("DROP TABLE chat_sources_legacy")
+        if sequence is not None:
+            conn.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='chat_sources'", (sequence[0],))
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_sources_chat ON chat_sources(chat_id)")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _ensure_chat_source_snapshot_column(conn: sqlite3.Connection) -> None:
+    """旧记录不补写全文或当时元数据；NULL 明确代表旧版摘录。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_sources)")}
+    if "source_snapshot" not in columns:
+        conn.execute("ALTER TABLE chat_sources ADD COLUMN source_snapshot TEXT")
 
 
 def _ensure_chat_metric_columns(conn: sqlite3.Connection) -> None:
@@ -274,6 +389,18 @@ def _ensure_document_metadata_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN effective_date TEXT")
     if "tags" not in columns:
         conn.execute("ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+    if "source_metadata" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN source_metadata TEXT")
+    if "lifecycle" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle IN ('active','archived'))")
+    if "replacement_document_id" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN replacement_document_id INTEGER REFERENCES documents(id) ON DELETE SET NULL")
+    if "applicability" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN applicability TEXT NOT NULL DEFAULT ''")
+    if "device" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN device TEXT NOT NULL DEFAULT ''")
+    if "caption" not in columns:
+        conn.execute("ALTER TABLE documents ADD COLUMN caption TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_user_permission_columns(conn: sqlite3.Connection) -> None:
@@ -294,6 +421,8 @@ def _ensure_conversation_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chats ADD COLUMN conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE")
     if "turn_index" not in columns:
         conn.execute("ALTER TABLE chats ADD COLUMN turn_index INTEGER NOT NULL DEFAULT 1")
+    if "followup_context" not in columns:
+        conn.execute("ALTER TABLE chats ADD COLUMN followup_context TEXT")
 
     legacy = conn.execute(
         "SELECT id, user_id, question, created_at FROM chats "

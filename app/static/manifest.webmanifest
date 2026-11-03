@@ -5,11 +5,11 @@
   "start_url": "/app",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f4f6fa",
-  "theme_color": "#101d36",
+  "background_color": "#07101f",
+  "theme_color": "#07101f",
   "icons": [
     {
-      "src": "/static/icons/icon.svg",
+      "src": "/static/icons/icon.svg?v=dark-workbench-20261025",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

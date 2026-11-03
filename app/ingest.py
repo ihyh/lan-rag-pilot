@@ -13,10 +13,11 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import parse_runner, parsing
+from . import audit, log_content, parse_runner, parsing
+from .source_metadata import parse_metadata
 from .chunking import TokenizerAdapter, chunk_units
 from .config import settings
-from .db import now_iso
+from .db import atomic, now_iso
 from .embeddings import EmbeddingUnavailable, embedding_service
 from .index import vector_index
 
@@ -35,6 +36,25 @@ def _fetch_doc(db: sqlite3.Connection, doc_id: int):
     return db.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
 
 
+OCR_PAGE_TAG_PREFIXES = (
+    "ocr_ok_pages=",
+    "ocr_suspect_pages=",
+    "ocr_failed_pages=",
+)
+
+
+def _is_ocr_imported(doc) -> bool:
+    """OCR 导入结果不能走普通重建：普通解析会重新加入 failed 页并丢失页状态。"""
+    try:
+        tags = json.loads((doc["tags"] if doc is not None else "") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        tags = []
+    return any(
+        isinstance(tag, str) and tag.startswith(OCR_PAGE_TAG_PREFIXES)
+        for tag in (tags if isinstance(tags, list) else [])
+    )
+
+
 def doc_dict(row) -> dict:
     item = dict(row)
     try:
@@ -42,6 +62,7 @@ def doc_dict(row) -> dict:
     except (TypeError, json.JSONDecodeError):
         tags = []
     item["tags"] = tags if isinstance(tags, list) else []
+    item['source_metadata'] = parse_metadata(item.get('source_metadata'))
     return item
 
 
@@ -94,6 +115,8 @@ def register_bytes(
     effective_date: str | None = None,
     tags: list[str] | None = None,
     visibility: str = "shared",
+    ocr_image: bool = False,
+    log_text: bool = False,
 ) -> tuple[dict, str]:
     """校验并登记文件为 parsing；耗时索引由调用方随后串行执行。"""
     if not data:
@@ -104,10 +127,27 @@ def register_bytes(
         )
 
     try:
-        ext = parsing.detect_ext(filename)      # 扩展名白名单
-        kind = parsing.EXTENSIONS[ext]
-        parsing.check_mime(content_type)        # MIME 白名单（octet-stream 放行，靠魔数把关）
-        parsing.check_magic(kind, data)         # 魔数校验
+        if log_text:
+            ext = Path(filename).suffix.lower()
+            kind = 'log'
+            if ext not in ('.log','.txt') or (content_type or '').split(';')[0].strip().lower() not in ('','text/plain','application/octet-stream'):
+                raise IngestError('日志模式仅支持纯文本LOG或TXT原件',422,'log_type_invalid')
+        elif ocr_image:
+            ext = Path(filename).suffix.lower()
+            kind = 'image'
+            expected = {'.png':('image/png',b'\x89PNG\r\n\x1a\n'),
+                        '.jpg':('image/jpeg',b'\xff\xd8\xff'),'.jpeg':('image/jpeg',b'\xff\xd8\xff')}.get(ext)
+            if expected is None or len(data)>10*1024*1024:
+                raise IngestError('图片OCR仅支持10MB内PNG/JPEG',code='ocr_image_invalid')
+            if not data.startswith(expected[1]) or (content_type or '').split(';')[0].lower() not in ('',expected[0],'application/octet-stream'):
+                raise IngestError('图片扩展名、MIME与文件头不一致',code='ocr_image_invalid')
+            content_type=expected[0]
+            # Full decode/pixel/frame checks run in the bounded OCR subprocess before review/index.
+        else:
+            ext = parsing.detect_ext(filename)      # 扩展名白名单
+            kind = parsing.EXTENSIONS[ext]
+            parsing.check_mime(content_type)        # MIME 白名单（octet-stream 放行，靠魔数把关）
+            parsing.check_magic(kind, data)         # 魔数校验
     except parsing.ParseError as exc:
         raise IngestError(exc.message, code=exc.code) from exc
 
@@ -158,11 +198,10 @@ def register_bytes(
                 now,
             ),
         )
-    except sqlite3.IntegrityError as exc:
+    except BaseException as exc:
         upload_path.unlink(missing_ok=True)
-        dup = db.execute(
-            "SELECT id, filename, status FROM documents WHERE sha256=?", (sha256,)
-        ).fetchone()
+        dup = (db.execute("SELECT id, filename, status FROM documents WHERE sha256=?", (sha256,)).fetchone()
+               if isinstance(exc, sqlite3.IntegrityError) else None)
         if dup:
             raise IngestError(
                 f"文件内容重复（SHA-256 相同）：已存在文档 #{dup['id']}《{dup['filename']}》"
@@ -243,41 +282,70 @@ def _index_document(db: sqlite3.Connection, doc_id: int, kind: str) -> dict:
     return doc_dict(_fetch_doc(db, doc_id))
 
 
-def reindex_document(db: sqlite3.Connection, doc_id: int) -> dict:
+def reindex_document(db: sqlite3.Connection, doc_id: int, *, user=None, ip='') -> dict:
     """删除旧切片后按原文件重新解析/切块/向量化。"""
     doc = _fetch_doc(db, doc_id)
     if doc is None:
         raise IngestError("文档不存在", status_code=404, code="not_found")
+    if doc['source_metadata'] is not None:
+        from . import log_ingest, web_import
+        metadata = parse_metadata(doc['source_metadata'])
+        if metadata is None:
+            raise IngestError('来源元数据损坏，不能按普通文本重建',409,'source_metadata_invalid')
+        service = log_ingest if metadata['kind']=='log' else web_import
+        return service.reindex_document(db,doc,user=user,ip=ip)
+    if log_content.is_log_document(doc):
+        raise IngestError('日志缺少来源元数据，不能按普通文本重建',409,'log_metadata_invalid')
+    if any(isinstance(tag, str) and tag.startswith('web_') for tag in doc_dict(doc)['tags']):
+        raise IngestError('旧网页快照缺少来源元数据，请重新导入；不能按普通文本重建', 409, 'web_metadata_invalid')
+    if 'image_text_direct' in doc_dict(doc)['tags']:
+        raise IngestError('图片说明已建立索引，请使用编辑图片说明更新',409,'image_text_reindex_blocked')
+    if _is_ocr_imported(doc) or db.execute('SELECT 1 FROM ocr_jobs WHERE document_id=?',(doc_id,)).fetchone():
+        raise IngestError(
+            "该文档由 OCR 结果导入，普通重建索引会重新启用失败页并丢失 OCR 页状态。"
+            "请重新运行 OCR 预处理并导入新结果。",
+            status_code=409,
+            code="ocr_reindex_blocked",
+        )
     _ready_or_raise()
     kind = parsing.EXTENSIONS[Path(doc["stored_name"]).suffix.lower()]
-    db.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
-    db.execute(
-        "UPDATE documents SET status='parsing', error=NULL, num_chunks=0, updated_at=? WHERE id=?",
-        (now_iso(), doc_id),
-    )
     try:
-        return _index_document(db, doc_id, kind)
+        with atomic(db):
+            db.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
+            db.execute(
+                "UPDATE documents SET status='parsing', error=NULL, num_chunks=0, updated_at=? WHERE id=?",
+                (now_iso(), doc_id),
+            )
+            result = _index_document(db, doc_id, kind)
+            if user is not None:
+                audit.log_audit(db,action='doc_reindex',user_id=user.id,username=user.username,
+                                detail=f"doc:{doc_id} 文件:{doc['filename']} 切片数:{result['num_chunks']}",ip=ip)
+        return result
     except parsing.ParseError as exc:
-        _fail_doc(db, doc_id, exc.message)
+        vector_index.reload(db)
         raise IngestError(exc.message, code=exc.code) from exc
-    except EmbeddingUnavailable as exc:
-        _fail_doc(db, doc_id, str(exc))
+    except EmbeddingUnavailable:
+        vector_index.reload(db)
         raise
     except Exception as exc:  # noqa: BLE001
-        _fail_doc(db, doc_id, f"内部错误：{exc.__class__.__name__}")
+        vector_index.reload(db)
         raise IngestError(
             "重新索引失败，请稍后重试", status_code=500, code="internal"
         ) from exc
 
 
-def delete_document(db: sqlite3.Connection, doc_id: int) -> dict:
+def delete_document(db: sqlite3.Connection, doc_id: int, *, user=None, ip='') -> dict:
     """删除文档及其切片与存储文件，并重建内存索引。"""
     doc = _fetch_doc(db, doc_id)
     if doc is None:
         raise IngestError("文档不存在", status_code=404, code="not_found")
     upload_path = settings.upload_dir / doc["stored_name"]
-    db.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
-    db.execute("DELETE FROM documents WHERE id=?", (doc_id,))
+    with atomic(db):
+        db.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
+        db.execute("DELETE FROM documents WHERE id=?", (doc_id,))
+        if user is not None:
+            audit.log_audit(db,action='doc_delete',user_id=user.id,username=user.username,
+                            detail=f"doc:{doc_id} 文件:{doc['filename']}",ip=ip)
     upload_path.unlink(missing_ok=True)
     vector_index.reload(db)
     return {"id": int(doc["id"]), "filename": doc["filename"]}

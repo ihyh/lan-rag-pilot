@@ -2,134 +2,134 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>问答 · 个人知识库</title>
-<meta name="theme-color" content="#101d36">
-<link rel="manifest" href="/static/manifest.webmanifest">
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/css/app.css">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>问答工作台 · 个人知识库</title>
+<meta name="theme-color" content="#07101f">
+<link rel="manifest" href="/static/manifest.webmanifest?v=dark-workbench-20261025">
+<link rel="icon" href="/static/favicon.svg?v=dark-workbench-20261025" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css?v=function-bar-20261102">
 </head>
 <body class="app-body">
-
-<!-- 顶部导航 -->
 <header class="topnav" id="topnav">
   <div class="nav-inner">
     <a class="brand" href="/app">
-      <img class="brand-mark" src="/static/icons/icon.svg" alt="个人知识库">
-      <span class="brand-name">个人知识库</span>
+      <img class="brand-mark" src="/static/icons/icon.svg?v=dark-workbench-20261025" alt="">
+      <span class="brand-name">个人知识库<span class="brand-caption">PERSONAL KNOWLEDGE</span></span>
     </a>
-    <button class="btn btn-icon nav-toggle" id="navToggle" type="button"
-            aria-label="展开菜单" aria-expanded="false" aria-controls="navMenu"></button>
+    <button class="btn btn-icon nav-toggle" id="navToggle" type="button" aria-label="展开菜单" aria-expanded="false" aria-controls="navMenu"></button>
     <div class="nav-menu" id="navMenu">
-      <nav class="nav-links">
-        <a class="nav-link is-active" href="/app" id="appLink">问答</a>
-        <a class="nav-link" href="/admin" id="adminLink" hidden>管理</a>
-      </nav>
       <div class="nav-user">
         <button class="user-chip" id="userChip" type="button" aria-label="查看我的权限" title="查看我的权限"></button>
         <button class="btn btn-ghost-light" id="chgPwdBtn" type="button">修改密码</button>
         <button class="btn btn-ghost-light" id="logoutBtn" type="button">退出登录</button>
       </div>
+      <div class="function-nav">
+        <span class="function-label">功能导航</span>
+        <nav class="nav-links" aria-label="功能导航">
+          <a class="nav-link is-active" href="/app" id="appLink" aria-current="page">问答工作台</a>
+          <a class="nav-link" href="/admin" id="adminLink" hidden>资料管理</a>
+          <a class="nav-link" href="/library" id="libraryLink" hidden>查资料</a>
+          <a class="nav-link" href="/admin?view=users" id="usersLink" hidden>用户与权限</a>
+        </nav>
+      </div>
     </div>
   </div>
 </header>
-
-<!-- 模型未就绪提示 -->
 <div class="banner warn hidden" id="meNotice" role="alert"></div>
-
-<!-- 主体：左历史 / 右问答 -->
 <main class="layout-app" id="appLayout">
-
-  <aside class="history-pane" aria-label="对话记录">
-    <div class="pane-head">
-      <h2 class="pane-title"><span id="historyIcon"></span>对话记录</h2>
+  <details class="history-pane" id="historyPanel" open>
+    <summary class="panel-summary"><span class="pane-title"><span id="historyIcon"></span>对话记录</span><span class="panel-chevron" aria-hidden="true">⌄</span></summary>
+    <div class="history-body">
       <div class="pane-actions">
-        <button class="btn btn-danger-outline btn-sm" id="deleteChatBtn" type="button" disabled>删除选中</button>
-        <button class="btn btn-outline btn-sm" id="newChatBtn" type="button">新建对话</button>
+        <button class="btn btn-primary btn-block" id="newChatBtn" type="button">＋ 新建对话</button>
+        <button class="btn btn-ghost btn-sm" id="deleteChatBtn" type="button" disabled>删除选中对话</button>
       </div>
+      <div class="history-pager">
+        <nav class="history-pages" id="historyPages" aria-label="对话记录页码"></nav>
+        <span id="historyPageStatus" class="small muted" role="status" aria-live="polite"></span>
+      </div>
+      <div class="history-scroll" id="historyScroll">
+        <div class="history-list" id="historyList"></div>
+        <div class="empty hidden" id="historyEmpty"><span id="historyEmptyIcon"></span><p>还没有对话记录</p><p class="empty-tip">从一个问题开始积累</p></div>
+        <div class="list-loading" id="historyLoading"><span class="spin spin-lg"></span></div>
+      </div>
+      <div class="pane-foot" id="historyFoot"></div>
+      <p class="history-tip">每次打开都是新对话。<br>需要继续时，点选上方历史记录。</p>
     </div>
-    <div class="history-scroll" id="historyScroll">
-      <div class="history-list" id="historyList"></div>
-      <div class="empty hidden" id="historyEmpty">
-        <span id="historyEmptyIcon"></span>
-        <p>还没有对话记录</p>
-        <p class="empty-tip">在右侧输入框提出第一个问题吧</p>
-      </div>
-      <div class="list-loading" id="historyLoading">
-        <span class="spin spin-lg"></span>
-      </div>
-    </div>
-    <div class="pane-foot" id="historyFoot"></div>
-  </aside>
-
-  <section class="chat-pane" aria-label="问答区">
+  </details>
+  <section class="chat-pane" aria-label="问答工作台">
+    <div class="chat-topline"><div class="chat-topline-heading"><span class="chat-topline-title">问答工作台</span><span class="chat-topline-note">基于资料回答，支持核对来源</span></div><div class="chat-topline-actions"><button class="btn btn-outline btn-sm" id="quickNewChatBtn" type="button">＋ 新建对话</button></div></div>
     <div class="chat-scroll" id="chatScroll">
       <div class="chat-greeting" id="chatGreeting">
-        <span id="greetIcon"></span>
-        <h2>开始提问</h2>
-        <p>输入您的问题，助手将检索知识库文档并结合大模型作答</p>
-        <p class="small">回答下方会展示引用来源，便于核对原文</p>
-        <p class="small">设备按钮会替换下方「检索范围」中的手选文档；范围在输入框上方可见</p>
-        <div class="suggestions" role="group" aria-label="选择提问设备">
+        <span class="greeting-emblem" id="greetIcon"></span>
+        <p class="eyebrow">设备资料问答</p>
+        <h1>查询设备资料</h1>
+        <p>输入设备型号、故障代码或操作问题。<br>回答后可查看引用来源，核对原文。</p>
+        <div class="greeting-divider"></div>
+        <div class="device-choice">
+          <p class="greeting-step">选择设备（可选）</p>
+          <div class="suggestions" role="group" aria-label="选择提问设备">
           <button class="suggestion" type="button" data-device="PLM" aria-pressed="false" disabled>PLM</button>
-          <button class="suggestion" type="button" data-device="PLUSPRO" aria-pressed="false" disabled>PLUSPRO</button>
-          <button class="suggestion" type="button" data-device="PLUS500" aria-pressed="false" disabled>PLUS500</button>
+          <button class="suggestion" type="button" data-device="Plus_500" aria-pressed="false" disabled>Plus_500</button>
+          <button class="suggestion" type="button" data-device="Plus_Pro" aria-pressed="false" disabled>Plus_Pro</button>
           <button class="suggestion" type="button" data-device="LP" aria-pressed="false" disabled>LP</button>
+          </div>
+          <p class="small" id="deviceScopeHint" role="status">正在加载设备文档…</p>
         </div>
-        <p class="small" id="deviceScopeHint" role="status">正在加载设备文档…</p>
       </div>
       <div class="messages hidden" id="messages" aria-live="polite" aria-atomic="false"></div>
     </div>
-
     <div class="composer card">
+      <button class="composer-scope" id="openSourcesBtn" type="button" aria-controls="libraryPanel"><span>检索资料</span><span id="composerScope">全库检索</span><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 17h16"/><path d="M8 4v6M16 14v6"/></svg></button>
+      <div class="scope-warn followup-notice hidden" id="followupNotice" role="status"></div>
+      <label class="sr-only" for="questionInput">输入你的问题</label>
+      <textarea id="questionInput" rows="2" maxlength="2000" placeholder="例如：Plus_Pro 的 Mapping 操作步骤是什么？"></textarea>
+      <div class="composer-bar">
+        <span class="composer-hint">Enter 发送 · Ctrl+Enter 换行 <span id="questionCount">0 / 2000</span></span>
+        <button class="btn hidden" id="stopBtn" type="button">停止生成</button>
+        <button class="btn btn-primary btn-send" id="sendBtn" type="button">发送</button>
+      </div>
+    </div>
+    <p class="answer-disclaimer">回答可能存在偏差，请以引用原文为准。</p>
+  </section>
+  <details class="library-pane" id="libraryPanel" tabindex="-1" open>
+    <summary class="panel-summary"><span class="pane-title"><span id="scopeIcon"></span>检索资料</span><span class="scope-badge is-all" id="documentScopeValue" role="status">全库检索</span><span class="panel-chevron" aria-hidden="true">⌄</span></summary>
+    <div class="library-content" id="libraryContent">
       <div class="scope-card" id="documentScope">
-        <div class="scope-head">
-          <span class="scope-title"><span id="scopeIcon"></span>检索范围</span>
-          <span class="scope-badge is-all" id="documentScopeValue" role="status">全库检索</span>
-        </div>
         <div class="scope-modes" role="radiogroup" aria-label="检索范围模式">
-          <label class="scope-mode is-active" id="scopeModeAllLabel">
-            <input type="radio" name="scopeMode" id="scopeModeAll" value="all" checked>
-            <span>全库检索</span>
-          </label>
-          <label class="scope-mode" id="scopeModeSelectedLabel">
-            <input type="radio" name="scopeMode" id="scopeModeSelected" value="selected">
-            <span>仅选中文档</span>
-          </label>
+          <label class="scope-mode is-active" id="scopeModeAllLabel"><input type="radio" name="scopeMode" id="scopeModeAll" value="all" checked><span>全库检索</span></label>
+          <label class="scope-mode" id="scopeModeSelectedLabel"><input type="radio" name="scopeMode" id="scopeModeSelected" value="selected"><span>仅选中文档</span></label>
         </div>
-        <p class="scope-hint" id="documentScopeHint">全库检索：在你可见的全部已就绪文档中查找。</p>
+        <p class="scope-hint" id="documentScopeHint">检索全部可见资料，首问后固定范围。</p>
         <p class="scope-warn hidden" id="documentScopeWarn" role="alert"></p>
-        <div class="scope-body" id="documentScopeBody">
-          <div class="scope-toolbar">
-            <input class="scope-search" type="search" id="documentScopeSearch"
-                   placeholder="按文件名搜索" autocomplete="off" aria-label="按文件名搜索文档">
-            <button class="scope-btn" type="button" id="documentScopeSelectAll">全选筛选结果</button>
-            <button class="scope-btn" type="button" id="documentScopeClear">清空已选</button>
-            <button class="scope-btn" type="button" id="documentScopeReload" title="重新加载文档列表" aria-label="重新加载文档列表">刷新</button>
+        <div class="scope-body hidden" id="documentScopeBody">
+          <div class="scope-search-row">
+            <input class="scope-search" type="search" id="documentScopeSearch" placeholder="搜索文件名、版本或适用范围" autocomplete="off" aria-label="按文件名、版本或适用范围搜索文档">
+            <button class="scope-btn scope-reload" type="button" id="documentScopeReload" title="重新加载文档列表" aria-label="重新加载文档列表"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg></button>
           </div>
-          <p class="scope-selected" id="documentScopeSelected" role="status">尚未选择文档</p>
-          <div class="scope-chips" id="documentScopeChips"></div>
+          <div class="scope-toolbar">
+            <p class="scope-selected" id="documentScopeSelected" role="status">尚未选择文档</p>
+            <div class="scope-actions">
+              <button class="scope-btn" type="button" id="documentScopeSelectAll">全选</button>
+              <button class="scope-btn" type="button" id="documentScopeClear">清空</button>
+            </div>
+          </div>
+          <div class="scope-chips" id="documentScopeChips" role="group" aria-label="筛选外或不可用的已选文档"></div>
           <div class="document-scope-options" id="documentScopeOptions" role="group" aria-label="限定检索文档"></div>
           <p class="scope-error hidden" id="documentScopeError" role="alert"></p>
-          <p class="scope-tip">搜索只影响下方列表显示，不会取消已勾选的文档；「全选筛选结果」只添加当前搜索结果；「清空已选」会清掉全部已选。不勾选任何文档时不会发送问题，也不会自动改回全库检索。最多可选 100 个文档。</p>
+          <details class="scope-help"><summary>选择说明</summary><p class="scope-tip">文件名完整显示。搜索保留已选文档，全选只添加当前筛选结果；清空会移除全部选择。至少选择1份，最多100份。首次提问后，本对话范围固定。</p></details>
         </div>
         <div class="scope-lock hidden" id="documentScopeLock">
           <span class="lock-text" id="documentScopeLockText">本对话的检索范围已固定，不能在中途修改。</span>
           <button class="btn btn-outline btn-sm" type="button" id="documentScopeNewChat">新建对话以更换范围</button>
         </div>
       </div>
-      <textarea id="questionInput" rows="2" maxlength="2000"
-                placeholder="请输入问题（Enter 发送，Ctrl+Enter 换行）"></textarea>
-      <div class="composer-bar">
-        <span class="composer-hint">Enter 发送 · Ctrl+Enter 换行 · <span id="questionCount">0 / 2000</span></span>
-        <button class="btn hidden" id="stopBtn" type="button">停止生成</button>
-        <button class="btn btn-primary btn-send" id="sendBtn" type="button">发送</button>
-      </div>
     </div>
-  </section>
+    <div class="library-footer"><button class="btn btn-primary btn-block" id="finishSelectionBtn" type="button">返回提问</button></div>
+  </details>
 </main>
-
-<script src="/static/js/common.js"></script>
-<script src="/static/js/app.js?v=scope-mode-1"></script>
+<script src="/static/js/common.js?v=users-module-20261102"></script>
+<script src="/static/js/answer-format.js?v=answer-layout-20261101"></script>
+<script src="/static/js/app.js?v=answer-layout-20261101"></script>
 </body>
 </html>

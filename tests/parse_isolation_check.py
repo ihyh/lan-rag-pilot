@@ -61,7 +61,8 @@ def child_hang_after_partial_send(conn) -> None:
     随后的 recv() 会无限期等剩下的字节——这正是不能只用 poll+recv 的原因。
     Windows 的管道是消息模式，一次 send 就是一条完整消息，不存在"半个消息"状态。
     """
-    conn.send_bytes(b"\x80\x05")  # 声明协议 5，但没有 STOP 结束符
+    # send_bytes 会发送完整帧，recv 会立即报反序列化错误；这里必须只写帧头和部分正文。
+    os.write(conn.fileno(), b"\x00\x00\x00\x10\x80\x05")  # 声明 16 字节，只发送 2 字节
     time.sleep(3600)
 
 

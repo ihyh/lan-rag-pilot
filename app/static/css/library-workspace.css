@@ -1,0 +1,88 @@
+/* 查资料页：保留现有主题，统一两栏与检索工作区的排版。 */
+.library-workspace .quality-shell {
+  --workspace-height: clamp(460px, calc(100dvh - 240px), 660px);
+  max-width: 1540px; padding: 28px clamp(20px, 3vw, 44px) 40px;
+}
+.library-workspace .quality-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 24px; padding: 4px 0 24px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+.library-workspace .quality-heading-content { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.library-workspace .quality-heading-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 48px; height: 48px; border-radius: 12px; background: var(--primary-soft); color: var(--primary); }
+.library-workspace .quality-heading-icon .ic { width: 23px; height: 23px; }
+.library-workspace .quality-heading-copy { min-width: 0; }
+.library-workspace .quality-heading h1 { font-size: clamp(23px, 1.8vw, 28px); line-height: 1.35; overflow-wrap: anywhere; }
+.library-workspace .quality-heading p { max-width: 800px; margin-top: 8px; font-size: 15px; }
+.library-workspace .quality-back-link { min-height: 44px; padding-inline: 16px; gap: 8px; margin: 0; }
+.library-workspace .quality-grid { grid-template-columns: 304px minmax(0, 1fr); gap: 24px; }
+.library-workspace .quality-docs {
+  position: sticky; top: 24px; height: var(--workspace-height); padding: 20px 16px 12px; gap: 14px;
+}
+.library-workspace .quality-docs .panel-head { padding: 0 4px; }
+.library-workspace .quality-doc-tools { padding: 0 4px; }
+.library-workspace .quality-doc-list {
+  flex: 1; min-height: 0; max-height: none; scrollbar-gutter: stable; overscroll-behavior: contain;
+}
+.library-workspace .quality-doc { padding: 12px 10px; }
+.library-workspace .quality-doc-name { font-size: 15px; line-height: 1.55; }
+.library-workspace .quality-doc.is-active { border-color: var(--primary); background: var(--primary-soft); }
+.library-workspace .scope-search { font-size: 15px; height: 44px; }
+.library-workspace .quality-main { min-height: var(--workspace-height); overflow: hidden; }
+.library-workspace .quality-toolbar {
+  padding: 16px 24px; margin: 0; border-bottom: 1px solid var(--border); background: var(--bg);
+}
+.library-workspace .quality-switch { gap: 4px; }
+.library-workspace .quality-switch .btn { min-height: 42px; padding-inline: 18px; }
+.library-workspace .quality-switch .btn-outline { border-color: transparent; background: transparent; color: var(--muted); }
+.library-workspace .quality-switch .btn-outline:hover { color: var(--primary); background: var(--primary-soft); }
+.library-workspace #qualityScope {
+  margin: 0; padding: 14px 24px; flex: none; border-bottom: 1px solid var(--border);
+  font-size: 14px; line-height: 1.7; overflow-wrap: anywhere;
+}
+.library-workspace .quality-panel { padding: 24px; min-width: 0; }
+.library-workspace .quality-panel-heading { margin-bottom: 24px; }
+.library-workspace .quality-panel-heading h2 { font-size: 20px; }
+.library-workspace .quality-panel-heading p { font-size: 15px; margin-top: 6px; }
+.library-workspace .quality-search-form { grid-template-columns: minmax(0, 1fr) 176px auto; margin-bottom: 18px; }
+.library-workspace .quality-search-form .input,
+.library-workspace .quality-search-form .btn { height: 46px; font-size: 15px; }
+.library-workspace .quality-search-form .field-label { font-size: 15px; margin-bottom: 8px; }
+.library-workspace .quality-search-options { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px 24px; }
+.library-workspace .quality-search-options .check-item { flex: 1 1 300px; align-items: flex-start; padding: 0; line-height: 1.7; }
+.library-workspace .quality-search-options .check-item input { flex: none; margin-top: 4px; }
+.library-workspace .quality-search-help { margin: 0; }
+.library-workspace .quality-search-help[open] { flex-basis: 100%; }
+.library-workspace .quality-search-help p { padding: 12px 14px; border-radius: 8px; background: var(--bg); }
+.library-workspace .quality-search-output { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--border); min-width: 0; }
+.library-workspace .quality-results-title { font-size: 16px; margin-bottom: 12px; }
+.library-workspace .quality-result-status { margin: 0; padding: 18px; border: 1px dashed var(--border-strong); background: var(--bg); line-height: 1.8; }
+.library-workspace .quality-file-groups { min-width: 0; }
+.library-workspace .quality-file-groups > button { max-width: 100%; text-align: left; overflow-wrap: anywhere; }
+.library-workspace .quality-file-heading { overflow-wrap: anywhere; }
+.library-workspace #qualityCheckAllResults:not(:empty) { margin-top: 18px; }
+@media (max-width: 1100px) and (min-width: 901px) {
+  .library-workspace .quality-grid { grid-template-columns: 260px minmax(0, 1fr); gap: 18px; }
+  .library-workspace .quality-search-form { grid-template-columns: minmax(0, 1fr) auto; }
+  .library-workspace .quality-search-form .field:first-child { grid-column: 1 / -1; }
+}
+@media (max-width: 900px) {
+  .library-workspace .quality-shell { padding: 22px 16px 32px; }
+  .library-workspace .quality-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .library-workspace .quality-docs { position: static; height: auto; padding: 18px 14px 12px; }
+  .library-workspace .quality-doc-list { flex: auto; max-height: 240px; }
+  .library-workspace .quality-main { min-height: 0; }
+  .library-workspace .quality-toolbar { padding: 14px 18px; }
+  .library-workspace #qualityScope { padding: 12px 18px; }
+  .library-workspace .quality-panel { padding: 20px 18px; }
+  .library-workspace .quality-search-form { grid-template-columns: minmax(0, 1fr) auto; }
+  .library-workspace .quality-search-form .input { font-size: 16px; }
+}
+@media (max-width: 560px) {
+  .library-workspace .quality-heading { grid-template-columns: minmax(0, 1fr); gap: 18px; padding-bottom: 20px; }
+  .library-workspace .quality-heading-content { gap: 12px; align-items: flex-start; }
+  .library-workspace .quality-heading-icon { width: 40px; height: 40px; border-radius: 10px; }
+  .library-workspace .quality-back-link { justify-self: start; }
+  .library-workspace .quality-heading h1 { font-size: 24px; }
+  .library-workspace .quality-switch { width: 100%; }
+  .library-workspace .quality-switch .btn { flex: 1; padding-inline: 12px; }
+  .library-workspace .quality-search-form { grid-template-columns: minmax(0, 1fr); }
+  .library-workspace .quality-search-form .field:first-child { grid-column: auto; }
+  .library-workspace .quality-search-options .check-item { flex-basis: 100%; }
+}

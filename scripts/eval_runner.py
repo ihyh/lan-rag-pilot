@@ -35,6 +35,12 @@ def load_cases(path: Path, min_cases: int = 30) -> list[dict[str, Any]]:
             raise ValueError(f"第 {line_no} 行不是合法 JSON: {exc.msg}") from exc
         if not isinstance(item, dict):
             raise ValueError(f"第 {line_no} 行必须是 JSON 对象")
+        if (str(item.get("format", "")).startswith("feedback-regression-candidate-")
+                or item.get("runnable_eval_case") is False
+                or item.get("requires_source_revalidation") is True):
+            raise ValueError(f"第 {line_no} 行仍是需人工核对的回归候选，禁止直接执行")
+        if item.get("format") == "rag-eval-v2":
+            raise ValueError(f"第 {line_no} 行请使用 scripts/isolated_replay.py 保留明确文档范围")
         required = {"id", "question", "expected_answer", "expected_sources", "should_refuse"}
         missing = sorted(required - item.keys())
         if missing:
@@ -78,6 +84,21 @@ def _same_location(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     actual_name = str(actual.get("filename", "")).strip().casefold()
     if expected_name != actual_name:
         return False
+    if expected.get('location_kind') == 'image_caption':
+        snapshot = actual.get('source_snapshot') or {}
+        return (expected.get('document_id') == actual.get('document_id')
+                and expected.get('chunk_id') == actual.get('chunk_id')
+                and isinstance(snapshot, dict) and snapshot.get('source_kind') == 'image'
+                and snapshot.get('image_caption_only') is True
+                and snapshot.get('document_sha256') == expected.get('sha256'))
+    expected_lines = [expected.get(key) for key in ("line_start", "line_end")]
+    if any(value is not None for value in expected_lines):
+        actual_lines = [actual.get(key) for key in ("line_start", "line_end")]
+        if (any(type(value) is not int or value <= 0 for value in expected_lines + actual_lines)
+                or expected_lines[0] > expected_lines[1] or actual_lines[0] > actual_lines[1]
+                or expected_lines != actual_lines
+                or any(item.get(key) is not None for item in (expected, actual) for key in ("page", "paragraph"))):
+            return False
     for key in ("page", "paragraph", "chunk_id"):
         value = expected.get(key)
         if value is not None and str(value) != str(actual.get(key)):

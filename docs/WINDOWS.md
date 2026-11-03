@@ -62,3 +62,10 @@ tailscale serve status
 支持文本 PDF、DOCX、XLSX、TXT、Markdown；扫描 PDF 需先 OCR，旧 `.doc` 需要可用的 antiword 或另存 DOCX。等待管理页显示处理完成再提问。旧文档采用新解析或切块时需显式重处理，事前备份；不要以拉取代码代替重建和质量验证。
 
 更多：[模型](MODELS.md) · [排查](TROUBLESHOOTING.md) · [备份](OPERATIONS.md)
+# 2026-10-27 当前个人站运维补记
+
+最终修复已上线；当前状态以[发布门槛](RELEASE_GATE.md)为准。个人站应用任务保留原开机/登录触发，另有`RagAvailabilityMinute20261027`原生每分钟补启动触发器，`IgnoreNew`保证已有实例时不重复拉起。该方案的隔离候选终止后约58秒恢复；仅配置RestartOnFailure的两次试验未恢复，结果均保留。它不是对真实开机/注销或Ollama恢复的验收。
+
+维护停服时先禁用`LAN RAG Pilot Personal`再停止任务，完成后恢复启用；否则分钟规则会补启动。不要按Python/Ollama进程名批量结束。LastResult可能因忽略重复请求显示`0x800710E0`，须结合包含隐藏任务的运行实例、监听PID与`/api/health`判断，不能单独将其解释为当前站点退出。
+
+安装目录只同步说明文档，不携带私人原件、数据库、凭据或完整测试证据。完整本机发布记录位于开发工作区`data/eval/reports/release-completion-20261027/`；安装副本文档中的历史证据相对链接仍指开发工作区对应位置。

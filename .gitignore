@@ -7,12 +7,6 @@
 data/
 models/
 backups/
-logs/
-
-# 本机规划与私有诊断记录不属于发布源码
-task_plan.md
-findings.md
-progress.md
 eval/reports/
 .smoke-data/
 .smoke-data*
@@ -34,3 +28,22 @@ __pycache__/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 快照补充（本地运行产物，不入库）
+.tmp-tests/
+.smoke-data*/
+.ops-check-phase34/
+.venv-ocr/
+logs/
+*.log
+
+# 清理备份（确认后可删）
+_cleanup-backup-*/
+
+# 本机开发计划、预览与构建产物
+.planning/
+node_modules/
+frontend/
+design-lab/
+app/static/design-lab/
+design.md

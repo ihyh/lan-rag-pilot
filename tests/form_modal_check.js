@@ -9,6 +9,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../app/static/js/common.js'), 'utf8');
 const appHtml = fs.readFileSync(path.join(__dirname, '../app/templates/app.html'), 'utf8');
 const adminHtml = fs.readFileSync(path.join(__dirname, '../app/templates/admin.html'), 'utf8');
+const usersHtml = fs.readFileSync(path.join(__dirname, '../app/templates/users.html'), 'utf8');
 const appCss = fs.readFileSync(path.join(__dirname, '../app/static/css/app.css'), 'utf8');
 const context = vm.createContext({ window: {}, document: {} });
 vm.runInContext(source, context);
@@ -75,11 +76,11 @@ async function main() {
   assert.equal(closeCount, 1);
 
   for (const role of ['root', 'kb_admin', 'user']) {
-    assert.match(adminHtml, new RegExp(`data-role-permission="${role}"`));
+    assert.match(usersHtml, new RegExp(`data-role-permission="${role}"`));
   }
-  assert.match(adminHtml, /创建、停用用户，重置密码和设置角色/);
-  assert.match(adminHtml, /上传、查看、重新处理和删除文档/);
-  assert.match(adminHtml, /不能管理文档、用户或系统设置/);
+  assert.match(usersHtml, /创建、停用用户，重置密码和设置角色/);
+  assert.match(usersHtml, /上传、查看、重新处理和删除文档/);
+  assert.match(usersHtml, /不能管理文档、用户或系统设置/);
   assert.match(appCss, /\.role-permission-grid\s*\{/);
 
   for (const html of [appHtml, adminHtml]) {

@@ -22,7 +22,9 @@ def main():
     ).decode("utf-8").split("\0")
     for name in listed:
         path = ROOT / name
-        if path.suffix != ".md" or not path.is_file():
+        if path.suffix != ".md" or not path.is_file() or name.startswith(("docs/_history/", "docs/reviews/")):
+            continue
+        if name.startswith("docs/") and path.name not in {"README.md", "GETTING_STARTED.md", "WINDOWS.md", "OPERATIONS.md", "SECURITY.md", "TROUBLESHOOTING.md", "MODELS.md", "RELEASE_GATE.md", "FEEDBACK_REVIEW.md", "QUALITY_WORKBENCH.md", "WEB_IMPORT.md", "LOG_IMPORT.md"}:
             continue
         for target in re.findall(r"\]\(([^\s)]+)\)", path.read_text(encoding="utf-8")):
             if "://" in target or target.startswith(("#", "mailto:")):

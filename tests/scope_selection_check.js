@@ -60,7 +60,7 @@ const docs = [
   { id: 2, filename: 'Beta 说明.pdf' },
   { id: 3, filename: 'Gamma 规格.txt' },
   { id: 4, filename: 'Delta 报价.xlsx' },
-  { id: 5, filename: 'PLM 操作手册.pdf' }
+  { id: 5, filename: 'PLM 操作手册.pdf', device: 'PLM' }
 ];
 const requests = [];
 let documentsFail = false;
@@ -85,7 +85,7 @@ const context = vm.createContext({
   h(tag, attrs, children) {
     const el = Object.assign(element(), attrs);
     (children || []).forEach(child => {
-      if (child && typeof child === 'object') { el.children.push(child); }
+      if (child && typeof child === 'object') { el.children.push(child); el.textContent += child.textContent || ''; }
       else if (child !== null && child !== undefined) { el.textContent += String(child); }
     });
     return el;
@@ -192,13 +192,15 @@ async function main() {
   assert.deepEqual(Array.from(t.S.newDocumentIds), [1, 2]);
   assert.match(elements.documentScopeSelected.textContent, /已选 2 个文档/);
   assert.match(elements.documentScopeValue.textContent, /仅选中文档 · 2 个/);
-  assert.equal(elements.documentScopeChips.children.length, 2, '已选文档逐个显示');
+  assert.ok(checkboxFor(1).checked && checkboxFor(2).checked, '当前列表中的已选文档显示勾选');
+  assert.equal(elements.documentScopeChips.children.length, 0, '列表中已有的文档不重复显示为标签');
 
   // ---- 5. 文件名搜索只过滤显示，不清掉已勾选 ----
   setFilter('beta');
   assert.equal(t.S.docFilter, 'beta');
   assert.deepEqual(Array.from(t.S.newDocumentIds), [1, 2], '搜索不能丢失原来的勾选');
   assert.equal(optionRows().length, 1, '列表只剩匹配项');
+  assert.equal(elements.documentScopeChips.children.length, 1, '筛选外的已选文档仍显示为标签');
   assert.match(optionRows()[0].children[1].textContent, /Beta/);
   assert.equal(t.S.newDocumentIds.length, 2);
   assert.match(elements.documentScopeSelected.textContent, /已选 2 个文档/);

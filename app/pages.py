@@ -1,4 +1,4 @@
-"""服务端页面路由（登录 / 问答 / 管理三个页面 + 首页跳转）。"""
+"""服务端页面路由与首页跳转。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,21 +13,17 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 router = APIRouter()
 
 
-def _landing(user) -> str:
-    return "/admin" if user is not None and user.role in ("root", "kb_admin") else "/app"
-
-
 @router.get("/")
 def index(request: Request, user=Depends(current_user_or_none)):
     if user is None:
         return RedirectResponse("/login")
-    return RedirectResponse(_landing(user))
+    return RedirectResponse("/app")
 
 
 @router.get("/login")
 def login_page(request: Request, user=Depends(current_user_or_none)):
     if user is not None:
-        return RedirectResponse(_landing(user))
+        return RedirectResponse("/app")
     return templates.TemplateResponse(request, "login.html")
 
 
@@ -47,3 +43,14 @@ def admin_page(request: Request, user=Depends(current_user_or_none)):
     if user.role not in ("root", "kb_admin"):
         return RedirectResponse("/app")
     return templates.TemplateResponse(request, "admin.html")
+
+
+@router.get("/library")
+def library_page(request: Request, user=Depends(current_user_or_none)):
+    if user is None:
+        return RedirectResponse("/login")
+    if not user.is_active or user.role not in ("root", "kb_admin"):
+        return RedirectResponse("/app")
+    response = templates.TemplateResponse(request, "library.html")
+    response.headers["Cache-Control"] = "no-store"
+    return response

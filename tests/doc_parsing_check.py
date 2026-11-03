@@ -42,7 +42,7 @@ def main() -> None:
     project = Path(__file__).resolve().parents[1]
     admin_html = (project / "app/templates/admin.html").read_text(encoding="utf-8")
     admin_js = (project / "app/static/js/admin.js").read_text(encoding="utf-8")
-    assert 'accept=".pdf,.doc,.docx,.xlsx,.txt,.md"' in admin_html
+    assert 'accept=".pdf,.doc,.docx,.xlsx,.txt,.md,.png,.jpg,.jpeg"' in admin_html
     assert "仅在处理失败或检索异常时使用" in admin_html
     assert "重建索引" in admin_js and "不会重复上传文件" in admin_js
 

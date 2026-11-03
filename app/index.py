@@ -97,7 +97,11 @@ class VectorIndex:
             doc_id = int(r["document_id"])
             filenames[doc_id] = " ".join(r["filename"].casefold().split())
             if doc_id not in filename_terms:
-                filename_terms[doc_id] = set(technical_terms(Path(r["filename"]).stem))
+                stem = Path(r["filename"]).stem
+                filename_terms[doc_id] = set(technical_terms(stem))
+                # A version suffix is filename metadata; do not split body identifiers.
+                filename_terms[doc_id].update(re.findall(
+                    r"(?:^|_)(v[0-9]+(?:\.[0-9]+)+)(?=_|$)", stem.casefold()))
             if Path(r["filename"]).suffix.lower() == ".xlsx":
                 for sheet, row in re.findall(
                     r"工作表《([^》]+)》第\s*1\s*行：(.*?)(?=\n工作表《[^》]+》第\s*\d+\s*行：|$)",
