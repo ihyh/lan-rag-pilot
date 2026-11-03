@@ -2,7 +2,7 @@
 
 Store manuals, spreadsheets and images locally, retrieve supporting passages, and use Ollama to answer with citations. [中文说明](README.md)
 
-Status: **2026-11-02**. Production uses FastAPI/Jinja and vanilla JavaScript. Vue and visual redesign previews are not the production UI. Independent business acceptance is deferred; synthetic checks do not establish real-answer accuracy.
+A local knowledge base with document ingestion, source-backed chat, OCR review, document permissions and user management. The frontend uses FastAPI/Jinja and vanilla JavaScript.
 
 ## Screenshots
 
@@ -41,20 +41,10 @@ Inputs include PDF, DOCX, XLSX, TXT, Markdown and PNG/JPEG. Legacy DOC needs ant
 
 Web/log import, feedback export buttons and the MCP service are no longer supplied. Compatibility readers for older sources may remain. Automatic reuse of historical answers is not implemented.
 
-## Development checks
+## Distribution and updates
 
-Use Python 3.12 and Node.js 24 in an isolated environment:
-
-```powershell
-python -m pip install -r requirements-smoke.txt
-python tests/run_checks.py
-npm ci --prefix tests/ui
-npm test --prefix tests/ui
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/smoke_runner.ps1 -Python (Get-Command python).Source
-```
-
-Smoke tests use temporary data, mock models and ports 8090/8099, including persistence after restart. DOM tests are not visual acceptance. Optional OCR checks report missing dependencies as skips. Real-answer evaluation requires independently reviewed questions and source evidence; see the [evaluation workflow](eval/BUSINESS_EVAL_WORKFLOW.md).
+This repository distributes runtime source, setup and startup scripts, configuration examples, user documentation and demo screenshots. Tests, evaluation fixtures, development reviews and personal handover notes remain local and are not shipped with the product.
 
 Before updating, stop the service and back up complete `data` and `.env`. Save the revision, use `git pull --ff-only`, and run setup again. Do not overwrite local changes. Code updates do not automatically reparse existing documents.
 
-Private documents, credentials, databases, weights and previews are excluded. Use private HTTPS access rather than public exposure. One worker is supported; SSO, MFA and enterprise high availability are not supplied. See [operations](docs/OPERATIONS.md), [security](docs/SECURITY.md), [documentation](docs/README.md) and [roadmap](ROADMAP.md).
+Private documents, credentials, databases, weights and previews are excluded. Use private HTTPS access rather than public exposure. One worker is supported; SSO, MFA and enterprise high availability are not supplied. See [operations](docs/OPERATIONS.md), [security](docs/SECURITY.md), [documentation](docs/README.md).
