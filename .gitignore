@@ -47,3 +47,6 @@ frontend/
 design-lab/
 app/static/design-lab/
 design.md
+
+# 本机交接记录含运行状态与备份路径，不随源码发布
+HANDOVER-*.md

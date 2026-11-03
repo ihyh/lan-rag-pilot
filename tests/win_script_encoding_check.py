@@ -124,8 +124,10 @@ def main() -> None:
     # .sh 必须没有 BOM：BOM 会破坏 shebang，让脚本无法直接执行。
     print("\n== .sh 不得带 BOM（BOM 会破坏 shebang）==")
     sh_files = tracked_shell_files()
-    check(REPO / "tests/smoke_runner.sh" in sh_files, "包含公开 CI 冒烟脚本")
+    check(REPO / "tests/smoke_runner.sh" in sh_files and (REPO / "tests/smoke_runner.sh").is_file(), "包含公开 CI 冒烟脚本")
     for path in sh_files:
+        if not path.is_file():  # 已删除、尚未提交的索引项不应让检查崩溃
+            continue
         rel = path.relative_to(REPO).as_posix()
         raw = path.read_bytes()
         check(raw[:3] != BOM, f"{rel}：不带 BOM")
