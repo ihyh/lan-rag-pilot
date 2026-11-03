@@ -603,8 +603,12 @@ async function initSession(opts) {
   // 静态图标注入（保持 HTML 纯净，由 JS 统一放图标）
   var toggle = qs('#navToggle');
   if (toggle && !toggle.innerHTML) { toggle.innerHTML = icon('menu'); }
-  var appLink = qs('#appLink');
-  if (appLink && !appLink.firstChild) { appLink.insertBefore(h('span', { html: icon('chat') }), appLink.firstChild); }
+  [['appLink', 'chat'], ['adminLink', 'folder'], ['libraryLink', 'search'], ['usersLink', 'user']].forEach(function (item) {
+    var link = qs('#' + item[0]);
+    if (link && !link.querySelector('svg')) {
+      link.insertBefore(h('span', { class: 'nav-link-icon', html: icon(item[1]) }), link.firstChild);
+    }
+  });
   var adminLinkEl = qs('#adminLink');
   if (adminLinkEl) {
     adminLinkEl.hidden = !(root || kbAdmin);
