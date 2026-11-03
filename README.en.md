@@ -1,12 +1,12 @@
-# Windows Personal Knowledge Base
+# Personal Knowledge Base
 
 Store manuals, spreadsheets and images locally, retrieve supporting passages, and use Ollama to answer with citations. [中文说明](README.md)
 
-A local knowledge base with document ingestion, source-backed chat, OCR review, document permissions and user management. The frontend uses FastAPI/Jinja and vanilla JavaScript.
+For Windows 10/11, with support for individual use and team access.
 
 ## Screenshots
 
-Captured from an isolated demo using fictional accounts, sample documents and a mock answer. No local user data, private documents or image materials are included. Click an image to enlarge. These screenshots demonstrate the UI, not real-world answer accuracy.
+Demo screenshots use fictional documents and a mock answer. Click to enlarge.
 
 | Chat, citations and history | Document management and device metadata |
 | --- | --- |
@@ -14,11 +14,9 @@ Captured from an isolated demo using fictional accounts, sample documents and a 
 | **Keyword search and source passages** | **Users, roles and groups** |
 | [![Source search](docs/screenshots/source-search.jpg)](docs/screenshots/source-search.jpg) | [![Users and permissions](docs/screenshots/users.jpg)](docs/screenshots/users.jpg) |
 
-[Capture notes](docs/screenshots/README.md)
+## Quick start
 
-## Start
-
-Install Git for Windows, Python 3.12 and Ollama, then run:
+Install Git, Python 3.12 and [Ollama](https://ollama.com/download/windows). Start Ollama, then run in PowerShell:
 
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
@@ -26,25 +24,27 @@ cd C:\rag
 .\setup_windows.cmd
 ```
 
-Setup installs dependencies and models, generates configuration and an initial root password. Save the password shown by setup. Open `http://127.0.0.1:8088`. Subsequent starts use `start_windows.cmd`. Defaults are Ollama `qwen3:4b-instruct` and CPU BGE-small-zh-v1.5; existing configuration is retained. See the [Windows guide](docs/WINDOWS.md).
+The first setup needs an internet connection to download dependencies and models. Save the initial `root` password shown during setup.
 
-## Current capabilities
+Open **http://127.0.0.1:8088**, sign in, upload a document and wait for processing to finish. You can then ask questions.
 
-- Chat: accessible corpus or selected documents, device shortcuts, streaming answers, source inspection, feedback, and conversation history with 25 items per page.
-- Documents: upload, image descriptions, OCR review, device metadata, versions, lifecycle, access grants, inspection, reindexing and deletion.
-- Source search: literal keyword matching in indexed text and document inspection without answer generation.
-- Separate users and permissions page: root manages accounts, roles and groups; retrieval and source access enforce document permissions.
-- Feedback review: helpful feedback needs no review; issue feedback supports corrections, processing notes, manually selected sources and optional frozen replay metadata.
-- Management navigation supports deep links, reload and browser back/forward.
+For later starts, double-click `start_windows.cmd` in the installation folder.
 
-Inputs include PDF, DOCX, XLSX, TXT, Markdown and PNG/JPEG. Legacy DOC needs antiword. Image analysis requires a configured vision model and human verification. Device shortcuts use metadata rather than filename guesses.
+## Features
 
-Web/log import, feedback export buttons and the MCP service are no longer supplied. Compatibility readers for older sources may remain. Automatic reuse of historical answers is not implemented.
+| Feature | What you can do |
+| --- | --- |
+| Chat | Ask questions about your documents, check references and revisit conversations |
+| Documents | Upload files and images, organize by device and review recognized text |
+| Source search | Find keywords and matching passages in your documents |
+| Users and permissions | Manage accounts and control access to documents |
 
-## Distribution and updates
+Supports PDF, Word (DOCX), Excel (XLSX), TXT, Markdown and PNG/JPEG. Review text recognized from scans and images before using it.
 
-This repository distributes runtime source, setup and startup scripts, configuration examples, user documentation and demo screenshots. Tests, evaluation fixtures, development reviews and personal handover notes remain local and are not shipped with the product.
+## Your data
 
-Before updating, stop the service and back up complete `data` and `.env`. Save the revision, use `git pull --ff-only`, and run setup again. Do not overwrite local changes. Code updates do not automatically reparse existing documents.
+Documents and conversations are stored locally by default. Personal accounts, documents and databases are not included in this repository. Back up `data` and `.env` before updating.
 
-Private documents, credentials, databases, weights and previews are excluded. Use private HTTPS access rather than public exposure. One worker is supported; SSO, MFA and enterprise high availability are not supplied. See [operations](docs/OPERATIONS.md), [security](docs/SECURITY.md), [documentation](docs/README.md).
+## Help
+
+[Installation and mobile access](docs/WINDOWS.md) · [Getting started](docs/GETTING_STARTED.md) · [Model settings](docs/MODELS.md) · [Backup and updates](docs/OPERATIONS.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [All documentation](docs/README.md)

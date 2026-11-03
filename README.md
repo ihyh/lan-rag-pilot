@@ -1,14 +1,12 @@
-# Windows 个人知识库
+# 个人知识库
 
-把设备手册、表格和图文资料保存在本机，按文档范围检索证据，通过 Ollama 生成带引用的回答，并回到原文核对。
+把设备手册、表格和图片整理成可搜索、可提问的本地知识库。回答附带资料引用，方便回到原文核对。
 
-提供文档入库、图文说明、OCR 核对、设备范围选择、对话分页、反馈审核及独立用户与权限管理。前端使用 FastAPI/Jinja 模板和原生 JavaScript。
-
-源码仓库不包含私人文档、账号数据、数据库、模型权重或本机预览副本。[English](README.en.md)
+适用于 Windows 10/11，支持个人使用和多人协作。[English](README.en.md)
 
 ## 界面预览
 
-以下截图来自独立演示环境，使用虚构账号、示例资料和模拟回答，不含本地用户数据、真实文档或图文内容。点击图片可查看大图；截图仅展示功能与交互，不代表真实业务答案的正确率。
+以下为虚构资料与模拟回答的演示截图，点击可放大。
 
 | 问答工作台：回答、引用与历史 | 资料管理：设备类型与文档操作 |
 | --- | --- |
@@ -16,11 +14,9 @@
 | **原文检索：关键词与命中片段** | **用户与权限：账号、角色与用户组** |
 | [![原文检索](docs/screenshots/source-search.jpg)](docs/screenshots/source-search.jpg) | [![用户与权限](docs/screenshots/users.jpg)](docs/screenshots/users.jpg) |
 
-[截图说明](docs/screenshots/README.md)
+## 快速开始
 
-## 安装与启动
-
-默认环境：Windows 10/11、Python 3.12、Ollama `qwen3:4b-instruct`、BGE-small-zh-v1.5（512 维，CPU 嵌入）。先安装 Git for Windows、Python 3.12 和 [Ollama](https://ollama.com/download/windows)，并启动 Ollama。
+先安装 Git、Python 3.12 和 [Ollama](https://ollama.com/download/windows)，并启动 Ollama。然后在 PowerShell 中运行：
 
 ```powershell
 git clone https://github.com/ihyh/lan-rag-pilot.git C:\rag
@@ -28,43 +24,27 @@ cd C:\rag
 .\setup_windows.cmd
 ```
 
-脚本创建虚拟环境、安装依赖、下载模型并生成配置和随机 root 初始密码。首次安装需要联网；保存脚本显示的初始密码。重复安装保留已有配置与数据，不强行更换已配置模型。访问 `http://127.0.0.1:8088`。
+首次安装需要联网下载依赖和模型。请保存安装时显示的 `root` 初始密码。
 
-以后启动：
+打开 **http://127.0.0.1:8088**，登录后上传资料，等待处理完成即可提问。
 
-```powershell
-.\start_windows.cmd
-```
+以后启动，在安装目录双击 `start_windows.cmd` 即可。
 
-后台启动、手机私网访问和配置说明见 [Windows 指南](docs/WINDOWS.md)。
+## 主要功能
 
-## 功能入口
-
-| 入口 | 当前能力 |
+| 功能 | 可以做什么 |
 | --- | --- |
-| 问答工作台 | 全库或选中文档检索、设备快捷选择、流式回答、引用与候选来源、反馈和补充问题；历史对话每页 25 条，按页查看 |
-| 资料管理 | 文档列表、设备类型、版本与适用范围、访问授权；文件和图文上传、OCR 核对、正文检查、重建索引、删除；root 可查看概览、反馈和审计 |
-| 查资料 | 按关键词查索引原文，显示文件和位置；文档体检检查片段、页码和处理状态，不生成回答 |
-| 用户与权限 | root 管理用户、角色、启停、密码与用户组；普通用户只能访问获授权资料 |
+| 问答工作台 | 根据资料提问、查看引用、翻阅历史对话 |
+| 资料管理 | 上传文件和图片，按设备分类，核对识别文字 |
+| 查资料 | 搜索原文关键词，定位文件与相关片段 |
+| 用户与权限 | 管理账号，设置不同用户的资料访问范围 |
 
-- 支持 PDF、DOCX、XLSX、TXT、Markdown。旧 DOC 解析需额外安装 antiword；PNG/JPEG 可填写人工说明入库，扫描 PDF 和无说明图片需核对 OCR 内容。
-- 图片 AI 分析用于辅助填写说明，需配置可用视觉模型；结果经人工核对后使用，不自动成为可信答案。
-- 混合检索结合关键词和向量，受文档权限、启用版本及所选范围约束。设备快捷选择依据设备标注，未标注资料不会自动归到某型号。
-- “有帮助”反馈无需审核；问题反馈支持核对结果、处理记录、正确来源及可选复测信息。删除反馈不删除原问答。
-- 管理页二级菜单与 URL 联动，支持直接打开、刷新恢复、浏览器前进/后退。
+支持 PDF、Word（DOCX）、Excel（XLSX）、TXT、Markdown 和 PNG/JPEG 图片。扫描件与图片识别结果需人工核对。
 
-已移除的入口：网页导入、日志导入、反馈 CSV/回归候选导出、MCP 服务。旧来源兼容读取代码仍可能保留，不表示提供这些导入入口。没有实现相同问题自动复用历史答案的缓存。
+## 数据说明
 
-## 数据与更新
+资料和对话默认保存在本机。仓库不包含个人账号、文档或数据库。更新前请备份 `data` 文件夹和 `.env` 配置。
 
-更新前停服并备份完整 `data` 和 `.env`，保存源码版本，再执行 `git pull --ff-only` 和 `setup_windows.cmd`。本地有源码改动时先保存并解决差异，不强制覆盖。详见 [运维说明](docs/OPERATIONS.md)。
+## 使用帮助
 
-代码更新不会自动重新解析旧文档。解析策略变更时按需重处理；嵌入模型变更需要重建向量。上传、删除和重建索引应分别核验，不将探针成功视为资料正确。
-
-默认仅本机访问；手机访问使用 Tailscale 私有网络的 HTTPS Serve。不要开放公网 Funnel。HTTPS 配置、权限和单 worker 限制见 [安全说明](docs/SECURITY.md)。
-
-## 发布内容
-
-本仓库仅发布运行源码、安装启动脚本、配置示例、使用文档和演示截图。测试、评测样例、开发复核记录及个人交接文件保留在本地，不随产品发布。
-
-更多说明：[使用入门](docs/GETTING_STARTED.md) · [文档索引](docs/README.md) · [反馈审核](docs/FEEDBACK_REVIEW.md) · [模型配置](docs/MODELS.md) · [故障排查](docs/TROUBLESHOOTING.md)
+[安装与手机访问](docs/WINDOWS.md) · [首次使用](docs/GETTING_STARTED.md) · [模型设置](docs/MODELS.md) · [备份与更新](docs/OPERATIONS.md) · [常见问题](docs/TROUBLESHOOTING.md) · [全部文档](docs/README.md)
